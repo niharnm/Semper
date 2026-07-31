@@ -6,7 +6,7 @@ struct ThemeTilePicker: View {
     @Binding var selection: AppearancePreference
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Spacing.sm) {
             ForEach(AppearancePreference.allCases) { preference in
                 ThemeTile(
                     preference: preference,
@@ -26,30 +26,55 @@ private struct ThemeTile: View {
     let onTap: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     var body: some View {
-        VStack(spacing: 6) {
-            ThemePreviewMockup(preference: preference)
-                .frame(width: 72, height: 46)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(
-                            isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
-                            lineWidth: isSelected ? 2 : 0.5
-                        )
-                }
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                ThemePreviewMockup(preference: preference)
+                    .frame(width: 68, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : DesignTokens.Colors.nextControlBorder,
+                                lineWidth: isSelected ? 1.5 : 0.5
+                            )
+                    }
 
-            Text(preference.description)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                Text(preference.description)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .foregroundStyle(
+                        isSelected
+                            ? DesignTokens.Colors.textPrimary
+                            : DesignTokens.Colors.textSecondary
+                    )
+            }
+            .padding(DesignTokens.Spacing.xs)
+            .background {
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.09)
+                            : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
+                    )
+            }
+            .contentShape(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+            )
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : DesignTokens.Animation.hover) {
+                isHovered = hovering
+            }
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isSelected)
-        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityLabel(Text(preference.description))
+        .accessibilityHint("Changes Semper's appearance")
     }
 }
 
@@ -115,7 +140,7 @@ struct PopupSizeTilePicker: View {
     @Binding var selection: MenuBarPopupSize
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Spacing.sm) {
             ForEach(MenuBarPopupSize.allCases) { size in
                 PopupSizeTile(
                     size: size,
@@ -133,30 +158,55 @@ private struct PopupSizeTile: View {
     let onTap: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     var body: some View {
-        VStack(spacing: 6) {
-            PopupSizeMockup(size: size)
-                .frame(width: 72, height: 46)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(
-                            isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
-                            lineWidth: isSelected ? 2 : 0.5
-                        )
-                }
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                PopupSizeMockup(size: size)
+                    .frame(width: 68, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : DesignTokens.Colors.nextControlBorder,
+                                lineWidth: isSelected ? 1.5 : 0.5
+                            )
+                    }
 
-            Text(size.description)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .foregroundStyle(isSelected ? .primary : .secondary)
+                Text(size.description)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .foregroundStyle(
+                        isSelected
+                            ? DesignTokens.Colors.textPrimary
+                            : DesignTokens.Colors.textSecondary
+                    )
+            }
+            .padding(DesignTokens.Spacing.xs)
+            .background {
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.09)
+                            : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
+                    )
+            }
+            .contentShape(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+            )
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : DesignTokens.Animation.hover) {
+                isHovered = hovering
+            }
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: isSelected)
-        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityLabel(Text(size.description))
+        .accessibilityHint("Changes the menu bar popup size")
     }
 }
 

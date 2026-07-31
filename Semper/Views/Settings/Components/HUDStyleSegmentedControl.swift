@@ -20,6 +20,15 @@ struct HUDStyleSegmentedControl: View {
                 }
             }
         }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(DesignTokens.Colors.nextControlBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(DesignTokens.Colors.nextControlBorder, lineWidth: 0.5)
+        }
     }
 }
 
@@ -27,6 +36,9 @@ private struct HUDStyleOption: View {
     let style: HUDStyle
     let isSelected: Bool
     let onSelect: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
 
     private var label: String {
         switch style {
@@ -43,15 +55,30 @@ private struct HUDStyleOption: View {
                 .contentShape(Rectangle())
                 .background {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isSelected ? DesignTokens.Colors.accentPrimary.opacity(0.15) : Color.clear)
+                        .fill(
+                            isSelected
+                                ? DesignTokens.Colors.accentPrimary.opacity(0.15)
+                                : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
+                        )
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? DesignTokens.Colors.accentPrimary : Color.clear, lineWidth: 1.5)
+                        .stroke(
+                            isSelected
+                                ? DesignTokens.Colors.accentPrimary
+                                : isHovered ? DesignTokens.Colors.nextControlBorder : Color.clear,
+                            lineWidth: isSelected ? 1.5 : 0.5
+                        )
                 }
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : DesignTokens.Animation.hover) {
+                isHovered = hovering
+            }
+        }
         .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
