@@ -12,6 +12,12 @@
 	<string>Semper uses Bluetooth to connect paired audio devices from the menu bar.</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/niharnm/Semper/update-feed/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SPARKLE_PUBLIC_ED_KEY)</string>
+	<key>SemperDefaultUpdateChannel</key>
+	<string>$(SEMPER_DEFAULT_UPDATE_CHANNEL)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
