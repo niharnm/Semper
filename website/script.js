@@ -123,7 +123,7 @@ document.querySelectorAll("[data-preset]").forEach((button) => {
 
 const progressBar = document.querySelector(".page-progress span");
 const signalStory = document.querySelector("[data-signal-story]");
-const desktopMotionQuery = window.matchMedia("(min-width: 821px)");
+const desktopMotionQuery = window.matchMedia("(min-width: 961px)");
 const signalInputPaths = signalStory
   ? [...signalStory.querySelectorAll("[data-signal-input]")]
   : [];
