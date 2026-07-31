@@ -11,6 +11,7 @@ Control Semper from Terminal, shell scripts, [Shortcuts](https://support.apple.c
 | Set mute | `semper://set-mute?app=BUNDLE_ID&muted=true` | Mute or unmute an app |
 | Toggle mute | `semper://toggle-mute?app=BUNDLE_ID` | Toggle mute state |
 | Set device | `semper://set-device?app=BUNDLE_ID&device=DEVICE_UID` | Route an app to a specific output |
+| Update | `semper://update` | Check for and install a Semper update |
 | Reset | `semper://reset` | Reset all apps to 100% and unmuted |
 
 ## Examples
@@ -30,6 +31,9 @@ open "semper://step-volume?app=com.hnc.Discord&direction=down"
 
 # Route an app to a specific device
 open "semper://set-device?app=com.spotify.client&device=YOUR_DEVICE_UID"
+
+# Check for and install the latest Semper update
+open "semper://update"
 
 # Reset everything
 open "semper://reset"

@@ -244,12 +244,6 @@ if (prefersReducedMotion || !("IntersectionObserver" in window)) {
   revealItems.forEach((item) => revealObserver.observe(item));
 }
 
-const downloadCommand = document.querySelector("[data-download-command]");
-const copyCommandButton = document.querySelector("[data-copy-command]");
-const copyCommandLabel = document.querySelector("[data-copy-label]");
-const copyCommandStatus = document.querySelector("[data-copy-status]");
-let copyCommandResetTimer = 0;
-
 const writeToClipboard = async (text) => {
   let nativeClipboardError = null;
 
@@ -282,49 +276,51 @@ const writeToClipboard = async (text) => {
   }
 };
 
-const resetCopyCommand = () => {
-  copyCommandButton.classList.remove("is-copied", "is-copy-error");
-  copyCommandButton.setAttribute("aria-label", "Copy download command");
-  copyCommandLabel.textContent = "Copy";
-};
+document.querySelectorAll("[data-command-copy]").forEach((commandGroup) => {
+  const command = commandGroup.querySelector("[data-command-value]");
+  const button = commandGroup.querySelector("[data-command-button]");
+  const label = commandGroup.querySelector("[data-command-label]");
+  const status = commandGroup.querySelector("[data-command-status]");
+  const commandName = commandGroup.dataset.commandName || "Command";
+  const initialAriaLabel = button?.getAttribute("aria-label") || "Copy command";
+  let resetTimer = 0;
 
-if (
-  downloadCommand &&
-  copyCommandButton &&
-  copyCommandLabel &&
-  copyCommandStatus
-) {
-  copyCommandButton.addEventListener("click", async () => {
-    window.clearTimeout(copyCommandResetTimer);
+  if (!command || !button || !label || !status) return;
+
+  const reset = () => {
+    button.classList.remove("is-copied", "is-copy-error");
+    button.setAttribute("aria-label", initialAriaLabel);
+    label.textContent = "Copy";
+  };
+
+  button.addEventListener("click", async () => {
+    window.clearTimeout(resetTimer);
 
     try {
-      await writeToClipboard(downloadCommand.textContent.trim());
-      copyCommandButton.classList.remove("is-copy-error");
-      copyCommandButton.classList.add("is-copied");
-      copyCommandButton.setAttribute("aria-label", "Download command copied");
-      copyCommandLabel.textContent = "Copied";
-      copyCommandStatus.textContent = "Download command copied.";
+      await writeToClipboard(command.textContent.trim());
+      button.classList.remove("is-copy-error");
+      button.classList.add("is-copied");
+      button.setAttribute("aria-label", `${commandName} copied`);
+      label.textContent = "Copied";
+      status.textContent = `${commandName} copied.`;
     } catch (error) {
-      copyCommandButton.classList.remove("is-copied");
-      copyCommandButton.classList.add("is-copy-error");
-      copyCommandButton.setAttribute(
+      button.classList.remove("is-copied");
+      button.classList.add("is-copy-error");
+      button.setAttribute(
         "aria-label",
         "Copy failed. Select the command manually.",
       );
-      copyCommandLabel.textContent = "Copy failed";
-      copyCommandStatus.textContent =
-        "Copy failed. Select the download command manually.";
-      console.error("Unable to copy the download command.", error);
+      label.textContent = "Copy failed";
+      status.textContent = "Copy failed. Select the command manually.";
+      console.error(`Unable to copy the ${commandName.toLowerCase()}.`, error);
     }
 
-    copyCommandResetTimer = window.setTimeout(resetCopyCommand, 2400);
+    resetTimer = window.setTimeout(reset, 2400);
   });
 
-  window.addEventListener(
-    "pagehide",
-    () => window.clearTimeout(copyCommandResetTimer),
-    { once: true },
-  );
-}
+  window.addEventListener("pagehide", () => window.clearTimeout(resetTimer), {
+    once: true,
+  });
+});
 
 document.getElementById("year").textContent = new Date().getFullYear();

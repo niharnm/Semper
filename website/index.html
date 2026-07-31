@@ -866,6 +866,35 @@
             </li>
           </ol>
         </div>
+        <div
+          class="download-command release-update-command reveal"
+          role="group"
+          aria-label="Update Semper from Terminal"
+          data-command-copy
+          data-command-name="Update command"
+        >
+          <div class="download-command-line">
+            <span class="command-prompt" aria-hidden="true">$</span>
+            <code data-command-value>open &quot;semper://update&quot;</code>
+            <button
+              class="command-copy"
+              type="button"
+              aria-label="Copy update command"
+              data-command-button
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <rect x="7" y="7" width="9" height="9" rx="1.5" />
+                <path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-7A1.5 1.5 0 0 0 3 5.5v7A1.5 1.5 0 0 0 4.5 14H7" />
+              </svg>
+              <span data-command-label>Copy</span>
+            </button>
+          </div>
+          <div class="download-command-meta">
+            <span>Already installed?</span>
+            <span>Checks for a signed update without opening Settings.</span>
+          </div>
+          <p class="sr-only" role="status" aria-live="polite" data-command-status></p>
+        </div>
         <p class="canary-note reveal">
           Do not install a Semper DMG from an unofficial source. Public release
           notes will include the supported macOS version and test status.
@@ -1079,28 +1108,30 @@
           class="download-command reveal"
           role="group"
           aria-label="Download the Semper source"
+          data-command-copy
+          data-command-name="Download command"
         >
           <div class="download-command-line">
             <span class="command-prompt" aria-hidden="true">$</span>
-            <code data-download-command>curl -fL https://github.com/niharnm/Semper/archive/refs/heads/main.zip -o &quot;$HOME/Downloads/Semper.zip&quot; &amp;&amp; open &quot;$HOME/Downloads/Semper.zip&quot;</code>
+            <code data-command-value>curl -fL https://github.com/niharnm/Semper/archive/refs/heads/main.zip -o &quot;$HOME/Downloads/Semper.zip&quot; &amp;&amp; open &quot;$HOME/Downloads/Semper.zip&quot;</code>
             <button
               class="command-copy"
               type="button"
               aria-label="Copy download command"
-              data-copy-command
+              data-command-button
             >
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <rect x="7" y="7" width="9" height="9" rx="1.5" />
                 <path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-7A1.5 1.5 0 0 0 3 5.5v7A1.5 1.5 0 0 0 4.5 14H7" />
               </svg>
-              <span data-copy-label>Copy</span>
+              <span data-command-label>Copy</span>
             </button>
           </div>
           <div class="download-command-meta">
             <span>Source archive</span>
             <span>Downloads main as Semper.zip, then opens it.</span>
           </div>
-          <p class="sr-only" role="status" aria-live="polite" data-copy-status></p>
+          <p class="sr-only" role="status" aria-live="polite" data-command-status></p>
         </div>
         <div class="final-actions reveal">
           <div class="kofi-widget">

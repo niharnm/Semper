@@ -22,10 +22,15 @@ protocol URLHandlerEngine {
 @MainActor
 final class URLHandler {
     private let audioEngine: any URLHandlerEngine
+    private let checkForUpdates: () -> Void
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "URLHandler")
 
-    init(audioEngine: any URLHandlerEngine) {
+    init(
+        audioEngine: any URLHandlerEngine,
+        checkForUpdates: @escaping () -> Void = {}
+    ) {
         self.audioEngine = audioEngine
+        self.checkForUpdates = checkForUpdates
     }
     
     func handleURL(_ url: URL) {
@@ -54,6 +59,8 @@ final class URLHandler {
         // Other actions
         case "set-device":
             handleSetDevice(queryItems: queryItems)
+        case "update":
+            checkForUpdates()
         case "reset":
             handleReset(queryItems: queryItems)
         default:

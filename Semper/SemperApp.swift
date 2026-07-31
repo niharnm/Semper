@@ -10,12 +10,16 @@ private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var audioEngine: AudioEngine?
+    var updateManager: UpdateManager?
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let audioEngine = audioEngine else {
+        guard let audioEngine, let updateManager else {
             return
         }
-        let urlHandler = URLHandler(audioEngine: audioEngine)
+        let urlHandler = URLHandler(
+            audioEngine: audioEngine,
+            checkForUpdates: updateManager.checkForUpdates
+        )
 
         for url in urls {
             urlHandler.handleURL(url)
@@ -51,7 +55,7 @@ struct SemperApp: App {
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var resolver: TargetAppResolver
     @State private var experimentManager: ExperimentManager
-    @StateObject private var updateManager = UpdateManager()
+    @StateObject private var updateManager: UpdateManager
     @State private var showMenuBarExtra = true
 
     /// Snapshot icon computed at launch from the user's chosen style and the current
@@ -108,7 +112,9 @@ struct SemperApp: App {
         // Destroy any orphaned aggregate devices from previous crashes
         OrphanedTapCleanup.destroyOrphanedDevices()
 
-        let settings = SettingsManager()
+        let settings = SettingsManager(managesLaunchAtLogin: true)
+        let updater = UpdateManager()
+        _updateManager = StateObject(wrappedValue: updater)
         _experimentManager = State(initialValue: ExperimentManager())
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
@@ -225,8 +231,9 @@ struct SemperApp: App {
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
 
-        // Pass engine to AppDelegate
+        // Pass URL action dependencies to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine
+        _appDelegate.wrappedValue.updateManager = updater
 
         if permission.status == .unknown {
             permission.request()

@@ -2356,6 +2356,12 @@ h2 {
   font-size: 0.55rem;
 }
 
+.release-update-command {
+  margin-top: 3rem;
+  margin-bottom: 0;
+  box-shadow: 18px 18px 0 rgba(16, 17, 22, 0.12);
+}
+
 /* FAQ */
 .faq {
   padding-top: 7rem;
