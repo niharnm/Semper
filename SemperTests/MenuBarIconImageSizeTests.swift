@@ -39,7 +39,7 @@ struct MenuBarIconImageSizeTests {
     @Test("shared size never downscales the widest speaker symbol")
     func sharedSizeCoversNaturalSymbolSize() throws {
         let shared = try #require(MenuBarIconState.speakerVolume(.high).image.nsImage()).size
-        let natural = try #require(NSImage(systemSymbolName: "speaker.wave.3.fill", accessibilityDescription: nil)).size
+        let natural = try #require(NSImage(systemSymbolName: "speaker.wave.3", accessibilityDescription: nil)).size
         #expect(shared.width >= natural.width)
         #expect(shared.height >= natural.height)
     }
@@ -47,8 +47,8 @@ struct MenuBarIconImageSizeTests {
     @Test("template rendering and accessibility description survive")
     func templateAndAccessibilitySurvive() throws {
         for image in [
-            MenuBarIconImage.systemSymbol("speaker.fill"),
-            .systemSymbol("waveform.path")
+            MenuBarIconImage.systemSymbol("speaker"),
+            .systemSymbol("infinity")
         ] {
             let rendered = try #require(image.nsImage())
             #expect(rendered.isTemplate, "\(image) lost template rendering")

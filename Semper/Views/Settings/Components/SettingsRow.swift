@@ -18,24 +18,26 @@ struct SettingsRow<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: DesignTokens.Spacing.lg) {
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(DesignTokens.Typography.rowNameBold)
                     .foregroundStyle(DesignTokens.Colors.textPrimary)
+
                 if let description {
                     Text(description)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(DesignTokens.Typography.rowDescription)
+                        .foregroundStyle(DesignTokens.Colors.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 16)
+
+            Spacer(minLength: DesignTokens.Spacing.lg)
             trailing()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(minHeight: 52)
+        .padding(.horizontal, DesignTokens.Spacing.lg)
+        .padding(.vertical, DesignTokens.Spacing.sm)
+        .frame(minHeight: 50)
         .contentShape(Rectangle())
     }
 }
@@ -46,6 +48,6 @@ struct SettingsRow<Trailing: View>: View {
 struct SettingsRowDivider: View {
     var body: some View {
         Divider()
-            .padding(.leading, 16)
+            .padding(.leading, DesignTokens.Spacing.lg)
     }
 }

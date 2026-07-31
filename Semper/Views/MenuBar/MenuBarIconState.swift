@@ -30,10 +30,10 @@ nonisolated enum VolumeBucket: Equatable {
 
     var symbolName: String {
         switch self {
-        case .zero: return "speaker.fill"
-        case .low:  return "speaker.wave.1.fill"
-        case .mid:  return "speaker.wave.2.fill"
-        case .high: return "speaker.wave.3.fill"
+        case .zero: return "speaker"
+        case .low:  return "speaker.wave.1"
+        case .mid:  return "speaker.wave.2"
+        case .high: return "speaker.wave.3"
         }
     }
 }
@@ -48,7 +48,7 @@ nonisolated enum MenuBarIconState: Equatable {
     var image: MenuBarIconImage {
         switch self {
         case .speakerVolume(let bucket): return .systemSymbol(bucket.symbolName)
-        case .speakerMuted:              return .systemSymbol("speaker.slash.fill")
+        case .speakerMuted:              return .systemSymbol("speaker.slash")
         case .device(let symbol):        return .systemSymbol(symbol)
         case .staticBaseline(let image): return image
         case .deviceFlash(let symbol):   return .systemSymbol(symbol)
@@ -71,12 +71,8 @@ extension MenuBarIconState {
             return .speakerVolume(.bucket(for: volume))
         case .device:
             return .device(symbol: deviceSymbol)
-        case .default:
+        case .default, .waveform, .equalizer:
             return .staticBaseline(.systemSymbol(style.iconName))
-        case .waveform:
-            return .staticBaseline(.systemSymbol("waveform"))
-        case .equalizer:
-            return .staticBaseline(.systemSymbol("slider.vertical.3"))
         }
     }
 }

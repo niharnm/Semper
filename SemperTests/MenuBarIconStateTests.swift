@@ -74,24 +74,24 @@ struct VolumeBucketBoundaryTests {
 @Suite("VolumeBucket — symbol names")
 struct VolumeBucketSymbolNameTests {
 
-    @Test("zero bucket uses speaker.fill (no wave lines)")
+    @Test("zero bucket uses speaker (no wave lines)")
     func zeroSymbol() {
-        #expect(VolumeBucket.zero.symbolName == "speaker.fill")
+        #expect(VolumeBucket.zero.symbolName == "speaker")
     }
 
-    @Test("low bucket uses wave.1.fill")
+    @Test("low bucket uses wave.1")
     func lowSymbol() {
-        #expect(VolumeBucket.low.symbolName == "speaker.wave.1.fill")
+        #expect(VolumeBucket.low.symbolName == "speaker.wave.1")
     }
 
-    @Test("mid bucket uses wave.2.fill")
+    @Test("mid bucket uses wave.2")
     func midSymbol() {
-        #expect(VolumeBucket.mid.symbolName == "speaker.wave.2.fill")
+        #expect(VolumeBucket.mid.symbolName == "speaker.wave.2")
     }
 
-    @Test("high bucket uses wave.3.fill")
+    @Test("high bucket uses wave.3")
     func highSymbol() {
-        #expect(VolumeBucket.high.symbolName == "speaker.wave.3.fill")
+        #expect(VolumeBucket.high.symbolName == "speaker.wave.3")
     }
 }
 
@@ -102,13 +102,13 @@ struct MenuBarIconStateImageTests {
 
     @Test("speakerVolume uses the bucket's symbol")
     func speakerVolumeImage() {
-        #expect(MenuBarIconState.speakerVolume(.mid).image == .systemSymbol("speaker.wave.2.fill"))
-        #expect(MenuBarIconState.speakerVolume(.zero).image == .systemSymbol("speaker.fill"))
+        #expect(MenuBarIconState.speakerVolume(.mid).image == .systemSymbol("speaker.wave.2"))
+        #expect(MenuBarIconState.speakerVolume(.zero).image == .systemSymbol("speaker"))
     }
 
-    @Test("speakerMuted uses speaker.slash.fill")
+    @Test("speakerMuted uses speaker.slash")
     func speakerMutedImage() {
-        #expect(MenuBarIconState.speakerMuted.image == .systemSymbol("speaker.slash.fill"))
+        #expect(MenuBarIconState.speakerMuted.image == .systemSymbol("speaker.slash"))
     }
 
     @Test("staticBaseline passes through")
@@ -165,7 +165,7 @@ struct NonSpeakerBaselineTests {
 
     @Test(".default is a static symbol regardless of volume")
     func defaultSymbol() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform.path"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("infinity"))
         for v in [Float(0.0), 0.25, 0.5, 0.75, 1.0] {
             #expect(MenuBarIconState.baseline(style: .default, volume: v, muted: false) == expected, "volume=\(v)")
         }
@@ -173,14 +173,14 @@ struct NonSpeakerBaselineTests {
 
     @Test(".default ignores mute (non-speaker styles keep static baseline)")
     func defaultIgnoresMute() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform.path"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("infinity"))
         #expect(MenuBarIconState.baseline(style: .default, volume: 0.5, muted: true) == expected)
         #expect(MenuBarIconState.baseline(style: .default, volume: 0.0, muted: true) == expected)
     }
 
-    @Test(".waveform is waveform symbol regardless of volume")
+    @Test(".waveform is signal symbol regardless of volume")
     func waveformSymbol() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform.path.ecg"))
         for v in [Float(0.0), 0.5, 1.0] {
             #expect(MenuBarIconState.baseline(style: .waveform, volume: v, muted: false) == expected, "volume=\(v)")
         }
@@ -188,7 +188,7 @@ struct NonSpeakerBaselineTests {
 
     @Test(".waveform ignores mute")
     func waveformIgnoresMute() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("waveform.path.ecg"))
         #expect(MenuBarIconState.baseline(style: .waveform, volume: 0.5, muted: true) == expected)
     }
 
@@ -206,9 +206,9 @@ struct NonSpeakerBaselineTests {
         #expect(MenuBarIconState.baseline(style: .device, volume: 0.5, muted: true, deviceSymbol: "homepod") == expected)
     }
 
-    @Test(".equalizer is slider.vertical.3 regardless of volume")
+    @Test(".equalizer is levels symbol regardless of volume")
     func equalizerSymbol() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("slider.vertical.3"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("chart.bar.xaxis"))
         for v in [Float(0.0), 0.5, 1.0] {
             #expect(MenuBarIconState.baseline(style: .equalizer, volume: v, muted: false) == expected, "volume=\(v)")
         }
@@ -216,7 +216,7 @@ struct NonSpeakerBaselineTests {
 
     @Test(".equalizer ignores mute")
     func equalizerIgnoresMute() {
-        let expected = MenuBarIconState.staticBaseline(.systemSymbol("slider.vertical.3"))
+        let expected = MenuBarIconState.staticBaseline(.systemSymbol("chart.bar.xaxis"))
         #expect(MenuBarIconState.baseline(style: .equalizer, volume: 0.5, muted: true) == expected)
     }
 }
@@ -224,7 +224,7 @@ struct NonSpeakerBaselineTests {
 @Suite("MenuBarIconState — consistency with MenuBarIconStyle.iconName")
 struct StyleIconNameConsistencyTests {
 
-    /// Baseline symbols for non-speaker styles must match the pre-existing
+    /// Baseline symbols for non-speaker styles must match the
     /// MenuBarIconStyle.iconName mapping so switching between dynamic and static
     /// codepaths produces the same visual for those styles.
 

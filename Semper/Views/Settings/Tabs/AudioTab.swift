@@ -59,7 +59,7 @@ struct AudioTab: View {
                 VolumeSlider(
                     $settings.appSettings.defaultNewAppVolume,
                     range: 0.1...1.0,
-                    width: 280
+                    width: DesignTokens.Dimensions.settingsSliderWidth
                 )
             }
             SettingsRowDivider()
@@ -120,7 +120,7 @@ struct AudioTab: View {
                         set: { deviceVolumeMonitor.setAlertVolume($0) }
                     ),
                     range: 0...1,
-                    width: 280
+                    width: DesignTokens.Dimensions.settingsSliderWidth
                 )
             }
             .task {
