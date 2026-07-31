@@ -1804,20 +1804,21 @@ h2 {
 
 .capability-copy {
   display: grid;
-  grid-template-columns: 0.7fr 1.1fr 0.9fr;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.75fr);
   align-items: end;
   margin-bottom: 5rem;
   gap: 2.5rem;
 }
 
-.capability-copy .kicker {
-  align-self: start;
-  color: #bfd6ff;
-}
-
 .capability-copy h2 {
+  max-width: 12ch;
   margin: 0;
   font-size: clamp(3.4rem, 6vw, 6.5rem);
+}
+
+.capability-copy h2 em {
+  color: var(--yellow);
+  font-style: italic;
 }
 
 .capability-copy > p:last-child {
@@ -2361,8 +2362,7 @@ footer p:last-child {
     padding: 1rem;
   }
 
-  .problem-heading,
-  .capability-copy {
+  .problem-heading {
     grid-template-columns: 0.55fr 1.45fr;
   }
 
@@ -2370,8 +2370,11 @@ footer p:last-child {
     grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
   }
 
-  .problem-heading .kicker,
-  .capability-copy .kicker {
+  .capability-copy {
+    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  }
+
+  .problem-heading .kicker {
     grid-row: 1 / 3;
   }
 
@@ -2415,8 +2418,7 @@ footer p:last-child {
     grid-template-columns: 1fr;
   }
 
-  .problem-heading .kicker,
-  .capability-copy .kicker {
+  .problem-heading .kicker {
     grid-row: auto;
   }
 
