@@ -565,6 +565,7 @@ enum DesignTokens {
 
     enum Links {
         static let website = URL(string: "https://semper.systems")!
+        static let buyMeACoffee = URL(string: "https://buymeacoffee.com/semper")!
 
         static let license = URL(string: "https://www.gnu.org/licenses/gpl-3.0.html")!
     }

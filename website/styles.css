@@ -364,6 +364,17 @@ h2 em {
   fill: currentColor;
 }
 
+.button-coffee {
+  border-color: var(--ink);
+  background: #ffdd00;
+  color: var(--ink);
+  box-shadow: 0 12px 30px rgba(23, 23, 23, 0.16);
+}
+
+.button-coffee:hover {
+  box-shadow: 0 16px 34px rgba(23, 23, 23, 0.22);
+}
+
 .text-link {
   display: inline-flex;
   align-items: center;
@@ -2163,6 +2174,14 @@ h2 {
   margin-bottom: 2rem;
   color: var(--ink-soft);
   line-height: 1.6;
+}
+
+.final-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .download-command {

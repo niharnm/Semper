@@ -117,3 +117,12 @@ struct DesignTokensTimingTests {
         #expect(DesignTokens.Timing.vuMeterPeakHold > 0)
     }
 }
+
+@Suite("DesignTokens — Links")
+struct DesignTokensLinkTests {
+
+    @Test("Buy Me a Coffee points to the Semper page")
+    func buyMeACoffeeURL() {
+        #expect(DesignTokens.Links.buyMeACoffee.absoluteString == "https://buymeacoffee.com/semper")
+    }
+}
