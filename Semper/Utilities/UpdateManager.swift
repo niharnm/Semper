@@ -3,6 +3,42 @@ import Foundation
 import Combine
 import Sparkle
 
+struct UpdaterConfiguration {
+    static func isValid(feedURL: String?, publicKey: String?) -> Bool {
+        guard
+            let feedURL,
+            let url = URL(string: feedURL),
+            url.scheme == "https",
+            url.host?.isEmpty == false,
+            let publicKey,
+            let keyData = Data(base64Encoded: publicKey),
+            keyData.count == 32
+        else {
+            return false
+        }
+        return true
+    }
+}
+
+struct AutomaticUpdateState {
+    let checksForUpdates: Bool
+    let downloadsUpdates: Bool
+
+    init(checksForUpdates: Bool, downloadsUpdates: Bool) {
+        self.checksForUpdates = checksForUpdates
+        self.downloadsUpdates = downloadsUpdates
+    }
+
+    init(isEnabled: Bool) {
+        checksForUpdates = isEnabled
+        downloadsUpdates = isEnabled
+    }
+
+    var isEnabled: Bool {
+        checksForUpdates && downloadsUpdates
+    }
+}
+
 enum UpdateChannel: String, CaseIterable, Identifiable {
     case stable
     case canary
@@ -46,9 +82,13 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
     let isConfigured: Bool
 
     @Published var canCheckForUpdates = false
+    @Published private(set) var automaticUpdatesEnabled = false
     @Published var updateChannel: UpdateChannel {
         didSet {
             userDefaults.set(updateChannel.rawValue, forKey: Self.updateChannelDefaultsKey)
+            if isConfigured {
+                updaterController?.updater.resetUpdateCycleAfterShortDelay()
+            }
         }
     }
 
@@ -63,7 +103,7 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
         let bundleDefault = info?["SemperDefaultUpdateChannel"] as? String
 
         self.userDefaults = userDefaults
-        isConfigured = feedURL?.isEmpty == false && publicKey?.isEmpty == false
+        isConfigured = UpdaterConfiguration.isValid(feedURL: feedURL, publicKey: publicKey)
         updateChannel = UpdateChannel.resolved(
             storedValue: userDefaults.string(forKey: Self.updateChannelDefaultsKey),
             bundleDefault: bundleDefault
@@ -83,6 +123,18 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
                 updaterController.updater.publisher(for: \.canCheckForUpdates)
                     .receive(on: DispatchQueue.main)
                     .assign(to: &$canCheckForUpdates)
+                Publishers.CombineLatest(
+                    updaterController.updater.publisher(for: \.automaticallyChecksForUpdates),
+                    updaterController.updater.publisher(for: \.automaticallyDownloadsUpdates)
+                )
+                .map { checksForUpdates, downloadsUpdates in
+                    AutomaticUpdateState(
+                        checksForUpdates: checksForUpdates,
+                        downloadsUpdates: downloadsUpdates
+                    ).isEnabled
+                }
+                .receive(on: DispatchQueue.main)
+                .assign(to: &$automaticUpdatesEnabled)
             } catch {
                 NSLog("Semper updater failed to start: %@", error.localizedDescription)
             }
@@ -98,24 +150,11 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
         updaterController.checkForUpdates(nil)
     }
 
-    var automaticallyChecksForUpdates: Bool {
-        get {
-            isConfigured && updaterController.updater.automaticallyChecksForUpdates
-        }
-        set {
-            guard isConfigured else { return }
-            updaterController.updater.automaticallyChecksForUpdates = newValue
-        }
-    }
-
-    var automaticallyDownloadsUpdates: Bool {
-        get {
-            isConfigured && updaterController.updater.automaticallyDownloadsUpdates
-        }
-        set {
-            guard isConfigured else { return }
-            updaterController.updater.automaticallyDownloadsUpdates = newValue
-        }
+    func setAutomaticUpdatesEnabled(_ isEnabled: Bool) {
+        guard isConfigured else { return }
+        let state = AutomaticUpdateState(isEnabled: isEnabled)
+        updaterController.updater.automaticallyChecksForUpdates = state.checksForUpdates
+        updaterController.updater.automaticallyDownloadsUpdates = state.downloadsUpdates
     }
 
     var lastUpdateCheckDate: Date? {

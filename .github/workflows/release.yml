@@ -195,6 +195,30 @@ jobs:
             -exportOptionsPlist ExportOptions.plist
           codesign -dv --verbose=4 build/Semper.app
 
+      - name: Verify updater configuration
+        run: |
+          set -euo pipefail
+
+          INFO_PLIST="build/Semper.app/Contents/Info.plist"
+          FEED_URL="$(plutil -extract SUFeedURL raw "$INFO_PLIST")"
+          PUBLIC_KEY="$(plutil -extract SUPublicEDKey raw "$INFO_PLIST")"
+          DEFAULT_CHANNEL="$(plutil -extract SemperDefaultUpdateChannel raw "$INFO_PLIST")"
+
+          if [[ "$FEED_URL" != "https://raw.githubusercontent.com/niharnm/Semper/update-feed/appcast.xml" ]]; then
+            echo "Release build contains an unexpected Sparkle feed URL."
+            exit 1
+          fi
+          if [[ "$DEFAULT_CHANNEL" != "$DEFAULT_UPDATE_CHANNEL" ]]; then
+            echo "Release build contains the wrong default update channel."
+            exit 1
+          fi
+
+          PUBLIC_KEY_BYTES="$(printf "%s" "$PUBLIC_KEY" | base64 --decode | wc -c | tr -d '[:space:]')"
+          if [[ "$PUBLIC_KEY_BYTES" != "32" ]]; then
+            echo "Release build must contain a 32-byte Sparkle Ed25519 public key."
+            exit 1
+          fi
+
       - name: Create DMG
         run: |
           set -euo pipefail

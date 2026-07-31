@@ -19,10 +19,10 @@ struct UpdatesTab: View {
         return "Version \(version) · Never checked"
     }
 
-    private var automaticallyChecksBinding: Binding<Bool> {
+    private var automaticUpdatesBinding: Binding<Bool> {
         Binding(
-            get: { updateManager.automaticallyChecksForUpdates },
-            set: { updateManager.automaticallyChecksForUpdates = $0 }
+            get: { updateManager.automaticUpdatesEnabled },
+            set: { updateManager.setAutomaticUpdatesEnabled($0) }
         )
     }
 
@@ -59,9 +59,9 @@ struct UpdatesTab: View {
                     SettingsRowDivider()
                     SettingsRow(
                         "Automatic updates",
-                        description: "Check for new versions automatically"
+                        description: "Check for and download new versions automatically"
                     ) {
-                        Toggle("", isOn: automaticallyChecksBinding)
+                        Toggle("", isOn: automaticUpdatesBinding)
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .labelsHidden()
