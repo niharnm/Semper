@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/niharnm/Semper/actions/workflows/ci.yml"><img src="https://github.com/niharnm/Semper/actions/workflows/ci.yml/badge.svg" alt="CI status"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/niharnm/Semper" alt="GPL-3.0 license"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/niharnm/Semper" alt="Apache-2.0 license"/></a>
   <a href="https://github.com/niharnm/Semper/contribute"><img src="https://img.shields.io/github/issues/niharnm/Semper/good%20first%20issue?label=good%20first%20issues" alt="Good first issues"/></a>
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
@@ -111,6 +111,6 @@ tests and a clear safety argument.
 
 ## License
 
-Semper is distributed under the [GNU General Public License Version 3](LICENSE) (`GPL-3.0-only`).
+Semper is distributed under the [Apache License 2.0](LICENSE) (`Apache-2.0`).
 
 Copyright (C) 2026 Semper.
