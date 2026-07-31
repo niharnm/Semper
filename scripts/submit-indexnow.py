@@ -3,7 +3,7 @@
 import argparse
 import json
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -34,6 +34,10 @@ def validate_urls(urls: list[str]) -> None:
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.netloc != HOST:
             raise SystemExit(f"URL must use the canonical host: {url}")
+        if parsed.path == "/index.html":
+            raise SystemExit(
+                f"Use the canonical homepage URL instead of: {url}"
+            )
 
 
 def main() -> None:
@@ -79,6 +83,9 @@ def main() -> None:
         raise SystemExit(
             f"IndexNow rejected the request with HTTP {error.code}: {details}"
         ) from error
+    except (URLError, TimeoutError) as error:
+        reason = getattr(error, "reason", error)
+        raise SystemExit(f"IndexNow request failed: {reason}") from error
 
     if status not in {200, 202}:
         raise SystemExit(f"IndexNow returned unexpected HTTP status {status}")

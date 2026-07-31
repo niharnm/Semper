@@ -20,9 +20,13 @@ After changed pages are live, preview and send their canonical URLs to
 IndexNow:
 
 ```bash
-python3 scripts/submit-indexnow.py --dry-run
-python3 scripts/submit-indexnow.py
+python3 scripts/submit-indexnow.py --dry-run \
+  https://www.semper.systems/about.html
+python3 scripts/submit-indexnow.py \
+  https://www.semper.systems/about.html
 ```
+
+Omit positional URLs to submit every URL in `website/sitemap.xml`.
 
 An HTTP 200 or 202 response confirms receipt, not crawling, indexing, ranking,
 or recommendation. The sitemap remains submitted separately in Google Search

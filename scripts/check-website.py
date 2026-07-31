@@ -1,6 +1,7 @@
 import json
+import posixpath
 import re
-from datetime import date
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
@@ -67,7 +68,7 @@ class SiteParser(HTMLParser):
         if tag == "meta" and values.get("name") == "robots":
             self.has_robots_meta = True
         if tag == "meta" and values.get("name") == "description":
-            self.has_description = bool(values.get("content"))
+            self.has_description = bool((values.get("content") or "").strip())
         if tag == "meta" and values.get("name") == "google-site-verification":
             self.has_google_site_verification = bool(values.get("content"))
 
@@ -120,11 +121,14 @@ def check_html(filename: str, expected_canonical: str) -> SiteParser:
             fail(f"{filename} has a missing local asset: {relative_path}")
 
     for relative_path in parser.local_html_links:
-        if relative_path in {"index.html", "/index.html"}:
+        normalized_path = posixpath.normpath(
+            "/" + relative_path.lstrip("/")
+        )
+        if normalized_path == "/index.html":
             fail(f"{filename} links to duplicate homepage path: {relative_path}")
-        if relative_path == "/":
+        if normalized_path == "/":
             continue
-        target = (WEBSITE / relative_path.lstrip("/")).resolve()
+        target = (WEBSITE / normalized_path.lstrip("/")).resolve()
         if WEBSITE.resolve() not in target.parents or not target.is_file():
             fail(f"{filename} has a missing local page: {relative_path}")
 
@@ -206,9 +210,13 @@ sitemap_urls = {
 if sitemap_urls != set(CANONICALS.values()):
     fail("sitemap.xml does not match the canonical page set")
 for entry in sitemap.findall("sitemap:url", namespace):
-    last_modified = entry.findtext("sitemap:lastmod", namespaces=namespace)
+    last_modified = (
+        entry.findtext("sitemap:lastmod", namespaces=namespace) or ""
+    ).strip()
+    if last_modified.endswith("Z"):
+        last_modified = f"{last_modified[:-1]}+00:00"
     try:
-        date.fromisoformat(last_modified or "")
+        datetime.fromisoformat(last_modified)
     except ValueError:
         fail("sitemap.xml contains an invalid or missing lastmod date")
 
