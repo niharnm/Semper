@@ -160,6 +160,18 @@ for canonical in CANONICALS.values():
     if canonical not in llms:
         fail(f"llms.txt is missing an official page: {canonical}")
 
+contributor_urls = {
+    "https://github.com/niharnm/Semper/contribute",
+    "https://github.com/niharnm/Semper/blob/main/CONTRIBUTING.md",
+    "https://github.com/niharnm/Semper/blob/main/ROADMAP.md",
+    "https://github.com/niharnm/Semper/discussions",
+}
+for filename in ("index.html", "about.html", "llms.txt"):
+    source = (WEBSITE / filename).read_text(encoding="utf-8")
+    for contributor_url in contributor_urls:
+        if contributor_url not in source:
+            fail(f"{filename} is missing contributor link: {contributor_url}")
+
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
 if "releases/latest/download/Semper.dmg" in readme:
     fail("README.md contains a broken packaged download link")
