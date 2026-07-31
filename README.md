@@ -1,14 +1,14 @@
-<img src="assets/icon.png" width="150" height="150" alt="Semper app icon" align="left"/>
+<p align="center">
+  <img src="assets/icon.png" width="150" height="150" alt="Semper app icon"/>
+</p>
 
-# Semper
+<h1 align="center">Semper</h1>
 
 Native, per-application audio mixing and DSP engine for macOS. Semper resides in your menu bar, providing independent volume control, per-app output routing, ISO 226 equal-loudness contour compensation, AutoEQ headphone correction, and a Liquid Glass interface.
 
 [semper.systems](https://semper.systems)
 
 Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
-
-<br clear="left"/>
 
 ## Download
 
