@@ -9,6 +9,7 @@ struct ShortcutsTab: View {
     @Bindable var mediaKeyStatus: MediaKeyStatus
     let mediaKeyMonitor: MediaKeyMonitor
     let shortcutsRegistry: ShortcutsRegistry
+    @State private var showClearAllConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -25,6 +26,25 @@ struct ShortcutsTab: View {
         .onChange(of: settings.appSettings.mediaKeyControlEnabled) { _, _ in
             mediaKeyMonitor.reconcile()
         }
+        .onChange(of: settings.appSettings.shortcutTargetMode) { _, mode in
+            guard mode == .selectedApp,
+                  settings.appSettings.selectedShortcutTargetBundleID == nil,
+                  let firstOption = shortcutsRegistry.targetAppOptions().first
+            else { return }
+            settings.appSettings.selectedShortcutTargetBundleID = firstOption.bundleID
+        }
+        .confirmationDialog(
+            "Clear all keyboard shortcuts?",
+            isPresented: $showClearAllConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear All", role: .destructive) {
+                shortcutsRegistry.clearAllShortcuts()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every Semper hotkey assignment.")
+        }
     }
 
     // MARK: - Volume
@@ -35,12 +55,40 @@ struct ShortcutsTab: View {
                 "Volume Step",
                 description: "How much each keypress changes the volume. Applies to media keys, configured hotkeys, and arrow-key nav in the popup."
             ) {
-                Picker("", selection: $settings.appSettings.volumeHotkeyStep) {
-                    ForEach(VolumeHotkeyStep.allCases) { step in
-                        Text(step.description).tag(step)
-                    }
+                volumeStepControl
+            }
+        }
+    }
+
+    private var volumeStepControl: some View {
+        HStack(spacing: 8) {
+            Picker("", selection: $settings.appSettings.volumeHotkeyStep) {
+                ForEach(VolumeHotkeyStep.allCases) { step in
+                    Text(step.description).tag(step)
                 }
-                .pickerStyle(.menu)
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+
+            if settings.appSettings.volumeHotkeyStep == .custom {
+                TextField(
+                    "Percent",
+                    value: customVolumePercentBinding,
+                    format: .number.precision(.fractionLength(0...2))
+                )
+                .multilineTextAlignment(.trailing)
+                .frame(width: 48)
+
+                Text("%")
+                    .foregroundStyle(DesignTokens.Colors.textSecondary)
+
+                Stepper(
+                    "",
+                    value: customVolumePercentBinding,
+                    in: VolumeHotkeyStep.customPercentRange,
+                    step: 0.25
+                )
                 .labelsHidden()
                 .fixedSize()
             }
@@ -93,19 +141,99 @@ struct ShortcutsTab: View {
 
     private var hotkeysSection: some View {
         SettingsSection("Hotkeys") {
+            SettingsRow(
+                "App Shortcut Target",
+                description: "Choose which app the volume and mute hotkeys control."
+            ) {
+                targetAppControl
+            }
+            SettingsRowDivider()
+
             ForEach(Array(ShortcutAction.allCases.enumerated()), id: \.element) { index, action in
                 if index > 0 { SettingsRowDivider() }
                 SettingsRow(
                     action.displayName,
                     description: description(for: action)
                 ) {
-                    KeyboardShortcuts.Recorder(
-                        for: shortcutsRegistry.name(for: action),
-                        onChange: shortcutsRegistry.recordCallback(for: action)
-                    )
+                    VStack(alignment: .trailing, spacing: 4) {
+                        KeyboardShortcuts.Recorder(
+                            for: shortcutsRegistry.name(for: action),
+                            onChange: shortcutsRegistry.recordCallback(for: action)
+                        )
+
+                        if let conflictingAction = shortcutsRegistry.conflictingAction(for: action) {
+                            Label(
+                                "Already used by \(conflictingAction.displayName)",
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(DesignTokens.Typography.rowDescription)
+                            .foregroundStyle(.orange)
+                        }
+                    }
                 }
             }
+
+            SettingsRowDivider()
+            SettingsRow(
+                "Clear All Shortcuts",
+                description: "Remove every custom hotkey assignment."
+            ) {
+                Button("Clear All", role: .destructive) {
+                    showClearAllConfirmation = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!shortcutsRegistry.hasAssignedShortcuts)
+            }
         }
+    }
+
+    private var targetAppControl: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            Picker("", selection: $settings.appSettings.shortcutTargetMode) {
+                ForEach(ShortcutTargetMode.allCases) { mode in
+                    Text(mode.description).tag(mode)
+                        .disabled(mode == .selectedApp && shortcutsRegistry.targetAppOptions().isEmpty)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+
+            if settings.appSettings.shortcutTargetMode == .selectedApp {
+                let options = shortcutsRegistry.targetAppOptions()
+                Picker("", selection: selectedTargetBundleIDBinding) {
+                    if options.isEmpty {
+                        Text("No active audio apps").tag("")
+                    } else {
+                        ForEach(options) { option in
+                            Text(option.displayName).tag(option.bundleID)
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(options.isEmpty)
+            }
+        }
+    }
+
+    private var customVolumePercentBinding: Binding<Double> {
+        Binding(
+            get: { settings.appSettings.customVolumeHotkeyStepPercent },
+            set: {
+                settings.appSettings.customVolumeHotkeyStepPercent =
+                    VolumeHotkeyStep.clampedCustomPercent($0)
+            }
+        )
+    }
+
+    private var selectedTargetBundleIDBinding: Binding<String> {
+        Binding(
+            get: { settings.appSettings.selectedShortcutTargetBundleID ?? "" },
+            set: { settings.appSettings.selectedShortcutTargetBundleID = $0.isEmpty ? nil : $0 }
+        )
     }
 
     private func description(for action: ShortcutAction) -> String {

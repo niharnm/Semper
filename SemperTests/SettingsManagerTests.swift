@@ -390,6 +390,66 @@ struct AppSettingsDefaultTests {
         #expect(decoded.volumeHotkeyStep == .normal)
     }
 
+    @Test("Custom volume step uses and persists a precise percentage")
+    func customVolumeHotkeyStepRoundTrip() throws {
+        var settings = AppSettings()
+        settings.volumeHotkeyStep = .custom
+        settings.customVolumeHotkeyStepPercent = 7.25
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        #expect(decoded.volumeHotkeyStep == .custom)
+        #expect(decoded.customVolumeHotkeyStepPercent == 7.25)
+        #expect(decoded.volumeHotkeySliderDelta == 0.0725)
+    }
+
+    @Test("Custom volume percentage is clamped while decoding", arguments: [
+        (-4.0, 1.0),
+        (80.0, 25.0),
+    ])
+    func customVolumeHotkeyStepClamps(stored: Double, expected: Double) throws {
+        let json = """
+        { "customVolumeHotkeyStepPercent": \(stored) }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
+
+        #expect(decoded.customVolumeHotkeyStepPercent == expected)
+    }
+
+    @Test("Shortcut target preference round-trips through JSON")
+    func shortcutTargetPreferenceRoundTrip() throws {
+        var settings = AppSettings()
+        settings.shortcutTargetMode = .selectedApp
+        settings.selectedShortcutTargetBundleID = "com.spotify.client"
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        #expect(decoded.shortcutTargetMode == .selectedApp)
+        #expect(decoded.selectedShortcutTargetBundleID == "com.spotify.client")
+    }
+
+    @Test("Missing shortcut target preference defaults to the playing app")
+    func shortcutTargetPreferenceDefaults() throws {
+        let json = "{}".data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
+
+        #expect(decoded.shortcutTargetMode == .playingApp)
+        #expect(decoded.selectedShortcutTargetBundleID == nil)
+    }
+
+    @Test("Empty selected shortcut target decodes as unset")
+    func emptyShortcutTargetDecodesAsUnset() throws {
+        let json = """
+        { "selectedShortcutTargetBundleID": "" }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
+
+        #expect(decoded.selectedShortcutTargetBundleID == nil)
+    }
+
 }
 
 // MARK: - Hidden Devices

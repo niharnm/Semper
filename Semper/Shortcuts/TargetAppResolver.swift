@@ -7,6 +7,11 @@ protocol TargetAppResolving: AnyObject {
     func resolveTargetBundleID(audibleCandidates: [String]) -> String?
 }
 
+struct ShortcutTargetPreference: Equatable {
+    let mode: ShortcutTargetMode
+    let selectedBundleID: String?
+}
+
 /// Activation notifications must be observed on `NSWorkspace.shared.notificationCenter`,
 /// not `NotificationCenter.default`. Registering on the default center is a silent
 /// no-op (`AppKit/NSWorkspace.h`).
@@ -20,6 +25,7 @@ final class TargetAppResolver: TargetAppResolving {
 
     private let ownBundleID: String
     private let frontmostBundleIDProvider: @MainActor () -> String?
+    private let preferenceProvider: @MainActor () -> ShortcutTargetPreference
     private var lastNonSemperFrontmostBundleID: String?
     private var lastTargetedBundleID: String?
     private var observer: NSObjectProtocol?
@@ -28,10 +34,14 @@ final class TargetAppResolver: TargetAppResolving {
         ownBundleID: String,
         frontmostBundleIDProvider: @escaping @MainActor () -> String? = {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        },
+        preferenceProvider: @escaping @MainActor () -> ShortcutTargetPreference = {
+            ShortcutTargetPreference(mode: .playingApp, selectedBundleID: nil)
         }
     ) {
         self.ownBundleID = ownBundleID
         self.frontmostBundleIDProvider = frontmostBundleIDProvider
+        self.preferenceProvider = preferenceProvider
     }
 
     /// Idempotent.
@@ -57,6 +67,20 @@ final class TargetAppResolver: TargetAppResolving {
     }
 
     func resolveTargetBundleID(audibleCandidates: [String]) -> String? {
+        let preference = preferenceProvider()
+        switch preference.mode {
+        case .frontmostApp:
+            return resolveFrontmostNonSemper()
+        case .selectedApp:
+            guard let selectedBundleID = preference.selectedBundleID,
+                  selectedBundleID != ownBundleID,
+                  !Self.systemDaemonBlocklist.contains(selectedBundleID)
+            else { return nil }
+            return selectedBundleID
+        case .playingApp:
+            break
+        }
+
         let filtered = audibleCandidates.filter {
             $0 != ownBundleID && !Self.systemDaemonBlocklist.contains($0)
         }

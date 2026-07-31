@@ -22,6 +22,13 @@ protocol PerAppHUDPresenting: AnyObject {
     func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?)
 }
 
+nonisolated struct ShortcutTargetAppOption: Identifiable, Equatable, Sendable {
+    let bundleID: String
+    let displayName: String
+
+    var id: String { bundleID }
+}
+
 /// Bridges `KeyboardShortcuts` (Carbon-backed global hotkey library, MIT) to
 /// Semper's settings layer.
 ///
@@ -53,6 +60,7 @@ final class ShortcutsRegistry {
     private let audioEngine: any AudioEngineDispatching
     private let hud: any PerAppHUDPresenting
     private var didStart = false
+    private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
 
     /// Software-emulated key-repeat timing. Carbon hot keys don't auto-repeat,
     /// so holding the chord runs this loop. Values match macOS keyboard defaults.
@@ -81,6 +89,37 @@ final class ShortcutsRegistry {
         KeyboardShortcuts.Name(stableID(for: action))
     }
 
+    var hasAssignedShortcuts: Bool {
+        ShortcutAction.allCases.contains {
+            settings.appSettings.customShortcuts[$0.rawValue] != nil
+                || KeyboardShortcuts.getShortcut(for: name(for: $0)) != nil
+        }
+    }
+
+    func conflictingAction(for action: ShortcutAction) -> ShortcutAction? {
+        shortcutConflicts[action]
+    }
+
+    func targetAppOptions() -> [ShortcutTargetAppOption] {
+        var namesByBundleID: [String: String] = [:]
+        for app in audioEngine.apps {
+            guard let bundleID = app.bundleID, namesByBundleID[bundleID] == nil else { continue }
+            namesByBundleID[bundleID] = app.name
+        }
+
+        if let selectedBundleID = settings.appSettings.selectedShortcutTargetBundleID,
+           namesByBundleID[selectedBundleID] == nil {
+            let runningApp = NSRunningApplication.runningApplications(
+                withBundleIdentifier: selectedBundleID
+            ).first
+            namesByBundleID[selectedBundleID] = runningApp?.localizedName ?? selectedBundleID
+        }
+
+        return namesByBundleID
+            .map { ShortcutTargetAppOption(bundleID: $0.key, displayName: $0.value) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
     /// Routes a fired action to its handler. Exposed `internal` so tests can
     /// drive it directly without faking a global key event.
     func dispatch(_ action: ShortcutAction) {
@@ -100,7 +139,7 @@ final class ShortcutsRegistry {
 
     private func adjustTargetVolume(direction: Int) {
         guard let app = resolveTargetAudioApp() else { return }
-        let sliderDelta = settings.appSettings.volumeHotkeyStep.sliderDelta * Double(direction)
+        let sliderDelta = settings.appSettings.volumeHotkeySliderDelta * Double(direction)
 
         let currentGain = audioEngine.currentVolume(for: app)
         let currentSlider = VolumeMapping.gainToSlider(currentGain)
@@ -216,11 +255,45 @@ final class ShortcutsRegistry {
     private func handleRecorderChange(shortcut: KeyboardShortcuts.Shortcut?, for action: ShortcutAction) {
         var app = settings.appSettings
         if let shortcut {
-            app.customShortcuts[action.rawValue] = ShortcutCodable.from(shortcut)
+            let recordedShortcut = ShortcutCodable.from(shortcut)
+            if let conflictingAction = ShortcutAction.allCases.first(where: {
+                $0 != action && app.customShortcuts[$0.rawValue] == recordedShortcut
+            }) {
+                KeyboardShortcuts.setShortcut(
+                    app.customShortcuts[action.rawValue]?.keyboardShortcut,
+                    for: name(for: action)
+                )
+                clearConflicts(involving: action)
+                shortcutConflicts[action] = conflictingAction
+                return
+            }
+            clearConflicts(involving: action)
+            app.customShortcuts[action.rawValue] = recordedShortcut
         } else {
+            clearConflicts(involving: action)
             app.customShortcuts[action.rawValue] = nil
         }
         settings.appSettings = app
+    }
+
+    func clearAllShortcuts() {
+        for action in ShortcutAction.allCases {
+            KeyboardShortcuts.setShortcut(nil, for: name(for: action))
+        }
+        var app = settings.appSettings
+        app.customShortcuts.removeAll()
+        settings.appSettings = app
+        shortcutConflicts.removeAll()
+    }
+
+    private func clearConflicts(involving action: ShortcutAction) {
+        shortcutConflicts[action] = nil
+        let dependentActions = shortcutConflicts.compactMap { recordedAction, conflictingAction in
+            conflictingAction == action ? recordedAction : nil
+        }
+        for dependentAction in dependentActions {
+            shortcutConflicts[dependentAction] = nil
+        }
     }
 
     private func stableID(for action: ShortcutAction) -> String {

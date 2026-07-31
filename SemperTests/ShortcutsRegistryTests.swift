@@ -43,6 +43,29 @@ struct ShortcutsRegistryTests {
         #expect(hud.failureCalls == 0)
     }
 
+    @Test("dispatch uses the custom volume percentage")
+    func dispatchUsesCustomVolumePercentage() {
+        let settings = makeIsolatedSettings()
+        var appSettings = settings.appSettings
+        appSettings.volumeHotkeyStep = .custom
+        appSettings.customVolumeHotkeyStepPercent = 10
+        settings.appSettings = appSettings
+
+        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
+        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5)
+        let registry = makeRegistry(
+            settings: settings,
+            resolver: StubTargetResolver(target: "com.test.app"),
+            audioEngine: engine
+        )
+
+        registry.dispatch(.targetAppVolumeUp)
+
+        let nextSlider = sqrt(0.5) + 0.1
+        let expected = Float(nextSlider * nextSlider)
+        #expect(abs((engine.setVolumeCalls.first?.volume ?? 0) - expected) < 1e-5)
+    }
+
     @Test("dispatch(.targetAppVolumeDown) clamps at 0")
     func dispatchFrontmostVolumeDownClampsAtZero() {
         let app = makeAudioApp(id: 1, bundleID: "com.test.app")
@@ -255,6 +278,102 @@ struct ShortcutsRegistryTests {
         callback(nil)
 
         #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue] == nil)
+    }
+
+    @Test("recordCallback rejects a shortcut assigned to another Semper action")
+    func recordCallbackRejectsDuplicate() {
+        let settings = makeIsolatedSettings()
+        let duplicateShortcut = KeyboardShortcuts.Shortcut(
+            carbonKeyCode: 11,
+            carbonModifiers: 0x12_0000
+        )
+        let previousShortcut = KeyboardShortcuts.Shortcut(
+            carbonKeyCode: 9,
+            carbonModifiers: 0x18_0000
+        )
+        let duplicate = ShortcutCodable.from(duplicateShortcut)
+        let previous = ShortcutCodable.from(previousShortcut)
+        var app = settings.appSettings
+        app.customShortcuts[ShortcutAction.targetAppVolumeUp.rawValue] = duplicate
+        app.customShortcuts[ShortcutAction.togglePopup.rawValue] = previous
+        settings.appSettings = app
+
+        let registry = makeRegistry(settings: settings)
+        KeyboardShortcuts.setShortcut(duplicateShortcut, for: registry.name(for: .togglePopup))
+
+        registry.recordCallback(for: .togglePopup)(duplicateShortcut)
+
+        #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue] == previous)
+        #expect(registry.conflictingAction(for: .togglePopup) == .targetAppVolumeUp)
+        #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: .togglePopup)) == previous.keyboardShortcut)
+
+        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
+    }
+
+    @Test("recordCallback clears a prior conflict after a unique shortcut is recorded")
+    func recordCallbackClearsPriorConflict() {
+        let settings = makeIsolatedSettings()
+        let duplicate = ShortcutCodable(keyCode: 11, modifiers: 0x12_0000)
+        var app = settings.appSettings
+        app.customShortcuts[ShortcutAction.targetAppVolumeUp.rawValue] = duplicate
+        settings.appSettings = app
+
+        let registry = makeRegistry(settings: settings)
+        let callback = registry.recordCallback(for: .togglePopup)
+        callback(duplicate.keyboardShortcut)
+        callback(KeyboardShortcuts.Shortcut(carbonKeyCode: 9, carbonModifiers: 0x18_0000))
+
+        #expect(registry.conflictingAction(for: .togglePopup) == nil)
+        #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue]?.keyCode == 9)
+
+        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
+    }
+
+    @Test("clearAllShortcuts clears settings and KeyboardShortcuts storage")
+    func clearAllShortcuts() {
+        let settings = makeIsolatedSettings()
+        let first = ShortcutCodable(keyCode: 9, modifiers: 0x18_0000)
+        let second = ShortcutCodable(keyCode: 11, modifiers: 0x12_0000)
+        var app = settings.appSettings
+        app.customShortcuts[ShortcutAction.togglePopup.rawValue] = first
+        app.customShortcuts[ShortcutAction.targetAppVolumeUp.rawValue] = second
+        settings.appSettings = app
+
+        let registry = makeRegistry(settings: settings)
+        KeyboardShortcuts.setShortcut(first.keyboardShortcut, for: registry.name(for: .togglePopup))
+        KeyboardShortcuts.setShortcut(second.keyboardShortcut, for: registry.name(for: .targetAppVolumeUp))
+
+        registry.clearAllShortcuts()
+
+        #expect(settings.appSettings.customShortcuts.isEmpty)
+        #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: .togglePopup)) == nil)
+        #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: .targetAppVolumeUp)) == nil)
+    }
+
+    @Test("hasAssignedShortcuts detects KeyboardShortcuts storage not mirrored in settings")
+    func hasAssignedShortcutsDetectsLibraryStorage() {
+        let registry = makeRegistry()
+        let shortcut = KeyboardShortcuts.Shortcut(carbonKeyCode: 11, carbonModifiers: 0x12_0000)
+        KeyboardShortcuts.setShortcut(shortcut, for: registry.name(for: .togglePopup))
+
+        #expect(registry.hasAssignedShortcuts)
+
+        registry.clearAllShortcuts()
+        #expect(!registry.hasAssignedShortcuts)
+    }
+
+    @Test("targetAppOptions de-duplicates apps by bundle ID")
+    func targetAppOptionsDeduplicatesBundleIDs() {
+        let engine = RecordingAudioEngine(apps: [
+            makeAudioApp(id: 1, bundleID: "com.test.shared"),
+            makeAudioApp(id: 2, bundleID: "com.test.shared"),
+            makeAudioApp(id: 3, bundleID: "com.test.other"),
+        ])
+        let registry = makeRegistry(audioEngine: engine)
+
+        let options = registry.targetAppOptions()
+
+        #expect(options.map(\.bundleID).sorted() == ["com.test.other", "com.test.shared"])
     }
 
     // MARK: - Helpers
