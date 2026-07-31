@@ -929,36 +929,6 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
-.hero-footnote {
-  position: absolute;
-  bottom: 1.5rem;
-  left: var(--page-pad);
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.hero-footnote span {
-  font-family: var(--mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-}
-
-.hero-footnote span {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-}
-
-.hero-footnote p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 0.72rem;
-}
-
 .problem {
   padding-top: clamp(6rem, 12vw, 11rem);
   padding-bottom: clamp(6rem, 12vw, 11rem);
@@ -2920,10 +2890,6 @@ footer p:last-child {
   .hero-product {
     width: min(100%, 640px);
     margin: 0 auto;
-  }
-
-  .hero-footnote {
-    display: none;
   }
 
   .problem-heading,
