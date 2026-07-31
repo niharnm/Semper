@@ -10,6 +10,16 @@ Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
 
 <br clear="left"/>
 
+## Download
+
+Download the latest Semper release to your Downloads folder and open it:
+
+```bash
+curl -fL https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg -o "$HOME/Downloads/Semper.dmg" && open "$HOME/Downloads/Semper.dmg"
+```
+
+Drag **Semper** into **Applications** when the disk image opens.
+
 ## Architecture Highlights
 
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
@@ -29,7 +39,7 @@ Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
 ## Building from Source
 
 ```bash
-git clone https://github.com/semper-app/Semper.git
+git clone https://github.com/niharnm/Semper.git
 cd Semper
 open Semper.xcodeproj
 ```
