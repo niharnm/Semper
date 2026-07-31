@@ -13,7 +13,7 @@
 
 Native, per-application audio mixing and DSP engine for macOS. Semper resides in your menu bar, providing independent volume control, per-app output routing, ISO 226 equal-loudness contour compensation, AutoEQ headphone correction, and a Liquid Glass interface.
 
-[semper.systems](https://semper.systems)
+[semper.systems](https://www.semper.systems/)
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/niharm)
 

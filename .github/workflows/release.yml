@@ -298,7 +298,7 @@ jobs:
           appcast_args=(
             --ed-key-file -
             --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
-            --link "https://semper.systems"
+            --link "https://www.semper.systems/"
             --maximum-versions 6
             --maximum-deltas 0
             -o build/feed/appcast.xml

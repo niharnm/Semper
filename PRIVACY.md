@@ -4,7 +4,7 @@ Effective date: July 31, 2026
 
 Last updated: July 31, 2026
 
-Semper is an open-source macOS audio controller. This policy explains what the Semper app, the website at [semper.systems](https://semper.systems), and the project maintainers handle.
+Semper is an open-source macOS audio controller. This policy explains what the Semper app, the website at [semper.systems](https://www.semper.systems/), and the project maintainers handle.
 
 ## The short version
 
@@ -20,7 +20,7 @@ Semper is an open-source macOS audio controller. This policy explains what the S
 This policy applies to:
 
 - The Semper macOS app.
-- The website at [semper.systems](https://semper.systems).
+- The website at [semper.systems](https://www.semper.systems/).
 - Information you send directly to Semper maintainers about the project.
 
 It does not govern GitHub, Vercel, Apple, the AutoEq project, or other third-party services. Their own policies apply when you use them.

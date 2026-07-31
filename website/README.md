@@ -16,6 +16,22 @@ Run the dependency-free smoke check after changing links, assets, or sections:
 python3 scripts/check-website.py
 ```
 
+After changed pages are live, preview and send their canonical URLs to
+IndexNow:
+
+```bash
+python3 scripts/submit-indexnow.py --dry-run \
+  https://www.semper.systems/about.html
+python3 scripts/submit-indexnow.py \
+  https://www.semper.systems/about.html
+```
+
+Omit positional URLs to submit every URL in `website/sitemap.xml`.
+
+An HTTP 200 or 202 response confirms receipt, not crawling, indexing, ranking,
+or recommendation. The sitemap remains submitted separately in Google Search
+Console.
+
 Source, contribution, guide, and issue links point to
 `https://github.com/niharnm/Semper`.
 

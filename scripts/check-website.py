@@ -1,5 +1,7 @@
 import json
+import posixpath
 import re
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,6 +19,11 @@ CANONICALS = {
     "privacy.html": "https://www.semper.systems/privacy.html",
     "terms.html": "https://www.semper.systems/terms.html",
 }
+EXPECTED_SCHEMA_TYPES = {
+    "index.html": {"SoftwareApplication", "WebSite", "FAQPage"},
+    "about.html": {"AboutPage"},
+    "mac-volume-mixer.html": {"TechArticle"},
+}
 
 
 class SiteParser(HTMLParser):
@@ -24,9 +31,11 @@ class SiteParser(HTMLParser):
         super().__init__()
         self.ids: list[str] = []
         self.fragment_links: list[str] = []
+        self.local_html_links: list[str] = []
         self.local_assets: list[str] = []
         self.release_links: list[str] = []
         self.canonical: str | None = None
+        self.has_description = False
         self.has_robots_meta = False
         self.has_google_site_verification = False
 
@@ -41,6 +50,10 @@ class SiteParser(HTMLParser):
         href = values.get("href")
         if href and href.startswith("#"):
             self.fragment_links.append(href[1:])
+        if tag == "a" and href and not urlparse(href).scheme:
+            local_path = urlparse(href).path
+            if local_path:
+                self.local_html_links.append(local_path)
 
         src = values.get("src")
         if src and not urlparse(src).scheme and not src.startswith("/"):
@@ -55,6 +68,8 @@ class SiteParser(HTMLParser):
 
         if tag == "meta" and values.get("name") == "robots":
             self.has_robots_meta = True
+        if tag == "meta" and values.get("name") == "description":
+            self.has_description = bool((values.get("content") or "").strip())
         if tag == "meta" and values.get("name") == "google-site-verification":
             self.has_google_site_verification = bool(values.get("content"))
 
@@ -64,6 +79,22 @@ class SiteParser(HTMLParser):
 
 def fail(message: str) -> None:
     raise SystemExit(f"website check failed: {message}")
+
+
+def schema_types(value: object) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        item_type = value.get("@type")
+        if isinstance(item_type, str):
+            found.add(item_type)
+        elif isinstance(item_type, list):
+            found.update(item for item in item_type if isinstance(item, str))
+        for child in value.values():
+            found.update(schema_types(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(schema_types(child))
+    return found
 
 
 def check_html(filename: str, expected_canonical: str) -> SiteParser:
@@ -90,8 +121,24 @@ def check_html(filename: str, expected_canonical: str) -> SiteParser:
         if WEBSITE.resolve() not in asset.parents or not asset.is_file():
             fail(f"{filename} has a missing local asset: {relative_path}")
 
+    for relative_path in parser.local_html_links:
+        normalized_path = posixpath.normpath(
+            "/" + relative_path.lstrip("/")
+        )
+        if normalized_path == "/index.html":
+            fail(f"{filename} links to duplicate homepage path: {relative_path}")
+        if normalized_path == "/":
+            continue
+        target = (WEBSITE / normalized_path.lstrip("/")).resolve()
+        if WEBSITE.resolve() not in target.parents or not target.is_file():
+            fail(f"{filename} has a missing local page: {relative_path}")
+
     if parser.canonical != expected_canonical:
         fail(f"{filename} has an incorrect canonical URL")
+    if not re.search(r"<title>\s*\S.*?</title>", source, re.DOTALL | re.IGNORECASE):
+        fail(f"{filename} is missing a non-empty title")
+    if not parser.has_description:
+        fail(f"{filename} is missing a meta description")
     if not parser.has_robots_meta:
         fail(f"{filename} is missing a robots meta tag")
 
@@ -100,11 +147,21 @@ def check_html(filename: str, expected_canonical: str) -> SiteParser:
         source,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    found_schema_types: set[str] = set()
     for block in structured_data:
         try:
-            json.loads(block)
+            found_schema_types.update(schema_types(json.loads(block)))
         except json.JSONDecodeError as error:
             fail(f"{filename} contains invalid JSON-LD: {error}")
+
+    missing_schema_types = (
+        EXPECTED_SCHEMA_TYPES.get(filename, set()) - found_schema_types
+    )
+    if missing_schema_types:
+        fail(
+            f"{filename} is missing JSON-LD types: "
+            f"{', '.join(sorted(missing_schema_types))}"
+        )
 
     return parser
 
@@ -158,6 +215,33 @@ sitemap_urls = {
 }
 if sitemap_urls != set(CANONICALS.values()):
     fail("sitemap.xml does not match the canonical page set")
+for entry in sitemap.findall("sitemap:url", namespace):
+    last_modified = (
+        entry.findtext("sitemap:lastmod", namespaces=namespace) or ""
+    ).strip()
+    if last_modified.endswith("Z"):
+        last_modified = f"{last_modified[:-1]}+00:00"
+    try:
+        datetime.fromisoformat(last_modified)
+    except ValueError:
+        fail("sitemap.xml contains an invalid or missing lastmod date")
+
+vercel_config_path = WEBSITE / "vercel.json"
+if not vercel_config_path.is_file():
+    fail("missing website/vercel.json")
+try:
+    vercel_config = json.loads(vercel_config_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as error:
+    fail(f"website/vercel.json contains invalid JSON: {error}")
+if vercel_config.get("$schema") != "https://openapi.vercel.sh/vercel.json":
+    fail("website/vercel.json must use the official Vercel schema")
+homepage_redirect = {
+    "source": "/index.html",
+    "destination": "/",
+    "permanent": True,
+}
+if homepage_redirect not in vercel_config.get("redirects", []):
+    fail("website/vercel.json must redirect /index.html to /")
 
 llms = (WEBSITE / "llms.txt").read_text(encoding="utf-8")
 if "There is no packaged public release yet" not in llms:
