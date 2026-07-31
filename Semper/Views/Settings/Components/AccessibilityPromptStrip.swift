@@ -21,18 +21,29 @@ struct AccessibilityPromptStrip: View {
 
     var body: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            Image(systemName: showingGrantedFlourish ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                .font(.system(size: 12, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(iconColor)
-                .frame(width: 28, alignment: .center)
-                .contentTransition(.symbolEffect(.replace))
+            ZStack {
+                Circle()
+                    .fill(iconColor.opacity(0.14))
 
-            Text(message)
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                Image(systemName: showingGrantedFlourish ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(iconColor)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                Text(showingGrantedFlourish ? "Access Granted" : "Accessibility Required")
+                    .font(DesignTokens.Typography.rowName)
+                    .foregroundStyle(DesignTokens.Colors.textPrimary)
+
+                Text(message)
+                    .font(DesignTokens.Typography.caption)
+                    .foregroundStyle(DesignTokens.Colors.textTertiary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Spacer(minLength: DesignTokens.Spacing.xs)
 
@@ -41,20 +52,29 @@ struct AccessibilityPromptStrip: View {
             } else {
                 Button(action: { accessibility.requestAccess() }) {
                     HStack(spacing: 3) {
-                        Text("Grant")
+                        Text("Open Settings")
                         Image(systemName: "arrow.up.right.square")
                             .font(.system(size: 9, weight: .medium))
                     }
                     .font(DesignTokens.Typography.pickerText)
-                    .foregroundStyle(DesignTokens.Colors.accentPrimary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
                 .accessibilityHint("Registers Semper in the Accessibility list and opens System Settings.")
             }
         }
         .padding(.horizontal, DesignTokens.Spacing.md)
         .padding(.vertical, DesignTokens.Spacing.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                .fill(iconColor.opacity(0.07))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                .strokeBorder(iconColor.opacity(0.18), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
         .animation(
             reduceMotion ? .linear(duration: 0.15) : .spring(response: 0.35, dampingFraction: 0.85),
             value: showingGrantedFlourish
@@ -85,8 +105,8 @@ struct AccessibilityPromptStrip: View {
 
     private var message: String {
         showingGrantedFlourish
-            ? "Access granted — volume keys now control Semper."
-            : "Semper needs Accessibility to intercept F10 / F11 / F12."
+            ? "F10, F11, and F12 are ready to use."
+            : "Allow Semper to read F10, F11, and F12."
     }
 
     private func triggerGrantedFlourish() {
