@@ -49,6 +49,13 @@ struct AboutTab: View {
                     isPrimary: true
                 )
                 AboutLinkChip(
+                    label: "Support on Ko-fi",
+                    icon: "cup.and.saucer",
+                    hoverIcon: "cup.and.saucer.fill",
+                    hoverColor: .blue,
+                    url: DesignTokens.Links.koFi
+                )
+                AboutLinkChip(
                     label: "GPL-3.0",
                     icon: "doc.text",
                     hoverIcon: "doc.text.fill",
