@@ -72,6 +72,12 @@ xcodebuild \
 
 The output binary is placed at `build/Build/Products/Release/Semper.app`.
 
+Once Semper is installed, you can start an update from Terminal without opening Settings:
+
+```bash
+open "semper://update"
+```
+
 ## Documentation & Guides
 
 - [URL Schemes](guide/url-schemes.md)

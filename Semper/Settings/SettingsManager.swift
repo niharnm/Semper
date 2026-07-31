@@ -200,12 +200,21 @@ final class SettingsManager {
         }
     }
 
-    init(directory: URL? = nil, managesLaunchAtLogin: Bool = true) {
+    init(directory: URL? = nil, managesLaunchAtLogin: Bool = false) {
         let baseDir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Semper")
         self.managesLaunchAtLogin = managesLaunchAtLogin
         self.settingsURL = baseDir.appendingPathComponent("settings.json")
         self.settings = Settings()
+        let isFirstLaunch = !FileManager.default.fileExists(atPath: settingsURL.path)
         loadFromDisk()
+
+        if isFirstLaunch {
+            settings.appSettings.launchAtLogin = true
+            if self.managesLaunchAtLogin {
+                setLaunchAtLogin(true)
+            }
+            scheduleSave()
+        }
     }
 
     func getVolume(for identifier: String) -> Float? {

@@ -127,6 +127,8 @@ if index.release_links != ["https://github.com/niharnm/Semper/releases"]:
     fail("the release status link must point to the official releases page")
 if f'href="{KO_FI_URL}"' not in index_source:
     fail("index.html is missing the canonical Ko-fi fallback link")
+if 'open &quot;semper://update&quot;' not in index_source:
+    fail("index.html is missing the Terminal update command")
 
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
@@ -181,6 +183,8 @@ if "releases/latest/download/Semper.dmg" in readme:
     fail("README.md contains a broken packaged download link")
 if f"]({KO_FI_URL})" not in readme:
     fail("README.md is missing the canonical Ko-fi badge link")
+if 'open "semper://update"' not in readme:
+    fail("README.md is missing the Terminal update command")
 
 print(
     f"website check passed: {len(CANONICALS)} pages, "
