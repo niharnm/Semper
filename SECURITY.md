@@ -8,7 +8,7 @@ Security fixes are made for the latest release and the current `main` branch. Ol
 
 Do not open a public issue for an undisclosed vulnerability.
 
-Use the repository’s private vulnerability reporting feature. If that feature is not available, contact lead maintainer Nihar Manchikakapudi through a private contact method listed on the maintainer’s GitHub profile.
+Use the repository's [private vulnerability reporting form](https://github.com/niharnm/Semper/security/advisories/new). This sends the report privately to the maintainers.
 
 Include:
 

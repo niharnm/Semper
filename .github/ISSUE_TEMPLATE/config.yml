@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and usage questions
+    url: https://github.com/niharnm/Semper/discussions/categories/q-a
+    about: Ask about source builds, permissions, routing, devices, and current behavior.
+  - name: Early feature ideas
+    url: https://github.com/niharnm/Semper/discussions/categories/ideas
+    about: Discuss an idea and its tradeoffs before opening an implementation issue.
+  - name: Private security report
+    url: https://github.com/niharnm/Semper/security/advisories/new
+    about: Report an undisclosed security problem privately.
