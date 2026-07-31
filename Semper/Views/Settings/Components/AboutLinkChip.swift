@@ -92,7 +92,7 @@ struct AboutLinkChip: View {
             isPrimary: true
         )
         AboutLinkChip(
-            label: "Apache-2.0",
+            label: "GPL-3.0",
             icon: "doc.text",
             hoverIcon: "doc.text.fill",
             hoverColor: .orange,

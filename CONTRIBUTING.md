@@ -146,15 +146,15 @@ behavior.
 
 ## Authorship and licensing
 
-- Contributions are accepted under `Apache-2.0`.
+- Contributions are accepted under `GPL-3.0-only`.
 - You retain copyright in your original contribution. Semper does not require
   copyright assignment.
 - Use accurate commit authorship. Do not remove or rewrite another
   contributor's credit.
 - Disclose the source and license of copied or adapted material. Only submit
-  material that can legally be distributed under Apache 2.0.
+  material that can legally be distributed under GPLv3.
 - Preserve `LICENSE`, `NOTICE.md`, `AUTHORS.md`, and all applicable copyright
   notices.
 
 By submitting a contribution, you certify that you have the right to submit it
-under Apache 2.0.
+under GPLv3.

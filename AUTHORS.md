@@ -6,7 +6,12 @@
 
 ## Project history
 
-Semper is built as a native open-source audio controller for macOS.
+Semper began as a modified version of
+[FineTune](https://github.com/ronitsingh10/FineTune), created by
+**Ronit Singh**. FineTune supplied substantial parts of the original audio
+engine, models, settings, tests, and interface. Semper retains that origin and
+the GNU General Public License version 3 while adding its own product,
+engineering, design, documentation, and community work.
 
 ## Contributors
 

@@ -52,7 +52,7 @@ change.
 
 ## Attribution and license
 
-- [ ] I have the right to submit this work under `Apache-2.0`.
+- [ ] I have the right to submit this work under `GPL-3.0-only`.
 - [ ] I disclosed the source and license of copied or adapted material.
 - [ ] I preserved existing authorship, copyright, and notice information.
 - [ ] I added or updated tests when behavior changed.

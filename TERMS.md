@@ -8,9 +8,9 @@ These Terms of Use govern your use of the Semper macOS app, the website at [semp
 
 ## 1. Open-source license controls
 
-Semper's source code is offered under the Apache License 2.0 (`Apache-2.0`), as stated in the repository. The [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) governs your rights to use, reproduce, modify, and distribute covered source code and binaries.
+Semper's source code is offered under the GNU General Public License version 3 only (`GPL-3.0-only`), as stated in the repository. The [GNU GPL version 3](https://www.gnu.org/licenses/gpl-3.0.html) governs your rights to use, study, copy, modify, and distribute covered source code and binaries.
 
-These Terms do not replace, narrow, or add restrictions to rights granted by the Apache License. If these Terms conflict with the Apache License for covered software, the Apache License controls. Third-party code and data remain subject to their own notices and licenses.
+These Terms do not replace, narrow, or add restrictions to rights granted by the GPL. If these Terms conflict with the GPL for covered software, the GPL controls. Third-party code and data remain subject to their own notices and licenses.
 
 ## 2. Use of Semper
 
@@ -44,7 +44,7 @@ Unless a separate license says otherwise, these Terms do not grant rights to use
 
 ## 6. Contributions and community spaces
 
-Contributions are governed by [CONTRIBUTING.md](CONTRIBUTING.md), the repository's licensing notices, and the [Code of Conduct](CODE_OF_CONDUCT.md). You must have the right to submit your contribution. As described in the contribution guide, accepted contributions are provided under `Apache-2.0`, and contributors retain copyright in their original work.
+Contributions are governed by [CONTRIBUTING.md](CONTRIBUTING.md), the repository's licensing notices, and the [Code of Conduct](CODE_OF_CONDUCT.md). You must have the right to submit your contribution. As described in the contribution guide, accepted contributions are provided under `GPL-3.0-only`, and contributors retain copyright in their original work.
 
 GitHub hosts the repository and community activity. Your use of GitHub is also subject to the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service).
 
@@ -62,7 +62,7 @@ The [Semper Privacy Policy](PRIVACY.md) explains how the app, website, and maint
 
 To the fullest extent permitted by law, Semper, the website, release files, and project materials are provided "as is" and "as available," without warranties of any kind, express or implied. This includes warranties of merchantability, fitness for a particular purpose, title, non-infringement, accuracy, availability, security, and compatibility.
 
-Nothing in these Terms limits any warranty or right that applicable law does not allow to be excluded. The warranty terms in the Apache License also apply to Apache-licensed software.
+Nothing in these Terms limits any warranty or right that applicable law does not allow to be excluded. The warranty terms in the GPL also apply to GPL-covered software.
 
 ## 10. Limitation of liability
 

@@ -5,7 +5,7 @@
 Official website: https://www.semper.systems/
 Source repository: https://github.com/niharnm/Semper
 Maintainer: Nihar Manchikakapudi
-License: Apache-2.0
+License: GPL-3.0-only
 
 ## Current status
 
