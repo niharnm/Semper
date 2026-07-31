@@ -85,6 +85,7 @@
               <li>No Semper-controlled analytics or advertising.</li>
               <li>Audio is processed locally, not uploaded.</li>
               <li>Settings and AutoEQ data stay on your Mac.</li>
+              <li>Random test assignments stay on your Mac or in your browser.</li>
             </ul>
           </div>
         </section>
@@ -138,6 +139,14 @@
               locally. Semper also writes operational messages and errors to
               the macOS unified logging system. Those logs remain under macOS
               control unless you choose to share them.
+            </p>
+
+            <h3>Experiment assignments</h3>
+            <p>
+              The app stores a random identifier and assigned interface
+              variants in local preferences. The website stores a separate
+              random identifier and page variants in local browser storage.
+              Semper does not receive these values.
             </p>
 
             <p class="legal-note">
@@ -245,9 +254,13 @@
           <div class="legal-copy">
             <p>
               The Semper website does not add analytics scripts, advertising
-              trackers, account cookies, or marketing cookies. Vercel may still
-              use data needed to deliver, protect, and operate the hosted site
-              as described in its privacy notice.
+              trackers, account cookies, or marketing cookies. Its experiment
+              code stores a random identifier and assigned page variants in
+              local browser storage so the same browser keeps seeing the same
+              version. Experiment events remain inside the current page and are
+              not sent to Semper or an analytics provider. Vercel may still use
+              data needed to deliver, protect, and operate the hosted site as
+              described in its privacy notice.
             </p>
           </div>
         </section>
@@ -291,6 +304,14 @@
               <li>
                 Local settings remain until you reset, replace, or remove the
                 app's data.
+              </li>
+              <li>
+                Local app experiment assignments remain until you remove
+                Semper's preferences.
+              </li>
+              <li>
+                Website experiment assignments remain until you clear site data
+                for <code>semper.systems</code>.
               </li>
               <li>
                 AutoEQ downloads and imported profiles remain in the Semper

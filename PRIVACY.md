@@ -11,6 +11,7 @@ Semper is an open-source macOS audio controller. This policy explains what the S
 - Semper does not require an account.
 - Audio is processed on your Mac. Semper does not record captured audio to a file, upload it, or send it to the project maintainers.
 - App, device, routing, volume, EQ, and shortcut settings are stored locally on your Mac.
+- Experiment assignments use random, surface-local identifiers stored on your Mac or in your browser. Semper does not receive them.
 - Semper makes network requests only for features that need them, including fetching AutoEQ data from GitHub and checking for app updates when an update feed is configured and you request or allow a check.
 - The website has no Semper-controlled analytics, advertising, account system, contact form, or marketing cookies. Its host, Vercel, still receives ordinary web request data.
 
@@ -32,6 +33,7 @@ Semper handles the following information locally to provide its audio controls:
 - **Running app information.** This can include process identifiers, app names, bundle identifiers, icons, current audio activity, and the settings you assign to an app.
 - **Audio and Bluetooth device information.** This can include device names, device identifiers, transport type, capabilities, connection state, volume, mute state, and routing choices. Semper reads paired Bluetooth audio devices so you can connect them from the app.
 - **Preferences.** This includes per-app volume, mute, routing, boost, and EQ settings; device preferences; AutoEQ selections; imported EQ profiles; display choices; and keyboard shortcuts.
+- **Experiment assignments.** The app stores a random identifier and its assigned interface variants in local preferences. These values are not based on your Apple identity, hardware identifiers, apps, audio, or device settings.
 - **Diagnostics.** Semper writes operational messages and errors to the macOS unified logging system. These logs remain under macOS control unless you choose to share them.
 
 Semper stores its main settings and AutoEQ cache under `~/Library/Application Support/Semper`. macOS and included frameworks may also store preferences, such as shortcut and update settings, in the app's preferences domain.
@@ -67,7 +69,7 @@ The source repository, releases, issue tracker, pull requests, and AutoEQ downlo
 
 ## 5. Cookies and analytics
 
-The Semper website does not add analytics scripts, advertising trackers, account cookies, or marketing cookies. Vercel may still use data needed to deliver, protect, and operate the hosted site as described in its privacy notice.
+The Semper website does not add analytics scripts, advertising trackers, account cookies, or marketing cookies. Its experiment code stores a random identifier and assigned page variants in local browser storage so the same browser keeps seeing the same version. It emits experiment events only inside the current page; it does not send those identifiers, assignments, or events to Semper or an analytics provider. Vercel may still use data needed to deliver, protect, and operate the hosted site as described in its privacy notice.
 
 ## 6. Information you send to maintainers
 
@@ -78,6 +80,8 @@ Do not include private audio, credentials, or other sensitive information in a p
 ## 7. Retention and your choices
 
 - Local settings remain on your Mac until you reset them, replace them, or remove the app's data.
+- App experiment assignments remain in local preferences until you remove Semper's preferences.
+- Website experiment assignments remain until you clear site data for `semper.systems`.
 - AutoEQ downloads and imported profiles remain in the Semper Application Support folder until you remove them.
 - To remove local Semper data, quit Semper and delete `~/Library/Application Support/Semper`. You can also remove Semper preferences through macOS. Revoking permissions is a separate step in Privacy & Security settings.
 - Public GitHub activity is retained and controlled through GitHub. Website request data is retained by Vercel under its policies.
