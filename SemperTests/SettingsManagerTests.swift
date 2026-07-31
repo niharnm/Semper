@@ -6,6 +6,57 @@ import Testing
 import Foundation
 @testable import Semper
 
+@Suite("Settings persistence writer")
+struct SettingsPersistenceWriterTests {
+    @Test("Synchronous write waits for queued writes and completes last")
+    func synchronousWriteCompletesLast() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperTests-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("settings.json")
+        let olderData = Data("older".utf8)
+        let currentData = Data("current".utf8)
+        let olderWriteStarted = DispatchSemaphore(value: 0)
+        let releaseOlderWrite = DispatchSemaphore(value: 0)
+        let asyncWriteFailed = DispatchSemaphore(value: 0)
+        let flushFinished = DispatchSemaphore(value: 0)
+        let flushFailed = DispatchSemaphore(value: 0)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let writer = SettingsPersistenceWriter { data, destination in
+            if data == olderData {
+                olderWriteStarted.signal()
+                releaseOlderWrite.wait()
+            }
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: destination, options: .atomic)
+        }
+
+        writer.enqueue(olderData, to: url) { _ in
+            asyncWriteFailed.signal()
+        }
+        #expect(olderWriteStarted.wait(timeout: .now() + 2) == .success)
+
+        DispatchQueue.global().async {
+            do {
+                try writer.writeSynchronously(currentData, to: url)
+            } catch {
+                flushFailed.signal()
+            }
+            flushFinished.signal()
+        }
+
+        #expect(flushFinished.wait(timeout: .now() + 0.1) == .timedOut)
+        releaseOlderWrite.signal()
+        #expect(flushFinished.wait(timeout: .now() + 2) == .success)
+        #expect(asyncWriteFailed.wait(timeout: .now()) == .timedOut)
+        #expect(flushFailed.wait(timeout: .now()) == .timedOut)
+        #expect(try Data(contentsOf: url) == currentData)
+    }
+}
+
 // MARK: - Settings JSON Round-Trip
 
 @Suite("SettingsManager.Settings — JSON serialization")

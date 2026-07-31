@@ -15,6 +15,8 @@ Native, per-application audio mixing and DSP engine for macOS. Semper resides in
 
 [semper.systems](https://www.semper.systems/)
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/niharm)
+
 Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
 
 > [!IMPORTANT]
@@ -69,6 +71,12 @@ xcodebuild \
 ```
 
 The output binary is placed at `build/Build/Products/Release/Semper.app`.
+
+Once Semper is installed, you can start an update from Terminal without opening Settings:
+
+```bash
+open "semper://update"
+```
 
 ## Documentation & Guides
 

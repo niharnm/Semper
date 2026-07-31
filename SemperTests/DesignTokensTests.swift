@@ -117,3 +117,12 @@ struct DesignTokensTimingTests {
         #expect(DesignTokens.Timing.vuMeterPeakHold > 0)
     }
 }
+
+@Suite("DesignTokens — Links")
+struct DesignTokensLinkTests {
+
+    @Test("Ko-fi points to Nihar's page")
+    func koFiURL() {
+        #expect(DesignTokens.Links.koFi.absoluteString == "https://ko-fi.com/niharm")
+    }
+}

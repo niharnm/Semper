@@ -1,9 +1,13 @@
 // Semper/Views/Settings/Tabs/UpdatesTab.swift
 import SwiftUI
+import AppKit
 
 @MainActor
 struct UpdatesTab: View {
     @ObservedObject var updateManager: UpdateManager
+    @State private var copiedUpdateCommand = false
+
+    private let updateCommand = #"open "semper://update""#
 
     private var lastCheckDescription: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -15,10 +19,10 @@ struct UpdatesTab: View {
         return "Version \(version) · Never checked"
     }
 
-    private var automaticallyChecksBinding: Binding<Bool> {
+    private var automaticUpdatesBinding: Binding<Bool> {
         Binding(
-            get: { updateManager.automaticallyChecksForUpdates },
-            set: { updateManager.automaticallyChecksForUpdates = $0 }
+            get: { updateManager.automaticUpdatesEnabled },
+            set: { updateManager.setAutomaticUpdatesEnabled($0) }
         )
     }
 
@@ -55,9 +59,9 @@ struct UpdatesTab: View {
                     SettingsRowDivider()
                     SettingsRow(
                         "Automatic updates",
-                        description: "Check for new versions automatically"
+                        description: "Check for and download new versions automatically"
                     ) {
-                        Toggle("", isOn: automaticallyChecksBinding)
+                        Toggle("", isOn: automaticUpdatesBinding)
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .labelsHidden()
@@ -75,6 +79,20 @@ struct UpdatesTab: View {
                         .controlSize(.small)
                         .disabled(!updateManager.canCheckForUpdates)
                     }
+                    SettingsRowDivider()
+                    SettingsRow(
+                        "Terminal command",
+                        description: updateCommand
+                    ) {
+                        Button(action: copyUpdateCommand) {
+                            Image(systemName: copiedUpdateCommand ? "checkmark" : "doc.on.doc")
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(copiedUpdateCommand ? "Copied" : "Copy update command")
+                        .accessibilityLabel(copiedUpdateCommand ? "Update command copied" : "Copy update command")
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -82,5 +100,15 @@ struct UpdatesTab: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.never)
+    }
+
+    private func copyUpdateCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(updateCommand, forType: .string)
+        copiedUpdateCommand = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedUpdateCommand = false
+        }
     }
 }

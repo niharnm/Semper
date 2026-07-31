@@ -81,6 +81,49 @@ nonisolated struct AppSettings: Codable, Equatable {
     }
 }
 
+// MARK: - Settings Persistence
+
+nonisolated struct SettingsPersistenceWriter: Sendable {
+    typealias WriteData = @Sendable (Data, URL) throws -> Void
+
+    private let queue: DispatchQueue
+    private let writeData: WriteData
+
+    init(
+        label: String = "systems.semper.settings-persistence",
+        writeData: @escaping WriteData = Self.writeData
+    ) {
+        self.queue = DispatchQueue(label: label, qos: .utility)
+        self.writeData = writeData
+    }
+
+    func enqueue(
+        _ data: Data,
+        to url: URL,
+        onError: @escaping @Sendable (Error) -> Void
+    ) {
+        queue.async {
+            do {
+                try writeData(data, url)
+            } catch {
+                onError(error)
+            }
+        }
+    }
+
+    func writeSynchronously(_ data: Data, to url: URL) throws {
+        try queue.sync {
+            try writeData(data, url)
+        }
+    }
+
+    private static func writeData(_ data: Data, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+}
+
 // MARK: - Settings Manager
 
 @Observable
@@ -90,6 +133,7 @@ final class SettingsManager {
     private var saveTask: Task<Void, Never>?
     private let managesLaunchAtLogin: Bool
     private let settingsURL: URL
+    private let persistenceWriter = SettingsPersistenceWriter()
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
@@ -200,12 +244,21 @@ final class SettingsManager {
         }
     }
 
-    init(directory: URL? = nil, managesLaunchAtLogin: Bool = true) {
+    init(directory: URL? = nil, managesLaunchAtLogin: Bool = false) {
         let baseDir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Semper")
         self.managesLaunchAtLogin = managesLaunchAtLogin
         self.settingsURL = baseDir.appendingPathComponent("settings.json")
         self.settings = Settings()
+        let isFirstLaunch = !FileManager.default.fileExists(atPath: settingsURL.path)
         loadFromDisk()
+
+        if isFirstLaunch {
+            settings.appSettings.launchAtLogin = true
+            if self.managesLaunchAtLogin {
+                setLaunchAtLogin(true)
+            }
+            scheduleSave()
+        }
     }
 
     func getVolume(for identifier: String) -> Float? {
@@ -948,15 +1001,16 @@ final class SettingsManager {
             guard !Task.isCancelled else { return }
             let snapshot = settings
             let url = settingsURL
-            let data = try? JSONEncoder().encode(snapshot)
-            guard let data else { return }
-            Task.detached(priority: .utility) {
-                do {
-                    try Self.writeData(data, to: url)
-                } catch {
-                    // Avoid actor hops/logging on audio-critical paths; failures are
-                    // non-fatal and will retry on the next settings mutation.
-                }
+            let data: Data
+            do {
+                data = try JSONEncoder().encode(snapshot)
+            } catch {
+                logger.error("Failed to encode settings: \(error.localizedDescription)")
+                return
+            }
+            let logger = logger
+            persistenceWriter.enqueue(data, to: url) { error in
+                logger.error("Failed to save settings: \(error.localizedDescription)")
             }
         }
     }
@@ -972,18 +1026,12 @@ final class SettingsManager {
     private func writeToDisk() {
         do {
             let data = try JSONEncoder().encode(settings)
-            try Self.writeData(data, to: settingsURL)
+            try persistenceWriter.writeSynchronously(data, to: settingsURL)
 
             logger.debug("Saved settings")
         } catch {
             logger.error("Failed to save settings: \(error.localizedDescription)")
         }
-    }
-
-    private nonisolated static func writeData(_ data: Data, to url: URL) throws {
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
     }
 
     private func normalizedDeviceVolume(_ volume: Float) -> Float {
