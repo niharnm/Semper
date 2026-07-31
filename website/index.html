@@ -4,18 +4,51 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
+      name="google-site-verification"
+      content="XEhVdgJ3TCLP7MkWbvhphkTxlLy14vZU4th3NhgjpfU"
+    />
+    <meta
       name="description"
-      content="Semper is an open-source macOS menu-bar mixer for per-app volume, audio routing, EQ, and device control."
+      content="Semper is an open-source per-app volume mixer for macOS with audio routing, 10-band EQ, AutoEQ headphone correction, and local processing."
+    />
+    <meta
+      name="robots"
+      content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1"
     />
     <meta name="theme-color" content="#f2eee5" />
-    <meta property="og:title" content="Semper | Every app. Its own volume." />
+    <meta
+      property="og:title"
+      content="Semper | Per-App Volume Mixer for macOS"
+    />
     <meta
       property="og:description"
-      content="Native per-app audio control for macOS, built in the open."
+      content="Control each Mac app's volume, audio route, and EQ from one open-source menu-bar app."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:image" content="assets/semper-icon.png" />
-    <title>Semper | Every app. Its own volume.</title>
+    <meta property="og:site_name" content="Semper" />
+    <meta property="og:url" content="https://www.semper.systems/" />
+    <meta
+      property="og:image"
+      content="https://www.semper.systems/assets/semper-icon.png"
+    />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta property="og:image:alt" content="Semper app icon" />
+    <meta name="twitter:card" content="summary" />
+    <meta
+      name="twitter:title"
+      content="Semper | Per-App Volume Mixer for macOS"
+    />
+    <meta
+      name="twitter:description"
+      content="Open-source per-app volume, audio routing, and EQ for Mac."
+    />
+    <meta
+      name="twitter:image"
+      content="https://www.semper.systems/assets/semper-icon.png"
+    />
+    <link rel="canonical" href="https://www.semper.systems/" />
+    <title>Per-App Volume Mixer and Audio Routing for Mac | Semper</title>
     <link
       rel="icon"
       type="image/png"
@@ -34,6 +67,112 @@
       sizes="180x180"
       href="assets/semper-apple-touch-icon-v2.png"
     />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://www.semper.systems/#software",
+            "name": "Semper",
+            "alternateName": "Semper for macOS Audio",
+            "url": "https://www.semper.systems/",
+            "description": "Semper is an open-source macOS menu-bar app for per-app volume control, audio routing, equalization, and device control.",
+            "operatingSystem": "macOS 15.4 or later",
+            "applicationCategory": "MultimediaApplication",
+            "applicationSubCategory": "Per-app volume mixer and audio router",
+            "isAccessibleForFree": true,
+            "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+            "datePublished": "2026-07-31",
+            "author": {
+              "@id": "https://www.semper.systems/#maintainer"
+            },
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD",
+              "url": "https://github.com/niharnm/Semper",
+              "description": "Source code is available at no charge. No packaged public release has been published yet."
+            },
+            "featureList": [
+              "Per-app volume and mute",
+              "Per-app output routing",
+              "10-band per-app equalizer",
+              "AutoEQ headphone correction",
+              "ISO 226 equal-loudness compensation",
+              "Hardware-aware device controls"
+            ],
+            "sameAs": [
+              "https://github.com/niharnm/Semper"
+            ]
+          },
+          {
+            "@type": "Person",
+            "@id": "https://www.semper.systems/#maintainer",
+            "name": "Nihar Manchikakapudi",
+            "url": "https://github.com/niharnm",
+            "sameAs": [
+              "https://github.com/niharnm"
+            ]
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://www.semper.systems/#website",
+            "url": "https://www.semper.systems/",
+            "name": "Semper",
+            "publisher": {
+              "@id": "https://www.semper.systems/#maintainer"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://www.semper.systems/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "What is Semper?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Semper is an open-source macOS menu-bar app that gives each audio-producing app its own volume, mute, output route, and equalizer controls."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Does macOS include per-app volume control?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "macOS Sound settings provide output-device selection and overall output volume. Some apps have their own volume controls, but macOS does not provide one system mixer with independent sliders for every app."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Does Semper record or upload audio?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "No. Semper processes tapped app audio in memory on the Mac. The project does not intentionally save that audio to disk or upload it to Semper maintainers."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can I download a stable Semper release?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Not yet. The source code and build instructions are public, but no packaged public release has been published as of July 31, 2026."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can I contribute to Semper?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Semper welcomes focused pull requests for Swift, SwiftUI, Core Audio, tests, accessibility, device compatibility, and documentation. New contributors can start with a labeled starter issue on GitHub."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
     <script src="ab-testing.js"></script>
     <link rel="stylesheet" href="styles.css" />
     <script src="script.js" defer></script>
@@ -51,7 +190,7 @@
       <nav aria-label="Primary navigation">
         <a href="#control">Control</a>
         <a href="#sound">Sound</a>
-        <a href="#canary">Canary</a>
+        <a href="mac-volume-mixer.html">Guide</a>
         <a href="#source">Source</a>
       </nav>
 
@@ -72,14 +211,14 @@
       <section class="hero section" id="top" data-scene="hero">
         <div class="hero-copy">
           <h1>
-            Every app.
-            <em>Its own volume.</em>
+            Mac volume control,
+            <em>app by app.</em>
           </h1>
 
           <p class="hero-intro">
-            Semper puts a real mixer in your menu bar. Turn down a browser,
-            route a call to AirPods, tune your music, and leave everything else
-            alone.
+            Semper is an open-source per-app volume mixer for macOS. Turn down
+            a browser, route a call to AirPods, apply an EQ to Music, and leave
+            everything else alone.
           </p>
 
           <div class="hero-actions">
@@ -347,10 +486,6 @@
           </div>
         </div>
 
-        <div class="hero-footnote">
-          <span>01</span>
-          <p>One menu-bar app. No account. No cloud mixer.</p>
-        </div>
       </section>
 
       <section class="problem section" data-scene="problem">
@@ -672,25 +807,25 @@
         </p>
       </section>
 
-      <section class="canary section" id="canary" data-scene="canary">
+      <section class="canary section" id="release" data-scene="canary">
         <div class="canary-layout">
           <div class="canary-copy reveal">
-            <p class="kicker">Canary testing</p>
-            <h2>Try the next build before release.</h2>
+            <p class="kicker">Release status</p>
+            <h2>Packaged builds are still being prepared.</h2>
             <p>
-              Canary builds are signed, notarized prereleases from the latest
-              tested code. They may still regress audio routing, device
-              handling, or the menu-bar interface.
+              There is no public Semper DMG yet. The source, tests, and build
+              instructions are open now. Signed and notarized downloads will
+              appear on GitHub Releases when they are ready.
             </p>
             <div class="canary-actions">
               <a
                 class="button button-primary"
-                href="https://github.com/niharnm/Semper/releases?q=canary"
+                href="https://github.com/niharnm/Semper/releases"
                 target="_blank"
                 rel="noreferrer"
-                data-canary-download
+                data-release-status
               >
-                Browse Canary builds
+                Check GitHub Releases
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M4 12 12 4M6 4h6v6" />
                 </svg>
@@ -711,29 +846,29 @@
             <li>
               <span>01</span>
               <div>
-                <h3>Install the prerelease</h3>
-                <p>Download the newest Canary DMG from GitHub Releases.</p>
+                <h3>Inspect the source</h3>
+                <p>Review the Core Audio engine, SwiftUI app, tests, and guides.</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <h3>Confirm the channel</h3>
-                <p>Open Settings, then Updates. Select Canary if needed.</p>
+                <h3>Build it locally</h3>
+                <p>Use Xcode and follow the repository build instructions.</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <h3>Leave at any time</h3>
-                <p>Select Stable and check again after the next stable release.</p>
+                <h3>Watch for a release</h3>
+                <p>Use GitHub's Watch control to follow tagged builds.</p>
               </div>
             </li>
           </ol>
         </div>
         <p class="canary-note reveal">
-          Canary is for testing, not daily-critical audio. Include the Semper
-          version, macOS version, and audio device when reporting a problem.
+          Do not install a Semper DMG from an unofficial source. Public release
+          notes will include the supported macOS version and test status.
         </p>
       </section>
 
@@ -743,18 +878,18 @@
             <p class="kicker">Built in the open.</p>
             <h2>Open source. Join the work.</h2>
             <p>
-              Semper is a SwiftUI macOS project built on Core Audio process
-              taps. Read the code, report an issue, or contribute a focused
-              fix. The source, tests, guides, and issue tracker are open under
-              GPLv3.
+              Semper is actively looking for contributors. Help with Swift,
+              SwiftUI, Core Audio, tests, accessibility, device compatibility,
+              and technical writing. The source, tests, guides, and issue
+              tracker are open under GPLv3.
             </p>
             <a
               class="button button-light"
-              href="https://github.com/niharnm/Semper"
+              href="https://github.com/niharnm/Semper/contribute"
               target="_blank"
               rel="noreferrer"
             >
-              Browse the repository
+              Find a starter issue
               <svg viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M4 12 12 4M6 4h6v6" />
               </svg>
@@ -851,20 +986,79 @@
             Contributing <span aria-hidden="true">↗</span>
           </a>
           <a
-            href="https://github.com/niharnm/Semper/tree/main/guide"
+            href="https://github.com/niharnm/Semper/blob/main/ROADMAP.md"
             target="_blank"
             rel="noreferrer"
           >
-            Guides <span aria-hidden="true">↗</span>
+            Roadmap <span aria-hidden="true">↗</span>
           </a>
           <a
-            href="https://github.com/niharnm/Semper/issues"
+            href="https://github.com/niharnm/Semper/discussions"
             target="_blank"
             rel="noreferrer"
           >
-            Issues <span aria-hidden="true">↗</span>
+            Discussions <span aria-hidden="true">↗</span>
           </a>
         </div>
+      </section>
+
+      <section class="faq section" id="faq" data-scene="faq">
+        <div class="faq-heading reveal">
+          <p class="kicker">Semper facts</p>
+          <h2>What to know before you try it.</h2>
+        </div>
+        <div class="faq-grid">
+          <article class="faq-card reveal">
+            <h3>What is Semper?</h3>
+            <p>
+              Semper is an open-source macOS menu-bar app that gives each
+              audio-producing app its own volume, mute, output route, and
+              equalizer controls.
+            </p>
+          </article>
+          <article class="faq-card reveal">
+            <h3>Does macOS include per-app volume control?</h3>
+            <p>
+              macOS Sound settings provide output-device selection and overall
+              output volume. Some apps have their own controls, but macOS does
+              not provide one system mixer with independent sliders for every
+              app.
+            </p>
+          </article>
+          <article class="faq-card reveal">
+            <h3>Does Semper record or upload audio?</h3>
+            <p>
+              No. Semper processes tapped app audio in memory on the Mac. The
+              project does not intentionally save that audio to disk or upload
+              it to Semper maintainers.
+            </p>
+          </article>
+          <article class="faq-card reveal">
+            <h3>Can I download a stable Semper release?</h3>
+            <p>
+              Not yet. The source code and build instructions are public, but
+              no packaged public release has been published as of July 31,
+              2026.
+            </p>
+          </article>
+          <article class="faq-card reveal">
+            <h3>Can I contribute to Semper?</h3>
+            <p>
+              Yes. Pick a
+              <a href="https://github.com/niharnm/Semper/contribute"
+                >starter issue</a
+              >, read the
+              <a href="https://github.com/niharnm/Semper/blob/main/CONTRIBUTING.md"
+                >contributor guide</a
+              >, and comment on the issue before starting a larger change.
+            </p>
+          </article>
+        </div>
+        <p class="faq-more reveal">
+          Read the
+          <a href="mac-volume-mixer.html">per-app volume guide</a> or the
+          <a href="about.html">Semper fact sheet</a>.
+        </p>
       </section>
 
       <section class="final-cta section" data-scene="resolution">
@@ -929,7 +1123,9 @@
       </a>
       <div class="footer-middle">
         <p class="footer-tagline">Open-source audio control for macOS.</p>
-        <div class="footer-links" aria-label="Legal">
+        <div class="footer-links" aria-label="Resources and legal">
+          <a href="mac-volume-mixer.html">Guide</a>
+          <a href="about.html">About</a>
           <a href="privacy.html">Privacy</a>
           <a href="terms.html">Terms</a>
         </div>
