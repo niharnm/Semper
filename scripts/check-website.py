@@ -26,6 +26,7 @@ class SiteParser(HTMLParser):
         self.release_links: list[str] = []
         self.canonical: str | None = None
         self.has_robots_meta = False
+        self.has_google_site_verification = False
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
@@ -52,6 +53,8 @@ class SiteParser(HTMLParser):
 
         if tag == "meta" and values.get("name") == "robots":
             self.has_robots_meta = True
+        if tag == "meta" and values.get("name") == "google-site-verification":
+            self.has_google_site_verification = bool(values.get("content"))
 
         if "data-release-status" in values and href:
             self.release_links.append(href)
@@ -109,6 +112,9 @@ parsers = {
     for filename, canonical in CANONICALS.items()
 }
 index = parsers["index.html"]
+
+if not index.has_google_site_verification:
+    fail("index.html is missing the Google Search Console verification tag")
 
 for required_id in ("release", "faq"):
     if required_id not in index.ids:
