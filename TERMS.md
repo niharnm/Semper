@@ -4,7 +4,7 @@ Effective date: July 31, 2026
 
 Last updated: July 31, 2026
 
-These Terms of Use govern your use of the Semper macOS app, the website at [semper.systems](https://semper.systems), and project-provided release downloads. By accessing or using them, you agree to these terms. If you do not agree, do not use them.
+These Terms of Use govern your use of the Semper macOS app, the website at [semper.systems](https://www.semper.systems/), and project-provided release downloads. By accessing or using them, you agree to these terms. If you do not agree, do not use them.
 
 ## 1. Open-source license controls
 
