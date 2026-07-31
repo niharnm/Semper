@@ -53,14 +53,17 @@ class WebsiteCheckTests(unittest.TestCase):
     def test_lastmod_accepts_stripped_date_and_w3c_datetime(self) -> None:
         sitemap = self.root / "website" / "sitemap.xml"
         original = sitemap.read_text(encoding="utf-8")
-        marker = "<lastmod>2026-07-31</lastmod>"
 
         for value in (" 2026-07-31 ", " 2026-07-31T12:34:56Z "):
             with self.subTest(value=value):
-                sitemap.write_text(
-                    original.replace(marker, f"<lastmod>{value}</lastmod>", 1),
-                    encoding="utf-8",
+                source, replacements = re.subn(
+                    r"<lastmod>[^<]+</lastmod>",
+                    f"<lastmod>{value}</lastmod>",
+                    original,
+                    count=1,
                 )
+                self.assertEqual(replacements, 1)
+                sitemap.write_text(source, encoding="utf-8")
                 result = self.run_check()
                 self.assertEqual(result.returncode, 0, result.stderr)
 
