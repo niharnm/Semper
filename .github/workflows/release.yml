@@ -113,7 +113,6 @@ jobs:
           CERT_IDENTITY: ${{ secrets.CERT_IDENTITY }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           set -euo pipefail
           required=(
@@ -125,7 +124,6 @@ jobs:
             CERT_IDENTITY
             KEYCHAIN_PASSWORD
             SPARKLE_PRIVATE_ED_KEY
-            SPARKLE_PUBLIC_ED_KEY
           )
           for variable_name in "${required[@]}"; do
             if [[ -z "${!variable_name:-}" ]]; then
@@ -172,7 +170,6 @@ jobs:
       - name: Build archive
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           set -euo pipefail
           xcodebuild -project Semper.xcodeproj \
@@ -183,8 +180,7 @@ jobs:
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
             "MARKETING_VERSION=$VERSION" \
-            "SEMPER_DEFAULT_UPDATE_CHANNEL=$DEFAULT_UPDATE_CHANNEL" \
-            "SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_ED_KEY"
+            "SEMPER_DEFAULT_UPDATE_CHANNEL=$DEFAULT_UPDATE_CHANNEL"
 
       - name: Export archive
         run: |
