@@ -113,4 +113,4 @@ tests and a clear safety argument.
 
 Semper is distributed under the [GNU General Public License Version 3](LICENSE) (`GPL-3.0-only`).
 
-Copyright (C) 2026 Nihar Manchikakapudi and contributors.
+Copyright (C) 2026 Semper.
