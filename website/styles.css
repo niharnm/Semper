@@ -368,6 +368,11 @@ h2 em {
   fill: currentColor;
 }
 
+.kofi-widget {
+  display: flex;
+  align-items: center;
+}
+
 .experiment-label-treatment {
   display: none;
 }
@@ -2245,6 +2250,14 @@ h2 {
   margin-bottom: 2rem;
   color: var(--ink-soft);
   line-height: 1.6;
+}
+
+.final-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.8rem;
 }
 
 .download-command {
