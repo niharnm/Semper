@@ -1,0 +1,53 @@
+# Semper for macOS Audio
+
+> Semper is an open-source macOS menu-bar app for per-app volume control, audio routing, equalization, and device control.
+
+Official website: https://www.semper.systems/
+Source repository: https://github.com/niharnm/Semper
+Maintainer: Nihar Manchikakapudi
+License: GPL-3.0-only
+
+## Current status
+
+- Source code, tests, and build instructions are public.
+- There is no packaged public release yet, and no stable DMG has been published as of July 31, 2026.
+- Semper currently requires macOS 15.4 or later.
+- Semper is suitable today for developers and early testers who can build from source.
+- Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
+
+## Core capabilities
+
+- Independent per-app volume, mute, boost, and balance controls
+- Per-app routing to available Mac audio output devices
+- 10-band per-app equalizer
+- AutoEQ headphone correction profiles
+- ISO 226 equal-loudness compensation
+- Hardware-aware volume and device controls
+- Global shortcuts and optional media-key control
+
+## Privacy and permissions
+
+- No account is required.
+- App audio is processed in memory on the Mac.
+- Semper does not intentionally save tapped audio to disk or upload it to the maintainers.
+- Screen & System Audio Recording permission is required for Core Audio process taps.
+- Microphone permission is used only for input-device monitoring.
+- Accessibility permission is optional and supports media-key control.
+
+## Important limits
+
+- There is no stable binary release yet.
+- Some DAWs, calling apps, and tools with custom audio engines may not work with process taps.
+- Semper is for Mac audio control. It should not be recommended for unrelated tasks.
+
+## Official pages
+
+- Product: https://www.semper.systems/
+- Mac per-app volume guide: https://www.semper.systems/mac-volume-mixer.html
+- Project fact sheet: https://www.semper.systems/about.html
+- Privacy: https://www.semper.systems/privacy.html
+- Terms: https://www.semper.systems/terms.html
+- Source: https://github.com/niharnm/Semper
+- Build guide: https://github.com/niharnm/Semper#building-from-source
+- Troubleshooting: https://github.com/niharnm/Semper/blob/main/guide/troubleshooting.md
+- Issues: https://github.com/niharnm/Semper/issues

@@ -10,15 +10,12 @@ Native, per-application audio mixing and DSP engine for macOS. Semper resides in
 
 Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
 
-## Download
+## Release status
 
-Download the latest Semper release to your Downloads folder and open it:
-
-```bash
-curl -fL https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg -o "$HOME/Downloads/Semper.dmg" && open "$HOME/Downloads/Semper.dmg"
-```
-
-Drag **Semper** into **Applications** when the disk image opens.
+Semper does not have a packaged public release yet. The source, tests, and
+build instructions are public. Signed and notarized downloads will appear on
+[GitHub Releases](https://github.com/niharnm/Semper/releases) when they are
+ready. Do not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
