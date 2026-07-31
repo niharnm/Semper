@@ -941,8 +941,7 @@ input[type="range"]::-moz-range-thumb {
   gap: 1rem;
 }
 
-.hero-footnote span,
-.section-index {
+.hero-footnote span {
   font-family: var(--mono);
   font-size: 0.62rem;
   letter-spacing: 0.08em;
@@ -967,12 +966,6 @@ input[type="range"]::-moz-range-thumb {
   padding-top: clamp(6rem, 12vw, 11rem);
   padding-bottom: clamp(6rem, 12vw, 11rem);
   border-top: 1px solid var(--line);
-}
-
-.section-index {
-  margin-bottom: clamp(3rem, 8vw, 7rem);
-  color: currentColor;
-  opacity: 0.5;
 }
 
 .problem-heading {
