@@ -1,0 +1,111 @@
+name: Bug report
+description: Report reproducible incorrect behavior on the current source or a published release.
+title: "[Bug]: "
+labels:
+  - bug
+  - needs reproduction
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping Semper. Remove private device names, usernames, paths, and unrelated process data from logs before attaching them.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Per-app volume, mute, or boost
+        - Output routing or device switching
+        - EQ, AutoEQ, or loudness compensation
+        - Device volume, DDC, or balance
+        - Menu-bar interface or settings
+        - Media keys, shortcuts, or HUD
+        - Permissions, launch, or updates
+        - Website or documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Semper version or commit
+      description: Use a release version or the full commit SHA you built.
+      placeholder: 0d2bc990c22dafe104785e55e951e497cbf776c9
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac architecture
+      placeholder: macOS 15.5, Apple silicon
+    validations:
+      required: true
+  - type: textarea
+    id: audio_setup
+    attributes:
+      label: Audio setup
+      description: List affected apps, device classes, transports, aggregate or virtual devices, and relevant permissions. Do not include private device names.
+      placeholder: Safari audio routed from built-in output to a USB DAC; Screen & System Audio Recording enabled.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start audio in ...
+        2. Change ...
+        3. Disconnect ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options:
+        - Every time
+        - Often
+        - Sometimes
+        - Once
+    validations:
+      required: true
+  - type: dropdown
+    id: relaunch
+    attributes:
+      label: Does it still happen after relaunching Semper?
+      options:
+        - "Yes"
+        - "No"
+        - Not tested
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Focused diagnostics
+      description: Add only the smallest privacy-safe log excerpt, screenshot, or recording needed to explain the problem.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and discussions for this behavior.
+          required: true
+        - label: I reproduced this on the current main branch or named a published release.
+          required: true
+        - label: I removed private information from logs and attachments.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true
