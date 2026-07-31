@@ -10,13 +10,14 @@ struct GeneralTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                generalSection
-                menuBarSection
+            VStack(alignment: .leading, spacing: 18) {
+                behaviorSection
+                interfaceSection
                 dataSection
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 20)
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.never)
@@ -32,13 +33,13 @@ struct GeneralTab: View {
         }
     }
 
-    // MARK: - General
+    // MARK: - Behavior
 
-    private var generalSection: some View {
-        SettingsSection("General") {
+    private var behaviorSection: some View {
+        SettingsSection("Behavior", subtitle: "When Semper runs") {
             SettingsRow(
                 "Launch at Login",
-                description: "Start Semper when you log in"
+                description: "Keep the mixer ready after you sign in"
             ) {
                 Toggle("", isOn: $settings.appSettings.launchAtLogin)
                     .toggleStyle(.switch)
@@ -47,15 +48,8 @@ struct GeneralTab: View {
             }
             SettingsRowDivider()
             SettingsRow(
-                "Theme",
-                description: "Match macOS, or lock to Light or Dark"
-            ) {
-                ThemeTilePicker(selection: $settings.appSettings.appearance)
-            }
-            SettingsRowDivider()
-            SettingsRow(
                 "Device Disconnect Alerts",
-                description: "Show notification when an audio device disconnects"
+                description: "Notify you when an active output disappears"
             ) {
                 Toggle("", isOn: $settings.appSettings.showDeviceDisconnectAlerts)
                     .toggleStyle(.switch)
@@ -65,20 +59,27 @@ struct GeneralTab: View {
         }
     }
 
-    // MARK: - Menu Bar
+    // MARK: - Interface
 
-    private var menuBarSection: some View {
-        SettingsSection("Menu Bar") {
+    private var interfaceSection: some View {
+        SettingsSection("Interface", subtitle: "How Semper shows up") {
             SettingsRow(
-                "Icon Style",
-                description: "How Semper appears in your menu bar"
+                "Appearance",
+                description: "Follow macOS or choose a fixed look"
+            ) {
+                ThemeTilePicker(selection: $settings.appSettings.appearance)
+            }
+            SettingsRowDivider()
+            SettingsRow(
+                "Menu Bar Symbol",
+                description: "Pick a mark you can recognize at a glance"
             ) {
                 IconStyleSegmentedControl(selection: $settings.appSettings.menuBarIconStyle)
             }
             SettingsRowDivider()
             SettingsRow(
-                "Popup Size",
-                description: "Smaller fits more on screen; larger leaves more breathing room."
+                "Mixer Footprint",
+                description: "Set how much room the popup gives each control"
             ) {
                 PopupSizeTilePicker(selection: $settings.appSettings.popupSize)
             }
@@ -88,10 +89,10 @@ struct GeneralTab: View {
     // MARK: - Data
 
     private var dataSection: some View {
-        SettingsSection("Data") {
+        SettingsSection("Reset", subtitle: "Back to defaults") {
             SettingsRow(
-                "Reset All Settings",
-                description: "Clear all volumes, EQ, and device routings"
+                "Reset Semper",
+                description: "Clear saved volumes, EQ, and device routes"
             ) {
                 Button(role: .destructive) {
                     showResetConfirmation = true
