@@ -62,6 +62,8 @@ struct EditablePercentage: View {
                 // Display mode: tappable percentage
                 Text("\(percentage)%")
                     .font(DesignTokens.Typography.percentage)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .foregroundStyle(isHovered ? DesignTokens.Colors.textPrimary : textColor)
             }
         }

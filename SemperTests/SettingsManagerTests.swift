@@ -492,6 +492,16 @@ struct MenuBarIconStyleTests {
         }
     }
 
+    @Test("Styles have distinct symbols and display names")
+    func distinctPresentation() {
+        let iconNames = MenuBarIconStyle.allCases.map(\.iconName)
+        let displayNames = MenuBarIconStyle.allCases.map(\.displayName)
+
+        #expect(Set(iconNames).count == MenuBarIconStyle.allCases.count)
+        #expect(Set(displayNames).count == MenuBarIconStyle.allCases.count)
+        #expect(displayNames == ["Semper", "Volume", "Output", "Signal", "Levels"])
+    }
+
     @Test("Round-trip through JSON Codable")
     func codableRoundTrip() throws {
         for style in MenuBarIconStyle.allCases {

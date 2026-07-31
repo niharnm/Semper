@@ -13,14 +13,24 @@ enum MenuBarIconStyle: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var displayName: String {
+        switch self {
+        case .default: return "Semper"
+        case .speaker: return "Volume"
+        case .device: return "Output"
+        case .waveform: return "Signal"
+        case .equalizer: return "Levels"
+        }
+    }
+
     /// The SF Symbol used for this menu bar style.
     var iconName: String {
         switch self {
-        case .default: return "waveform.path"
-        case .speaker: return "speaker.wave.2.fill"
-        case .device: return "headphones"
-        case .waveform: return "waveform"
-        case .equalizer: return "slider.vertical.3"
+        case .default: return "infinity"
+        case .speaker: return "speaker.wave.2"
+        case .device: return "hifispeaker"
+        case .waveform: return "waveform.path.ecg"
+        case .equalizer: return "chart.bar.xaxis"
         }
     }
 
