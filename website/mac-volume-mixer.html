@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Learn how per-app volume control and audio routing work on Mac, what macOS provides, and how Semper adds a menu-bar mixer."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#f2eee5" />
+    <meta
+      property="og:title"
+      content="How to Control Volume Per App on Mac"
+    />
+    <meta
+      property="og:description"
+      content="A factual guide to Mac per-app volume, output routing, permissions, and Semper's current prerelease status."
+    />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Semper" />
+    <meta
+      property="og:url"
+      content="https://www.semper.systems/mac-volume-mixer.html"
+    />
+    <meta
+      property="og:image"
+      content="https://www.semper.systems/assets/semper-icon.png"
+    />
+    <meta name="twitter:card" content="summary" />
+    <link
+      rel="canonical"
+      href="https://www.semper.systems/mac-volume-mixer.html"
+    />
+    <title>How to Control Volume Per App on Mac | Semper</title>
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="assets/semper-favicon-v2-32.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="assets/semper-favicon-v2-16.png"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "@id": "https://www.semper.systems/mac-volume-mixer.html#article",
+        "url": "https://www.semper.systems/mac-volume-mixer.html",
+        "headline": "How to Control Volume Per App on Mac",
+        "description": "A factual guide to per-app volume control and audio routing on macOS.",
+        "datePublished": "2026-07-31",
+        "dateModified": "2026-07-31",
+        "author": {
+          "@type": "Person",
+          "name": "Nihar Manchikakapudi",
+          "url": "https://github.com/niharnm"
+        },
+        "publisher": {
+          "@type": "Person",
+          "name": "Nihar Manchikakapudi"
+        },
+        "about": {
+          "@type": "SoftwareApplication",
+          "@id": "https://www.semper.systems/#software",
+          "name": "Semper"
+        }
+      }
+    </script>
+  </head>
+  <body class="legal-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Semper home">
+        <img src="assets/semper-icon.png" alt="" width="36" height="36" />
+        <span>Semper</span>
+      </a>
+
+      <nav aria-label="Guide navigation">
+        <a href="/">Home</a>
+        <a href="mac-volume-mixer.html" aria-current="page">Guide</a>
+        <a href="about.html">About</a>
+      </nav>
+
+      <a
+        class="header-cta"
+        href="https://github.com/niharnm/Semper"
+        target="_blank"
+        rel="noreferrer"
+      >
+        View source
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4 12 12 4M6 4h6v6" />
+        </svg>
+      </a>
+    </header>
+
+    <main class="legal-main" id="main-content">
+      <section class="legal-hero">
+        <div>
+          <p class="kicker">macOS audio guide</p>
+          <h1>Control volume per app on Mac.</h1>
+        </div>
+        <div class="legal-intro">
+          <p>
+            macOS controls the selected output device and overall volume.
+            Semper adds one menu-bar mixer with separate controls for each app.
+          </p>
+          <div class="legal-meta">
+            <p>
+              <span>Updated</span>
+              <time datetime="2026-07-31">July 31, 2026</time>
+            </p>
+            <p>
+              <span>Requires</span>
+              <time datetime="2026-07-31">macOS 15.4+</time>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div class="legal-tabs" aria-label="Guide sections">
+        <a href="#macos">macOS</a>
+        <a href="#semper">Semper</a>
+        <a href="#routing">Routing</a>
+        <a href="#limits">Limits</a>
+      </div>
+
+      <article class="legal-document">
+        <section class="legal-section legal-summary" id="answer">
+          <div class="legal-section-heading">
+            <span>00</span>
+            <h2>Direct answer</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Mac users can change overall output volume in Sound settings and
+              use any volume control an individual app provides. macOS does not
+              include one built-in mixer with independent sliders and output
+              routes for every app. A process-tap utility such as Semper can
+              add those controls.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="macos">
+          <div class="legal-section-heading">
+            <span>01</span>
+            <h2>What macOS provides</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Apple's
+              <a
+                href="https://support.apple.com/guide/mac-help/mchlp2256/mac"
+                target="_blank"
+                rel="noreferrer"
+                >Sound settings guide</a
+              >
+              documents output-device selection, one output-volume slider,
+              mute, and balance. Apple also notes that an app's own volume
+              control cannot exceed the Mac's selected output volume.
+            </p>
+            <p>
+              Audio MIDI Setup configures devices, sample rates, channel
+              formats, and aggregate devices. Apple's
+              <a
+                href="https://support.apple.com/guide/audio-midi-setup/set-up-audio-devices-ams59f301fda/mac"
+                target="_blank"
+                rel="noreferrer"
+                >Audio MIDI Setup guide</a
+              >
+              does not describe a system-wide per-app volume mixer.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="semper">
+          <div class="legal-section-heading">
+            <span>02</span>
+            <h2>How Semper adds per-app volume</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Semper identifies processes that are producing audio and creates
+              an independent signal path for each one. The menu-bar popup then
+              controls gain, mute, boost, balance, EQ, and output routing for
+              that process.
+            </p>
+            <ol>
+              <li>
+                Clone the public repository and open the Xcode project.
+              </li>
+              <li>Build and run the Semper scheme on macOS 15.4 or later.</li>
+              <li>
+                Grant Screen &amp; System Audio Recording permission when
+                macOS asks for it, then relaunch Semper.
+              </li>
+              <li>Start audio in an app so it appears in the mixer.</li>
+              <li>Adjust that app without changing the other app sliders.</li>
+            </ol>
+            <pre><code>git clone https://github.com/niharnm/Semper.git
+cd Semper
+open Semper.xcodeproj</code></pre>
+            <p class="legal-note">
+              Semper has no packaged public release yet. Building from source
+              is the only official way to run it today.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="routing">
+          <div class="legal-section-heading">
+            <span>03</span>
+            <h2>Route different apps to different outputs</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Each app can follow the current system output or use another
+              available device. A call can use AirPods while music uses a
+              display or USB interface. Semper remembers explicit routing
+              choices and checks the capabilities of each output device.
+            </p>
+            <p>
+              Hardware behavior differs. Bluetooth headsets, HDMI displays,
+              USB DACs, built-in speakers, and DDC-capable monitors do not
+              expose the same controls, so Semper hides controls that the
+              current path cannot apply.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="permissions">
+          <div class="legal-section-heading">
+            <span>04</span>
+            <h2>Why Semper needs audio permission</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Screen &amp; System Audio Recording permission authorizes the
+              Core Audio process taps used for per-app control. Semper processes
+              tapped audio in memory and does not intentionally save or upload
+              it to the project maintainers.
+            </p>
+            <p>
+              Microphone permission supports input-device monitoring.
+              Accessibility permission is optional and supports media-key
+              control. Read the <a href="privacy.html">privacy policy</a> for
+              the full data-handling details.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="limits">
+          <div class="legal-section-heading">
+            <span>05</span>
+            <h2>Known limits</h2>
+          </div>
+          <div class="legal-copy">
+            <ul>
+              <li>There is no signed public DMG or stable release yet.</li>
+              <li>
+                Apps with custom audio engines can react badly to process taps.
+                This can include some DAWs, calling apps, and audio tools.
+              </li>
+              <li>
+                Only apps actively producing audio appear in the default mixer
+                list.
+              </li>
+              <li>
+                Device volume and routing support depends on the hardware and
+                transport.
+              </li>
+            </ul>
+            <p>
+              The repository
+              <a
+                href="https://github.com/niharnm/Semper/blob/main/guide/troubleshooting.md"
+                target="_blank"
+                rel="noreferrer"
+                >troubleshooting guide</a
+              >
+              covers permissions, missing apps, routing, media keys, and audio
+              quality.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section legal-source" id="source">
+          <div class="legal-section-heading">
+            <span>06</span>
+            <h2>Read or build the source</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Semper is published under GPL-3.0-only. The repository contains
+              the app, Core Audio engine, tests, setup guides, issue tracker,
+              and contribution rules.
+            </p>
+            <a
+              class="button button-primary"
+              href="https://github.com/niharnm/Semper"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Semper on GitHub
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M4 12 12 4M6 4h6v6" />
+              </svg>
+            </a>
+          </div>
+        </section>
+      </article>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="/">
+        <img src="assets/semper-icon.png" alt="" width="28" height="28" />
+        <span>Semper</span>
+      </a>
+      <div class="footer-middle">
+        <p class="footer-tagline">Open-source audio control for macOS.</p>
+        <div class="footer-links" aria-label="Resources and legal">
+          <a href="about.html">About</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="terms.html">Terms</a>
+        </div>
+      </div>
+      <p>© 2026 Semper · GPLv3</p>
+    </footer>
+  </body>
+</html>
