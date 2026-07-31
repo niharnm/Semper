@@ -33,6 +33,7 @@
       <nav aria-label="Primary navigation">
         <a href="#control">Control</a>
         <a href="#sound">Sound</a>
+        <a href="#canary">Canary</a>
         <a href="#source">Source</a>
       </nav>
 
@@ -644,6 +645,71 @@
         <p class="capability-note reveal">
           Capability-aware controls are not decoration. They keep the interface
           honest when the audio path changes.
+        </p>
+      </section>
+
+      <section class="canary section" id="canary" data-scene="canary">
+        <div class="canary-layout">
+          <div class="canary-copy reveal">
+            <p class="kicker">Canary testing</p>
+            <h2>Try the next build before release.</h2>
+            <p>
+              Canary builds are signed, notarized prereleases from the latest
+              tested code. They may still regress audio routing, device
+              handling, or the menu-bar interface.
+            </p>
+            <div class="canary-actions">
+              <a
+                class="button button-primary"
+                href="https://github.com/niharnm/Semper/releases?q=canary"
+                target="_blank"
+                rel="noreferrer"
+                data-canary-download
+              >
+                Browse Canary builds
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M4 12 12 4M6 4h6v6" />
+                </svg>
+              </a>
+              <a
+                class="text-link"
+                href="https://github.com/niharnm/Semper/issues/new"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Report a regression
+                <span aria-hidden="true">↗</span>
+              </a>
+            </div>
+          </div>
+
+          <ol class="canary-steps reveal">
+            <li>
+              <span>01</span>
+              <div>
+                <h3>Install the prerelease</h3>
+                <p>Download the newest Canary DMG from GitHub Releases.</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <h3>Confirm the channel</h3>
+                <p>Open Settings, then Updates. Select Canary if needed.</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <h3>Leave at any time</h3>
+                <p>Select Stable and check again after the next stable release.</p>
+              </div>
+            </li>
+          </ol>
+        </div>
+        <p class="canary-note reveal">
+          Canary is for testing, not daily-critical audio. Include the Semper
+          version, macOS version, and audio device when reporting a problem.
         </p>
       </section>
 

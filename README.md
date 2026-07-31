@@ -64,6 +64,7 @@ The output binary is placed at `build/Build/Products/Release/Semper.app`.
 
 - [URL Schemes](guide/url-schemes.md)
 - [AutoEQ Integration](guide/autoeq.md)
+- [Canary Testing](guide/canary.md)
 - [Troubleshooting](guide/troubleshooting.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
 

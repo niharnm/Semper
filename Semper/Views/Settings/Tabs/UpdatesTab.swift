@@ -22,22 +22,35 @@ struct UpdatesTab: View {
         )
     }
 
+    private var channelDescription: String {
+        guard updateManager.isConfigured else {
+            return "Not configured for this build"
+        }
+        switch updateManager.updateChannel {
+        case .stable:
+            return "Tested releases recommended for most people"
+        case .canary:
+            return "Pre-release builds that may contain unfinished changes"
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 SettingsSection("Software Updates") {
                     SettingsRow(
                         "Update channel",
-                        description: updateManager.isConfigured
-                            ? "Signed updates are configured"
-                            : "Not configured for this build"
+                        description: channelDescription
                     ) {
-                        Image(systemName: updateManager.isConfigured ? "checkmark.circle.fill" : "info.circle")
-                            .foregroundStyle(
-                                updateManager.isConfigured
-                                    ? DesignTokens.Colors.systemGreen
-                                    : DesignTokens.Colors.textSecondary
-                            )
+                        Picker("", selection: $updateManager.updateChannel) {
+                            ForEach(UpdateChannel.allCases) { channel in
+                                Text(channel.title).tag(channel)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
+                        .labelsHidden()
+                        .disabled(!updateManager.isConfigured)
                     }
                     SettingsRowDivider()
                     SettingsRow(
