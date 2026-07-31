@@ -68,6 +68,11 @@ The output binary is placed at `build/Build/Products/Release/Semper.app`.
 - [Troubleshooting](guide/troubleshooting.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
 
+## Legal
+
+- [Privacy Policy](PRIVACY.md)
+- [Terms of Use](TERMS.md)
+
 ## License
 
 Semper is distributed under the [GNU General Public License Version 3](LICENSE) (`GPL-3.0-only`).
