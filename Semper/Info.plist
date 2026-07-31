@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Semper needs access to control volume levels for individual applications.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Semper needs microphone access to capture audio from apps using input-capable devices.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Semper uses Bluetooth to connect paired audio devices from the menu bar.</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>semper</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>systems.semper.Semper</string>
+		</dict>
+	</array>
+</dict>
+</plist>

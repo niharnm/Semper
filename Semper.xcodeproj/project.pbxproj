@@ -1,0 +1,702 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		140F6FF7C7CD8F6C1D73121E /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 75DA616DEB24648C4BDE9092 /* KeyboardShortcuts */; };
+		7980FFE92F261AA200AF5F85 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 79SPARK012F0600000008D52 /* Sparkle */; };
+		79B1000B2F35000000000002 /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79B1000A2F35000000000001 /* IOBluetooth.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
+		79C80E5A2F12FF510021442B /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = 79SNAP0012F0600000008D52A /* SnapshotTesting */; };
+		79FLUID0012F0600000008D52 /* FluidMenuBarExtra in Frameworks */ = {isa = PBXBuildFile; productRef = 79FLUID0022F0600000008D52 /* FluidMenuBarExtra */; };
+		D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = C18F337FFBE2D40467959144 /* KeyboardShortcuts */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		79A607BD2F05C9E10008D52A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 79A607A72F05C9E00008D52A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 79A607AE2F05C9E00008D52A;
+			remoteInfo = Semper;
+		};
+		79A607C72F05C9E10008D52A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 79A607A72F05C9E00008D52A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 79A607AE2F05C9E00008D52A;
+			remoteInfo = Semper;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		79A607AF2F05C9E00008D52A /* Semper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Semper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		79A607BC2F05C9E10008D52A /* SemperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SemperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		79A607C62F05C9E10008D52A /* SemperUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SemperUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		79B1000A2F35000000000001 /* IOBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOBluetooth.framework; path = System/Library/Frameworks/IOBluetooth.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		790000012F70000000000001 /* Exceptions for "Semper" folder in "Semper" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 79A607AE2F05C9E00008D52A /* Semper */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		79A607B12F05C9E00008D52A /* Semper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				790000012F70000000000001 /* Exceptions for "Semper" folder in "Semper" target */,
+			);
+			path = Semper;
+			sourceTree = "<group>";
+		};
+		79A607BF2F05C9E10008D52A /* SemperTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SemperTests;
+			sourceTree = "<group>";
+		};
+		79A607C92F05C9E10008D52A /* SemperUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = SemperUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		79A607AC2F05C9E00008D52A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				79B1000B2F35000000000002 /* IOBluetooth.framework in Frameworks */,
+				7980FFE92F261AA200AF5F85 /* Sparkle in Frameworks */,
+				79FLUID0012F0600000008D52 /* FluidMenuBarExtra in Frameworks */,
+				140F6FF7C7CD8F6C1D73121E /* KeyboardShortcuts in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607B92F05C9E10008D52A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				79C80E5A2F12FF510021442B /* SnapshotTesting in Frameworks */,
+				D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607C32F05C9E10008D52A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		795C94762F4FF3BC004F0492 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				79B1000A2F35000000000001 /* IOBluetooth.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		79A607A62F05C9E00008D52A = {
+			isa = PBXGroup;
+			children = (
+				79A607B12F05C9E00008D52A /* Semper */,
+				79A607BF2F05C9E10008D52A /* SemperTests */,
+				79A607C92F05C9E10008D52A /* SemperUITests */,
+				79A607B02F05C9E00008D52A /* Products */,
+				795C94762F4FF3BC004F0492 /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+		79A607B02F05C9E00008D52A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				79A607AF2F05C9E00008D52A /* Semper.app */,
+				79A607BC2F05C9E10008D52A /* SemperTests.xctest */,
+				79A607C62F05C9E10008D52A /* SemperUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		79A607AE2F05C9E00008D52A /* Semper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 79A607D02F05C9E10008D52A /* Build configuration list for PBXNativeTarget "Semper" */;
+			buildPhases = (
+				79A607AB2F05C9E00008D52A /* Sources */,
+				79A607AC2F05C9E00008D52A /* Frameworks */,
+				79A607AD2F05C9E00008D52A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				79A607B12F05C9E00008D52A /* Semper */,
+			);
+			name = Semper;
+			packageProductDependencies = (
+				79FLUID0022F0600000008D52 /* FluidMenuBarExtra */,
+				79SPARK012F0600000008D52 /* Sparkle */,
+				75DA616DEB24648C4BDE9092 /* KeyboardShortcuts */,
+			);
+			productName = Semper;
+			productReference = 79A607AF2F05C9E00008D52A /* Semper.app */;
+			productType = "com.apple.product-type.application";
+		};
+		79A607BB2F05C9E10008D52A /* SemperTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 79A607D32F05C9E10008D52A /* Build configuration list for PBXNativeTarget "SemperTests" */;
+			buildPhases = (
+				79A607B82F05C9E10008D52A /* Sources */,
+				79A607B92F05C9E10008D52A /* Frameworks */,
+				79A607BA2F05C9E10008D52A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				79A607BE2F05C9E10008D52A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				79A607BF2F05C9E10008D52A /* SemperTests */,
+			);
+			name = SemperTests;
+			packageProductDependencies = (
+				79SNAP0012F0600000008D52A /* SnapshotTesting */,
+				C18F337FFBE2D40467959144 /* KeyboardShortcuts */,
+			);
+			productName = SemperTests;
+			productReference = 79A607BC2F05C9E10008D52A /* SemperTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		79A607C52F05C9E10008D52A /* SemperUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 79A607D62F05C9E10008D52A /* Build configuration list for PBXNativeTarget "SemperUITests" */;
+			buildPhases = (
+				79A607C22F05C9E10008D52A /* Sources */,
+				79A607C32F05C9E10008D52A /* Frameworks */,
+				79A607C42F05C9E10008D52A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				79A607C82F05C9E10008D52A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				79A607C92F05C9E10008D52A /* SemperUITests */,
+			);
+			name = SemperUITests;
+			productName = SemperUITests;
+			productReference = 79A607C62F05C9E10008D52A /* SemperUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		79A607A72F05C9E00008D52A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2610;
+				TargetAttributes = {
+					79A607AE2F05C9E00008D52A = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					79A607BB2F05C9E10008D52A = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 79A607AE2F05C9E00008D52A;
+					};
+					79A607C52F05C9E10008D52A = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 79A607AE2F05C9E00008D52A;
+					};
+				};
+			};
+			buildConfigurationList = 79A607AA2F05C9E00008D52A /* Build configuration list for PBXProject "Semper" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 79A607A62F05C9E00008D52A;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
+				79FLUID0002F0600000008D52 /* XCRemoteSwiftPackageReference "FluidMenuBarExtra" */,
+				79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 79A607B02F05C9E00008D52A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				79A607AE2F05C9E00008D52A /* Semper */,
+				79A607BB2F05C9E10008D52A /* SemperTests */,
+				79A607C52F05C9E10008D52A /* SemperUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		79A607AD2F05C9E00008D52A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607BA2F05C9E10008D52A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607C42F05C9E10008D52A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		79A607AB2F05C9E00008D52A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607B82F05C9E10008D52A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		79A607C22F05C9E10008D52A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		79A607BE2F05C9E10008D52A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 79A607AE2F05C9E00008D52A /* Semper */;
+			targetProxy = 79A607BD2F05C9E10008D52A /* PBXContainerItemProxy */;
+		};
+		79A607C82F05C9E10008D52A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 79A607AE2F05C9E00008D52A /* Semper */;
+			targetProxy = 79A607C72F05C9E10008D52A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		79A607CE2F05C9E10008D52A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		79A607CF2F05C9E10008D52A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		79A607D12F05C9E10008D52A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = SemperIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Semper/Semper.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Semper/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Nihar Manchikakapudi and contributors.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -D ENABLE_TCC_SPI";
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.Semper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		79A607D22F05C9E10008D52A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = SemperIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Semper/Semper.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Semper/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Nihar Manchikakapudi and contributors.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_SWIFT_FLAGS = "$(inherited) -D ENABLE_TCC_SPI";
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.Semper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		79A607D42F05C9E10008D52A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.SemperTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Semper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Semper";
+			};
+			name = Debug;
+		};
+		79A607D52F05C9E10008D52A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.4;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.SemperTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Semper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Semper";
+			};
+			name = Release;
+		};
+		79A607D72F05C9E10008D52A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.SemperUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Semper;
+			};
+			name = Debug;
+		};
+		79A607D82F05C9E10008D52A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = systems.semper.SemperUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Semper;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		79A607AA2F05C9E00008D52A /* Build configuration list for PBXProject "Semper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79A607CE2F05C9E10008D52A /* Debug */,
+				79A607CF2F05C9E10008D52A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		79A607D02F05C9E10008D52A /* Build configuration list for PBXNativeTarget "Semper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79A607D12F05C9E10008D52A /* Debug */,
+				79A607D22F05C9E10008D52A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		79A607D32F05C9E10008D52A /* Build configuration list for PBXNativeTarget "SemperTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79A607D42F05C9E10008D52A /* Debug */,
+				79A607D52F05C9E10008D52A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		79A607D62F05C9E10008D52A /* Build configuration list for PBXNativeTarget "SemperUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79A607D72F05C9E10008D52A /* Debug */,
+				79A607D82F05C9E10008D52A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+		79FLUID0002F0600000008D52 /* XCRemoteSwiftPackageReference "FluidMenuBarExtra" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/wadetregaskis/FluidMenuBarExtra";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+		79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.15.0;
+			};
+		};
+		79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		75DA616DEB24648C4BDE9092 /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
+		};
+		79FLUID0022F0600000008D52 /* FluidMenuBarExtra */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 79FLUID0002F0600000008D52 /* XCRemoteSwiftPackageReference "FluidMenuBarExtra" */;
+			productName = FluidMenuBarExtra;
+		};
+		79SNAP0012F0600000008D52A /* SnapshotTesting */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
+			productName = SnapshotTesting;
+		};
+		79SPARK012F0600000008D52 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+		C18F337FFBE2D40467959144 /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 79A607A72F05C9E00008D52A /* Project object */;
+}

@@ -1,0 +1,153 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-26
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install create-dmg dependencies
+        run: brew install graphicsmagick imagemagick
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+
+          # Decode certificate
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate to keychain
+          security import $RUNNER_TEMP/certificate.p12 \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Allow codesign to access the certificate
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add keychain to search list (prepend to ensure it's found first)
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
+
+          # Verify certificate is available
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Update ExportOptions with Team ID
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          sed -i '' "s/TEAM_ID_PLACEHOLDER/$APPLE_TEAM_ID/g" ExportOptions.plist
+          cat ExportOptions.plist
+
+      - name: Set version from tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Setting version to $VERSION"
+
+          # Update MARKETING_VERSION (e.g., 1.1.0)
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $VERSION/g" Semper.xcodeproj/project.pbxproj
+
+          # Update CURRENT_PROJECT_VERSION (build number) using run number for uniqueness
+          BUILD_NUMBER=${{ github.run_number }}
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUMBER/g" Semper.xcodeproj/project.pbxproj
+
+          echo "Version: $VERSION, Build: $BUILD_NUMBER"
+
+      - name: Build archive
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild -project Semper.xcodeproj \
+            -scheme Semper \
+            -configuration Release \
+            -archivePath build/Semper.xcarchive \
+            archive \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+
+      - name: Export archive
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/Semper.xcarchive \
+            -exportPath build/ \
+            -exportOptionsPlist ExportOptions.plist
+
+          # Verify the app is signed
+          codesign -dv --verbose=4 build/Semper.app
+
+      - name: Create DMG
+        run: |
+          # create-dmg creates a nicely formatted DMG with Applications symlink
+          npx create-dmg build/Semper.app build/ --overwrite || true
+
+          DMG_NAME="Semper.dmg"
+
+          # Find and rename the created DMG (create-dmg names it "AppName Version.dmg")
+          mv build/*.dmg "build/${DMG_NAME}"
+
+          echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
+          echo "Created: build/${DMG_NAME}"
+
+      - name: Sign DMG
+        env:
+          CERT_IDENTITY: ${{ secrets.CERT_IDENTITY }}
+        run: |
+          # Sign the DMG with Developer ID
+          codesign --force --sign "$CERT_IDENTITY" "build/$DMG_NAME"
+
+          # Verify signature
+          codesign -dv --verbose=2 "build/$DMG_NAME"
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Submit DMG for notarization and wait for result
+          xcrun notarytool submit "build/$DMG_NAME" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the DMG
+          xcrun stapler staple "build/$DMG_NAME"
+
+          # Verify stapling
+          xcrun stapler validate "build/$DMG_NAME"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Semper.dmg
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

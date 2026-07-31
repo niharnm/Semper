@@ -1,0 +1,261 @@
+// Semper/SemperApp.swift
+import SwiftUI
+import UserNotifications
+import FluidMenuBarExtra
+import AppKit
+import os
+
+private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    var audioEngine: AudioEngine?
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let audioEngine = audioEngine else {
+            return
+        }
+        let urlHandler = URLHandler(audioEngine: audioEngine)
+
+        for url in urls {
+            urlHandler.handleURL(url)
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner])
+    }
+
+    /// LSUIElement agent — closing the Settings window must not terminate the app.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
+
+@main
+struct SemperApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var audioEngine: AudioEngine
+    @State private var accessibility: AccessibilityPermissionService
+    @State private var mediaKeyStatus: MediaKeyStatus
+    @State private var popupVisibility: PopupVisibilityService
+    @State private var hudController: HUDWindowController
+    @State private var mediaKeyMonitor: MediaKeyMonitor
+    @State private var feedbackPlayer: VolumeFeedbackPlayer
+    @State private var iconCoordinator: MenuBarIconCoordinator
+    @State private var menuBarPopupController: MenuBarPopupController
+    @State private var shortcutsRegistry: ShortcutsRegistry
+    @State private var resolver: TargetAppResolver
+    @StateObject private var updateManager = UpdateManager()
+    @State private var showMenuBarExtra = true
+
+    /// Snapshot icon computed at launch from the user's chosen style and the current
+    /// default-device volume/mute. The coordinator keeps it in sync afterwards.
+    private let launchIconImage: NSImage
+
+    var body: some Scene {
+        // Declared before FluidMenuBarExtra so this Settings scene wins over
+        // FluidMenuBarExtra's `Settings {}` placeholder. Both ⌘, and the
+        // gear button route here via openSettings().
+        Settings {
+            SettingsRootView(
+                settings: audioEngine.settingsManager,
+                audioEngine: audioEngine,
+                deviceVolumeMonitor: audioEngine.deviceVolumeMonitor as! DeviceVolumeMonitor,
+                accessibility: accessibility,
+                mediaKeyStatus: mediaKeyStatus,
+                mediaKeyMonitor: mediaKeyMonitor,
+                shortcutsRegistry: shortcutsRegistry,
+                updateManager: updateManager
+            )
+        }
+        FluidMenuBarExtra("Semper", image: launchIconImage, isInserted: $showMenuBarExtra) {
+            menuBarContent
+        }
+    }
+
+    @ViewBuilder
+    private var menuBarContent: some View {
+        // `deviceVolumeMonitor` is declared as `any DeviceVolumeProviding` on
+        // AudioEngine so tests can inject mocks; in production it's always the
+        // concrete `DeviceVolumeMonitor` that this view consumes directly.
+        MenuBarPopupView(
+            audioEngine: audioEngine,
+            deviceVolumeMonitor: audioEngine.deviceVolumeMonitor as! DeviceVolumeMonitor,
+            updateManager: updateManager,
+            permission: audioEngine.permission,
+            accessibility: accessibility,
+            mediaKeyStatus: mediaKeyStatus,
+            popupVisibility: popupVisibility,
+            hudController: hudController,
+            mediaKeyMonitor: mediaKeyMonitor
+        )
+        .task {
+            // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
+            shortcutsRegistry.start()
+        }
+    }
+
+    init() {
+        // Install crash handler to clean up aggregate devices on abnormal exit
+        CrashGuard.install()
+        // Destroy any orphaned aggregate devices from previous crashes
+        OrphanedTapCleanup.destroyOrphanedDevices()
+
+        let settings = SettingsManager()
+        let profileManager = AutoEQProfileManager()
+        let permission = AudioRecordingPermission()
+        let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
+        _audioEngine = State(initialValue: engine)
+
+        // Media keys / HUD services — instantiated at app scope so the tap
+        // and HUD panel outlive popup open/close cycles.
+        let accessibilityService = AccessibilityPermissionService()
+        let statusService = MediaKeyStatus()
+        let popupService = PopupVisibilityService()
+        let hud = HUDWindowController(settingsManager: settings, mediaKeyStatus: statusService, popupVisibility: popupService)
+        let feedbackPlayer = VolumeFeedbackPlayer()
+
+        // Wire the interactive Tahoe slider back to the device volume monitor.
+        // Mirrors the mute semantics applied for media-key drags (auto-unmute
+        // when ramping above 0 from muted; auto-mute when dragging down to 0)
+        // so the HUD slider and F11/F12 behave identically.
+        hud.volumeWriter = { [weak engine] sliderFraction in
+            guard let engine else { return }
+            let volumeMonitor = engine.deviceVolumeMonitor
+            let deviceID = volumeMonitor.defaultDeviceID
+            guard deviceID.isValid else { return }
+            let tier = volumeMonitor.outputVolumeBackend(for: deviceID)
+            let currentMute = volumeMonitor.muteStates[deviceID] ?? false
+            let willBeSilent = sliderFraction <= 0.001
+            if currentMute && !willBeSilent {
+                volumeMonitor.setMute(for: deviceID, to: false)
+            } else if !currentMute && willBeSilent {
+                volumeMonitor.setMute(for: deviceID, to: true)
+            }
+            let gain = VolumeMapping.systemGain(forSliderFraction: sliderFraction, tier: tier)
+            volumeMonitor.setVolume(for: deviceID, to: gain)
+            feedbackPlayer.requestFeedback(
+                gain: VolumeFeedback.gain(tier: tier, sliderFraction: sliderFraction)
+            )
+        }
+
+        let monitor = MediaKeyMonitor(
+            decoder: IOKitMediaKeyDecoder(),
+            audioEngine: engine,
+            settingsManager: settings,
+            accessibility: accessibilityService,
+            hudController: hud,
+            popupVisibility: popupService,
+            mediaKeyStatus: statusService
+        )
+        monitor.feedbackPlayer = feedbackPlayer
+        _accessibility = State(initialValue: accessibilityService)
+        _mediaKeyStatus = State(initialValue: statusService)
+        _popupVisibility = State(initialValue: popupService)
+        _hudController = State(initialValue: hud)
+        _mediaKeyMonitor = State(initialValue: monitor)
+        _feedbackPlayer = State(initialValue: feedbackPlayer)
+
+        let coordinator = MenuBarIconCoordinator(
+            deviceVolumeMonitor: engine.deviceVolumeMonitor as! DeviceVolumeMonitor,
+            deviceProvider: engine.deviceMonitor,
+            settings: settings
+        )
+        monitor.iconCoordinator = coordinator
+        // Defer start() so NSApplication.shared is fully bootstrapped before we walk NSApp.windows.
+        DispatchQueue.main.async { [coordinator] in coordinator.start() }
+        _iconCoordinator = State(initialValue: coordinator)
+
+        // Render the scene's first frame with the user's chosen style instead of a generic
+        // placeholder, so non-speaker styles don't briefly flash a speaker icon at launch.
+        let launchVolumeMonitor = engine.deviceVolumeMonitor
+        let launchID = launchVolumeMonitor.defaultDeviceID
+        let launchState = MenuBarIconState.baseline(
+            style: settings.appSettings.menuBarIconStyle,
+            volume: launchVolumeMonitor.volumes[launchID] ?? 1.0,
+            muted: launchVolumeMonitor.muteStates[launchID] ?? false,
+            deviceSymbol: MenuBarDeviceIconResolver.resolveSymbol(
+                priorityOrder: settings.devicePriorityOrder,
+                outputDevices: engine.deviceMonitor.outputDevices,
+                defaultDeviceID: launchID,
+                overrideForUID: { settings.getDeviceIconOverride(for: $0) }
+            )
+        )
+        // The fallback must go through the shared canvas too, or the status
+        // item launches at natural symbol width and jumps on the first apply().
+        launchIconImage = launchState.image.nsImage()
+            ?? MenuBarIconImage.systemSymbol("speaker.wave.2").nsImage()!
+
+        // Start Accessibility polling immediately so `isTrustedCached` is live
+        // before the user first opens Settings. The trust-flip callback wires
+        // the monitor to reconcile its tap state whenever trust changes — this
+        // is the single source of truth for retroactive start/stop (a `.onChange`
+        // inside MenuBarPopupView would miss flips when the popup is closed).
+        accessibilityService.onTrustChanged = { [weak monitor] _ in
+            monitor?.reconcile()
+        }
+        accessibilityService.start()
+        monitor.reconcile()
+
+        // Global hotkeys (KeyboardShortcuts SPM, Carbon-backed; no Accessibility
+        // permission required for the hotkey itself). Registry start() is deferred
+        // to a SwiftUI `.task` on the popup content so the FluidMenuBarExtra
+        // status item has been materialized before any hotkey can fire.
+        let popupController = MenuBarPopupController()
+        let resolver = TargetAppResolver(
+            ownBundleID: Bundle.main.bundleIdentifier ?? "systems.semper.Semper"
+        )
+        resolver.start()
+        let registry = ShortcutsRegistry(
+            settings: settings,
+            popupController: popupController,
+            resolver: resolver,
+            audioEngine: engine,
+            hud: hud
+        )
+        _menuBarPopupController = State(initialValue: popupController)
+        _shortcutsRegistry = State(initialValue: registry)
+        _resolver = State(initialValue: resolver)
+
+        // Pass engine to AppDelegate
+        _appDelegate.wrappedValue.audioEngine = engine
+
+        if permission.status == .unknown {
+            permission.request()
+        }
+
+        // DeviceVolumeMonitor is now created and started inside AudioEngine
+        // This ensures proper initialization order: deviceMonitor.start() -> deviceVolumeMonitor.start()
+
+        // Set delegate before requesting authorization so willPresent is called
+        UNUserNotificationCenter.current().delegate = _appDelegate.wrappedValue
+
+        // Request notification authorization (for device disconnect alerts)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, error in
+            if let error {
+                logger.error("Notification authorization error: \(error.localizedDescription)")
+            }
+            // If not granted, notifications will silently not appear - acceptable behavior
+        }
+
+        // Flush debounced settings + tear down the CGEventTap before dealloc.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [settings, monitor, accessibilityService, hud, coordinator] _ in
+            MainActor.assumeIsolated {
+                coordinator.stop()
+                monitor.stop()
+                accessibilityService.stop()
+                hud.shutdown()
+                settings.flushSync()
+            }
+        }
+    }
+}
