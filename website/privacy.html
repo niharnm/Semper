@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Semper's privacy policy explains its local audio processing, macOS permissions, local storage, and limited network requests."
+    />
+    <meta name="theme-color" content="#f2eee5" />
+    <meta property="og:title" content="Privacy Policy | Semper" />
+    <meta
+      property="og:description"
+      content="Your audio stays on your Mac. Read how Semper handles data."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="assets/semper-icon.png" />
+    <link rel="canonical" href="https://semper.systems/privacy.html" />
+    <title>Privacy Policy | Semper</title>
+    <link rel="icon" href="assets/semper-icon.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="legal-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="Semper home">
+        <img src="assets/semper-icon.png" alt="" width="36" height="36" />
+        <span>Semper</span>
+      </a>
+
+      <nav aria-label="Legal navigation">
+        <a href="privacy.html" aria-current="page">Privacy</a>
+        <a href="terms.html">Terms</a>
+      </nav>
+
+      <a class="header-cta" href="index.html">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="m12 4-8 8m0-6v6h6" />
+        </svg>
+        Back to Semper
+      </a>
+    </header>
+
+    <main class="legal-main" id="main-content">
+      <section class="legal-hero">
+        <div>
+          <p class="kicker">Privacy policy</p>
+          <h1>Your audio stays on your Mac.</h1>
+        </div>
+        <div class="legal-intro">
+          <p>
+            Semper is a local-first, open-source macOS app. It does not require
+            an account, and the project does not receive the audio Semper
+            processes.
+          </p>
+          <div class="legal-meta">
+            <p>
+              <span>Effective</span>
+              <time datetime="2026-07-31">July 31, 2026</time>
+            </p>
+            <p>
+              <span>Updated</span>
+              <time datetime="2026-07-31">July 31, 2026</time>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div class="legal-tabs" aria-label="Legal documents">
+        <a href="privacy.html" aria-current="page">Privacy</a>
+        <a href="terms.html">Terms of use</a>
+      </div>
+
+      <article class="legal-document">
+        <section class="legal-section legal-summary" id="summary">
+          <div class="legal-section-heading">
+            <span>00</span>
+            <h2>The short version</h2>
+          </div>
+          <div class="legal-copy">
+            <ul class="legal-checklist">
+              <li>No Semper account.</li>
+              <li>No sale of personal information.</li>
+              <li>No Semper-controlled analytics or advertising.</li>
+              <li>Audio is processed locally, not uploaded.</li>
+              <li>Settings and AutoEQ data stay on your Mac.</li>
+              <li>Random test assignments stay on your Mac or in your browser.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="legal-section" id="scope">
+          <div class="legal-section-heading">
+            <span>01</span>
+            <h2>Scope</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              This policy applies to the Semper macOS app, the website at
+              <a href="https://semper.systems">semper.systems</a>, and
+              information you send directly to Semper maintainers.
+            </p>
+            <p>
+              It does not govern GitHub, Vercel, Apple, the AutoEq project, or
+              other third-party services. Their policies apply when you use
+              them.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="local-data">
+          <div class="legal-section-heading">
+            <span>02</span>
+            <h2>What Semper handles locally</h2>
+          </div>
+          <div class="legal-copy">
+            <h3>Audio content</h3>
+            <p>
+              Semper uses Core Audio process taps to process app audio in
+              memory for volume, routing, EQ, loudness, and limiting. It does
+              not intentionally save that audio to disk or transmit it to
+              Semper maintainers.
+            </p>
+
+            <h3>Apps and devices</h3>
+            <p>
+              Semper handles running-app information such as process
+              identifiers, app names, bundle identifiers, icons, audio
+              activity, and assigned settings. It also handles audio and
+              Bluetooth device names, identifiers, capabilities, connection
+              state, volume, mute state, and routing choices.
+            </p>
+
+            <h3>Preferences and diagnostics</h3>
+            <p>
+              Per-app audio settings, device preferences, AutoEQ selections,
+              imported EQ profiles, display choices, and shortcuts are stored
+              locally. Semper also writes operational messages and errors to
+              the macOS unified logging system. Those logs remain under macOS
+              control unless you choose to share them.
+            </p>
+
+            <h3>Experiment assignments</h3>
+            <p>
+              The app stores a random identifier and assigned interface
+              variants in local preferences. The website stores a separate
+              random identifier and page variants in local browser storage.
+              Semper does not receive these values.
+            </p>
+
+            <p class="legal-note">
+              Main settings and the AutoEQ cache are stored under
+              <code>~/Library/Application Support/Semper</code>. macOS and
+              included frameworks may also keep shortcut and update
+              preferences in the app's preferences domain.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="permissions">
+          <div class="legal-section-heading">
+            <span>03</span>
+            <h2>macOS permissions</h2>
+          </div>
+          <div class="legal-copy">
+            <ul>
+              <li>
+                <strong>Screen &amp; System Audio Recording:</strong> required
+                for the Core Audio process taps used for per-app audio control.
+              </li>
+              <li>
+                <strong>Microphone:</strong> used when Semper works with
+                input-capable audio devices and input monitoring. Semper does
+                not intentionally save or transmit microphone audio.
+              </li>
+              <li>
+                <strong>Bluetooth:</strong> used to list and connect paired
+                Bluetooth audio devices.
+              </li>
+              <li>
+                <strong>Accessibility:</strong> optional, and used to intercept
+                the system media keys for Semper's volume controls.
+              </li>
+            </ul>
+            <p>
+              You can review or revoke these permissions in macOS System
+              Settings under Privacy &amp; Security. A feature will stop
+              working if you revoke a permission it needs.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="network">
+          <div class="legal-section-heading">
+            <span>04</span>
+            <h2>Network requests and third parties</h2>
+          </div>
+          <div class="legal-copy">
+            <h3>AutoEQ</h3>
+            <p>
+              When you use AutoEQ features, Semper may download the AutoEq
+              catalog and selected headphone profiles from
+              <code>raw.githubusercontent.com</code>. Semper caches this data
+              locally. GitHub receives normal request information such as IP
+              address, request time, and client information.
+            </p>
+
+            <h3>Software updates</h3>
+            <p>
+              Semper includes the Sparkle update framework. It starts only when
+              a release has a feed URL and public signing key. If you request
+              or allow an update check, Sparkle contacts that feed and may
+              download release information or an update. Any optional
+              system-profile sharing presented by Sparkle is controlled by the
+              choice shown to you.
+            </p>
+
+            <h3>Website hosting</h3>
+            <p>
+              Vercel hosts the Semper website and may process request
+              information such as IP address, approximate location derived from
+              IP, browser or system configuration, requested URL, timestamps,
+              and security or performance data. Read the
+              <a
+                href="https://vercel.com/legal/privacy-notice"
+                target="_blank"
+                rel="noreferrer"
+                >Vercel Privacy Notice</a
+              >.
+            </p>
+
+            <h3>GitHub</h3>
+            <p>
+              GitHub hosts the source repository, releases, issues, pull
+              requests, and AutoEQ files. Repository contributions and public
+              issues can include your profile, commit authorship, messages, and
+              other information you publish. Read the
+              <a
+                href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement"
+                target="_blank"
+                rel="noreferrer"
+                >GitHub General Privacy Statement</a
+              >.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="analytics">
+          <div class="legal-section-heading">
+            <span>05</span>
+            <h2>Cookies and analytics</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              The Semper website does not add analytics scripts, advertising
+              trackers, account cookies, or marketing cookies. Its experiment
+              code stores a random identifier and assigned page variants in
+              local browser storage so the same browser keeps seeing the same
+              version. Experiment events remain inside the current page and are
+              not sent to Semper or an analytics provider. Vercel may still use
+              data needed to deliver, protect, and operate the hosted site as
+              described in its privacy notice.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="contact-data">
+          <div class="legal-section-heading">
+            <span>06</span>
+            <h2>Information you send</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              If you contact a maintainer, open an issue, submit a pull
+              request, or send a security report, the project may receive what
+              you provide, such as your name, GitHub profile, contact details,
+              message, code, logs, or device details. Maintainers use it to
+              respond, review contributions, address bugs or security
+              concerns, and administer the project.
+            </p>
+            <p>
+              Do not include private audio, credentials, or other sensitive
+              information in a public issue. Use the private reporting
+              instructions in
+              <a
+                href="https://github.com/niharnm/Semper/blob/main/SECURITY.md"
+                target="_blank"
+                rel="noreferrer"
+                >SECURITY.md</a
+              >
+              for security matters.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="retention">
+          <div class="legal-section-heading">
+            <span>07</span>
+            <h2>Retention and your choices</h2>
+          </div>
+          <div class="legal-copy">
+            <ul>
+              <li>
+                Local settings remain until you reset, replace, or remove the
+                app's data.
+              </li>
+              <li>
+                Local app experiment assignments remain until you remove
+                Semper's preferences.
+              </li>
+              <li>
+                Website experiment assignments remain until you clear site data
+                for <code>semper.systems</code>.
+              </li>
+              <li>
+                AutoEQ downloads and imported profiles remain in the Semper
+                Application Support folder until you remove them.
+              </li>
+              <li>
+                To remove local data, quit Semper and delete
+                <code>~/Library/Application Support/Semper</code>. You can
+                remove Semper preferences through macOS and revoke permissions
+                separately in Privacy &amp; Security.
+              </li>
+              <li>
+                GitHub controls retention for public repository activity.
+                Vercel controls retention for website request data.
+              </li>
+              <li>
+                Information sent privately to maintainers is kept only as long
+                as reasonably needed to respond, maintain project records,
+                handle security concerns, or meet legal obligations.
+              </li>
+            </ul>
+            <p>
+              Semper maintainers do not sell personal information or use it for
+              targeted advertising.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="security">
+          <div class="legal-section-heading">
+            <span>08</span>
+            <h2>Security and children</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              Semper is built in public so its behavior can be inspected, but
+              no software or storage method is completely secure. Keep macOS
+              current, install Semper only from a source you trust, review
+              permissions, and do not post sensitive information in public
+              project spaces.
+            </p>
+            <p>
+              Semper is a general-purpose developer project and is not directed
+              to children. The project does not knowingly collect personal
+              information from children.
+            </p>
+          </div>
+        </section>
+
+        <section class="legal-section" id="changes">
+          <div class="legal-section-heading">
+            <span>09</span>
+            <h2>Changes and contact</h2>
+          </div>
+          <div class="legal-copy">
+            <p>
+              This policy may change when Semper's features, hosting, or data
+              practices change. The date at the top will be updated, and
+              material changes will be noted in the repository.
+            </p>
+            <p>
+              For privacy questions or requests, contact the lead maintainer
+              through a private contact method listed on
+              <a
+                href="https://github.com/niharnm"
+                target="_blank"
+                rel="noreferrer"
+                >Nihar Manchikakapudi's GitHub profile</a
+              >. Do not put sensitive personal information in a public issue.
+            </p>
+          </div>
+        </section>
+      </article>
+
+      <aside class="legal-source">
+        <p>
+          The policy is versioned with the code. Read or propose changes on
+          GitHub.
+        </p>
+        <a
+          class="button button-primary"
+          href="https://github.com/niharnm/Semper/blob/main/PRIVACY.md"
+          target="_blank"
+          rel="noreferrer"
+        >
+          View policy source
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4 12 12 4M6 4h6v6" />
+          </svg>
+        </a>
+      </aside>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="index.html">
+        <img src="assets/semper-icon.png" alt="" width="28" height="28" />
+        <span>Semper</span>
+      </a>
+      <div class="footer-middle">
+        <p class="footer-tagline">Open-source audio control for macOS.</p>
+        <div class="footer-links" aria-label="Legal">
+          <a href="privacy.html" aria-current="page">Privacy</a>
+          <a href="terms.html">Terms</a>
+        </div>
+      </div>
+      <p>© 2026 Semper · GPLv3</p>
+    </footer>
+  </body>
+</html>

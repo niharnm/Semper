@@ -3,11 +3,23 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Base semantic version for the Canary build
+        required: true
+        default: "1.0.0"
+        type: string
+
+concurrency:
+  group: semper-update-feed
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: macos-26
+    timeout-minutes: 30
     permissions:
       contents: write
 
@@ -23,7 +35,104 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
+
+      - name: Resolve release metadata
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          BUILD_NUMBER="$GITHUB_RUN_NUMBER"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+              echo "Canary releases must run from the default branch."
+              exit 1
+            fi
+            if [[ ! "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Canary version must use MAJOR.MINOR.PATCH."
+              exit 1
+            fi
+
+            VERSION="${REQUESTED_VERSION}-canary.${GITHUB_RUN_NUMBER}"
+            RELEASE_TAG="canary-${REQUESTED_VERSION}-${GITHUB_RUN_NUMBER}"
+            RELEASE_NAME="Semper ${REQUESTED_VERSION} Canary ${GITHUB_RUN_NUMBER}"
+            DMG_NAME="Semper-Canary.dmg"
+            SPARKLE_CHANNEL="canary"
+            DEFAULT_UPDATE_CHANNEL="canary"
+            IS_PRERELEASE="true"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Stable tags must use vMAJOR.MINOR.PATCH."
+              exit 1
+            fi
+
+            RELEASE_TAG="$GITHUB_REF_NAME"
+            RELEASE_NAME="Semper ${VERSION}"
+            DMG_NAME="Semper.dmg"
+            SPARKLE_CHANNEL=""
+            DEFAULT_UPDATE_CHANNEL="stable"
+            IS_PRERELEASE="false"
+          fi
+
+          {
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+            echo "DEFAULT_UPDATE_CHANNEL=$DEFAULT_UPDATE_CHANNEL"
+            echo "DMG_NAME=$DMG_NAME"
+            echo "IS_PRERELEASE=$IS_PRERELEASE"
+            echo "RELEASE_NAME=$RELEASE_NAME"
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "SPARKLE_CHANNEL=$SPARKLE_CHANNEL"
+            echo "VERSION=$VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Check website
+        run: python3 scripts/check-website.py
+
+      - name: Test app
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Semper.xcodeproj \
+            -scheme Semper \
+            -configuration Debug \
+            -skip-testing:SemperUITests \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            -resultBundlePath build/ReleaseTestResults.xcresult
+
+      - name: Validate release secrets
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CERT_IDENTITY: ${{ secrets.CERT_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_CERTIFICATE_BASE64
+            APPLE_CERTIFICATE_PASSWORD
+            APPLE_ID
+            APPLE_ID_PASSWORD
+            APPLE_TEAM_ID
+            CERT_IDENTITY
+            KEYCHAIN_PASSWORD
+            SPARKLE_PRIVATE_ED_KEY
+            SPARKLE_PUBLIC_ED_KEY
+          )
+          for variable_name in "${required[@]}"; do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "Missing required secret: $variable_name"
+              exit 1
+            fi
+          done
 
       - name: Install create-dmg dependencies
         run: brew install graphicsmagick imagemagick
@@ -34,95 +143,79 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          set -euo pipefail
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
 
-          # Decode certificate
-          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
-
-          # Create temporary keychain
+          printf "%s" "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          # Import certificate to keychain
-          security import $RUNNER_TEMP/certificate.p12 \
+          security import "$CERTIFICATE_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 \
             -k "$KEYCHAIN_PATH"
-
-          # Allow codesign to access the certificate
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          # Add keychain to search list (prepend to ensure it's found first)
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
-
-          # Verify certificate is available
+          security list-keychain -d user -s \
+            "$KEYCHAIN_PATH" \
+            $(security list-keychain -d user | tr -d '"')
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Update ExportOptions with Team ID
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
           sed -i '' "s/TEAM_ID_PLACEHOLDER/$APPLE_TEAM_ID/g" ExportOptions.plist
-          cat ExportOptions.plist
-
-      - name: Set version from tag
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          echo "Setting version to $VERSION"
-
-          # Update MARKETING_VERSION (e.g., 1.1.0)
-          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $VERSION/g" Semper.xcodeproj/project.pbxproj
-
-          # Update CURRENT_PROJECT_VERSION (build number) using run number for uniqueness
-          BUILD_NUMBER=${{ github.run_number }}
-          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUMBER/g" Semper.xcodeproj/project.pbxproj
-
-          echo "Version: $VERSION, Build: $BUILD_NUMBER"
 
       - name: Build archive
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
         run: |
+          set -euo pipefail
           xcodebuild -project Semper.xcodeproj \
             -scheme Semper \
             -configuration Release \
             -archivePath build/Semper.xcarchive \
             archive \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
+            "MARKETING_VERSION=$VERSION" \
+            "SEMPER_DEFAULT_UPDATE_CHANNEL=$DEFAULT_UPDATE_CHANNEL" \
+            "SPARKLE_PUBLIC_ED_KEY=$SPARKLE_PUBLIC_ED_KEY"
 
       - name: Export archive
         run: |
+          set -euo pipefail
           xcodebuild -exportArchive \
             -archivePath build/Semper.xcarchive \
             -exportPath build/ \
             -exportOptionsPlist ExportOptions.plist
-
-          # Verify the app is signed
           codesign -dv --verbose=4 build/Semper.app
 
       - name: Create DMG
         run: |
-          # create-dmg creates a nicely formatted DMG with Applications symlink
-          npx create-dmg build/Semper.app build/ --overwrite || true
+          set -euo pipefail
+          npx --yes create-dmg build/Semper.app build/ --overwrite
 
-          DMG_NAME="Semper.dmg"
-
-          # Find and rename the created DMG (create-dmg names it "AppName Version.dmg")
-          mv build/*.dmg "build/${DMG_NAME}"
-
-          echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
-          echo "Created: build/${DMG_NAME}"
+          shopt -s nullglob
+          dmg_files=(build/*.dmg)
+          if (( ${#dmg_files[@]} != 1 )); then
+            echo "Expected one DMG, found ${#dmg_files[@]}."
+            exit 1
+          fi
+          if [[ "${dmg_files[0]}" != "build/$DMG_NAME" ]]; then
+            mv "${dmg_files[0]}" "build/$DMG_NAME"
+          fi
 
       - name: Sign DMG
         env:
           CERT_IDENTITY: ${{ secrets.CERT_IDENTITY }}
         run: |
-          # Sign the DMG with Developer ID
+          set -euo pipefail
           codesign --force --sign "$CERT_IDENTITY" "build/$DMG_NAME"
-
-          # Verify signature
           codesign -dv --verbose=2 "build/$DMG_NAME"
 
       - name: Notarize DMG
@@ -131,23 +224,97 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Submit DMG for notarization and wait for result
+          set -euo pipefail
           xcrun notarytool submit "build/$DMG_NAME" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-
-          # Staple the notarization ticket to the DMG
           xcrun stapler staple "build/$DMG_NAME"
-
-          # Verify stapling
           xcrun stapler validate "build/$DMG_NAME"
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/Semper.dmg
+          files: build/${{ env.DMG_NAME }}
           generate_release_notes: true
+          make_latest: ${{ env.IS_PRERELEASE == 'false' }}
+          name: ${{ env.RELEASE_NAME }}
+          prerelease: ${{ env.IS_PRERELEASE }}
+          tag_name: ${{ env.RELEASE_TAG }}
+
+      - name: Generate signed update feed
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/feed
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/update-feed" >/dev/null 2>&1; then
+            gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=update-feed" \
+              > build/feed/appcast.xml
+          else
+            cp appcast.xml build/feed/appcast.xml
+          fi
+          cp "build/$DMG_NAME" "build/feed/$DMG_NAME"
+
+          GENERATE_APPCAST="$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -path "*/artifacts/sparkle/Sparkle/bin/generate_appcast" \
+            -type f \
+            -print \
+            -quit)"
+          if [[ -z "$GENERATE_APPCAST" ]]; then
+            echo "Sparkle generate_appcast was not found."
+            exit 1
+          fi
+
+          appcast_args=(
+            --ed-key-file -
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
+            --link "https://semper.systems"
+            --maximum-versions 6
+            --maximum-deltas 0
+            -o build/feed/appcast.xml
+          )
+          if [[ -n "$SPARKLE_CHANNEL" ]]; then
+            appcast_args+=(--channel "$SPARKLE_CHANNEL")
+          fi
+
+          printf "%s" "$SPARKLE_PRIVATE_ED_KEY" \
+            | "$GENERATE_APPCAST" "${appcast_args[@]}" build/feed
+
+          xmllint --noout build/feed/appcast.xml
+          grep -q "sparkle:edSignature" build/feed/appcast.xml
+          if [[ "$SPARKLE_CHANNEL" == "canary" ]]; then
+            grep -q "<sparkle:channel>canary</sparkle:channel>" build/feed/appcast.xml
+          fi
+
+      - name: Publish update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/update-feed" >/dev/null 2>&1; then
+            gh api \
+              --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/heads/update-feed" \
+              -f sha="$GITHUB_SHA"
+          fi
+
+          CURRENT_SHA="$(gh api \
+            "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=update-feed" \
+            --jq .sha)"
+          CONTENT="$(base64 < build/feed/appcast.xml | tr -d '\n')"
+
+          gh api \
+            --method PUT \
+            "repos/$GITHUB_REPOSITORY/contents/appcast.xml" \
+            -f branch="update-feed" \
+            -f content="$CONTENT" \
+            -f message="Publish $RELEASE_TAG update feed" \
+            -f sha="$CURRENT_SHA"
