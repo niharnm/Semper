@@ -50,6 +50,7 @@ struct SemperApp: App {
     @State private var menuBarPopupController: MenuBarPopupController
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var resolver: TargetAppResolver
+    @State private var experimentManager: ExperimentManager
     @StateObject private var updateManager = UpdateManager()
     @State private var showMenuBarExtra = true
 
@@ -92,7 +93,8 @@ struct SemperApp: App {
             mediaKeyStatus: mediaKeyStatus,
             popupVisibility: popupVisibility,
             hudController: hudController,
-            mediaKeyMonitor: mediaKeyMonitor
+            mediaKeyMonitor: mediaKeyMonitor,
+            experimentManager: experimentManager
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
@@ -107,6 +109,7 @@ struct SemperApp: App {
         OrphanedTapCleanup.destroyOrphanedDevices()
 
         let settings = SettingsManager()
+        _experimentManager = State(initialValue: ExperimentManager())
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
         let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)

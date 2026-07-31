@@ -29,6 +29,7 @@ struct MenuBarPopupView: View {
     /// handled globally via `AccessibilityPermissionService.onTrustChanged`
     /// wired in `SemperApp.init`.
     let mediaKeyMonitor: MediaKeyMonitor
+    let experimentManager: ExperimentManager
 
     /// Memoized sorted output devices - only recomputed when device list or default changes
     @State private var sortedDevices: [AudioDevice] = []
@@ -161,8 +162,14 @@ struct MenuBarPopupView: View {
                 selectedRow = navModel.defaultFocus(defaultOutputUID: currentDefaultDeviceUID())
             }
         }
-        .onChange(of: audioEngine.apps) { _, _ in
+        .onChange(of: audioEngine.apps) { oldApps, newApps in
             syncNavOrder()
+            if oldApps.isEmpty && !newApps.isEmpty {
+                experimentManager.recordOutcome(
+                    "first_audio_app_detected",
+                    for: .popupEmptyStateGuidance
+                )
+            }
         }
         .onChange(of: isEditingDevicePriority) { _, editing in
             if editing {
@@ -869,15 +876,27 @@ struct MenuBarPopupView: View {
 
     @ViewBuilder
     private var emptyStateView: some View {
+        let assignment = experimentManager.assignment(for: .popupEmptyStateGuidance)
         HStack {
             Spacer()
             VStack(spacing: DesignTokens.Spacing.sm) {
                 Image(systemName: "speaker.slash")
                     .font(.title)
                     .foregroundStyle(DesignTokens.Colors.textTertiary)
-                Text("No apps playing audio")
+                Text(
+                    assignment.variant == .control
+                        ? "No apps playing audio"
+                        : "Play something to get started"
+                )
                     .font(.callout)
                     .foregroundStyle(DesignTokens.Colors.textSecondary)
+
+                if assignment.variant == .treatment {
+                    Text("Semper adds a volume control for each app that is playing audio.")
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundStyle(DesignTokens.Colors.textTertiary)
+                        .multilineTextAlignment(.center)
+                }
 
                 let ignoredCount = audioEngine.settingsManager.getIgnoredAppInfo().count
                 if ignoredCount > 0 {
@@ -889,6 +908,9 @@ struct MenuBarPopupView: View {
             Spacer()
         }
         .padding(.vertical, DesignTokens.Spacing.xl)
+        .onAppear {
+            experimentManager.recordExposure(for: .popupEmptyStateGuidance)
+        }
     }
 
     private func appsSection(scrollProxy: ScrollViewProxy) -> some View {
@@ -1065,6 +1087,10 @@ struct MenuBarPopupView: View {
                 getAudioLevel: { audioEngine.getAudioLevel(for: app) },
                 isPopupVisible: isPopupVisible,
                 onVolumeChange: { volume in
+                    experimentManager.recordOutcome(
+                        "first_app_volume_changed",
+                        for: .popupEmptyStateGuidance
+                    )
                     audioEngine.setVolume(for: app, to: volume)
                 },
                 onMuteChange: { muted in

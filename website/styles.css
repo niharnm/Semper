@@ -364,6 +364,18 @@ h2 em {
   fill: currentColor;
 }
 
+.experiment-label-treatment {
+  display: none;
+}
+
+html[data-semper-ab-hero-cta="treatment"] .experiment-label-control {
+  display: none;
+}
+
+html[data-semper-ab-hero-cta="treatment"] .experiment-label-treatment {
+  display: inline;
+}
+
 .text-link {
   display: inline-flex;
   align-items: center;

@@ -34,6 +34,7 @@
       sizes="180x180"
       href="assets/semper-apple-touch-icon-v2.png"
     />
+    <script src="ab-testing.js"></script>
     <link rel="stylesheet" href="styles.css" />
     <script src="script.js" defer></script>
   </head>
@@ -87,13 +88,20 @@
               href="https://github.com/niharnm/Semper"
               target="_blank"
               rel="noreferrer"
+              data-ab-experiment="website.hero-repository-cta-copy.v1"
+              data-ab-conversion="hero_repository_clicked"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   d="M12 2.7a9.5 9.5 0 0 0-3 18.5c.5.1.7-.2.7-.5v-1.9c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 0 1.6 1.1 1.6 1.1.9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.7-1.3-2.3-.3-4.6-1.1-4.6-5a3.9 3.9 0 0 1 1-2.7c-.1-.3-.5-1.3.1-2.7 0 0 .9-.3 2.8 1a9.7 9.7 0 0 1 5.1 0c2-1.3 2.8-1 2.8-1 .6 1.4.2 2.4.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5a9.5 9.5 0 0 0-3-18.5Z"
                 />
               </svg>
-              View the source
+              <span class="experiment-label experiment-label-control"
+                >View the source</span
+              >
+              <span class="experiment-label experiment-label-treatment"
+                >Open Semper on GitHub</span
+              >
             </a>
             <a class="text-link" href="#control">
               See how it works
