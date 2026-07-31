@@ -88,17 +88,38 @@
           <div class="hero-mark hero-mark-one" aria-hidden="true">S</div>
           <div class="hero-mark hero-mark-two" aria-hidden="true">S</div>
 
-          <div class="mixer-window" aria-label="Interactive Semper mixer model">
-            <div class="window-bar">
-              <div class="window-dots" aria-hidden="true">
-                <span></span><span></span><span></span>
+          <div
+            class="mixer-window"
+            role="region"
+            aria-label="Interactive model of the Semper menu-bar popup"
+          >
+            <div class="popup-toolbar" aria-hidden="true">
+              <div class="popup-device-pill">
+                <svg viewBox="0 0 20 20">
+                  <path d="M4 11V9a6 6 0 0 1 12 0v2" />
+                  <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
+                </svg>
+                <span>AirPods Pro</span>
+                <i>⌄</i>
               </div>
-              <p>Semper</p>
-              <span
-                class="settings-button"
-                aria-hidden="true"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true">
+              <div class="popup-device-pill popup-input-pill">
+                <svg viewBox="0 0 20 20">
+                  <rect x="7" y="2.5" width="6" height="10" rx="3" />
+                  <path d="M4.8 9.5a5.2 5.2 0 0 0 10.4 0M10 14.7v2.8M7.5 17.5h5" />
+                </svg>
+                <span>MacBook Microphone</span>
+                <i>⌄</i>
+              </div>
+              <span class="popup-tool-button">
+                <svg viewBox="0 0 20 20">
+                  <path d="M4 5h12M6 10h8M8 15h4" />
+                  <circle cx="12" cy="5" r="1.6" />
+                  <circle cx="8" cy="10" r="1.6" />
+                  <circle cx="10" cy="15" r="1.6" />
+                </svg>
+              </span>
+              <span class="popup-tool-button">
+                <svg viewBox="0 0 20 20">
                   <path
                     d="M8.8 2.2h2.4l.4 1.7c.5.2 1 .4 1.4.8l1.6-.6 1.2 2.1-1.3 1.1c.1.5.1 1.1 0 1.6l1.3 1.1-1.2 2.1-1.6-.6c-.4.3-.9.6-1.4.8l-.4 1.7H8.8l-.4-1.7c-.5-.2-1-.4-1.4-.8l-1.6.6L4.2 10l1.3-1.1a7 7 0 0 1 0-1.6L4.2 6.2l1.2-2.1 1.6.6c.4-.3.9-.6 1.4-.8l.4-1.7Z"
                   />
@@ -107,27 +128,64 @@
               </span>
             </div>
 
-            <div class="device-strip">
-              <span class="device-icon" aria-hidden="true">
-                <svg viewBox="0 0 20 20">
-                  <path d="M4 11V9a6 6 0 0 1 12 0v2" />
-                  <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
-                </svg>
-              </span>
-              <div>
-                <span class="micro-label">OUTPUT</span>
-                <strong>AirPods Pro</strong>
+            <section class="master-output">
+              <div class="master-summary">
+                <span class="master-device-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20">
+                    <path d="M4 11V9a6 6 0 0 1 12 0v2" />
+                    <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>AirPods Pro</strong>
+                  <small>100% max · boost unavailable</small>
+                </div>
+                <span class="autoeq-chip">AutoEQ</span>
+                <button
+                  class="mute-button master-mute"
+                  type="button"
+                  aria-label="Mute AirPods Pro"
+                  aria-pressed="false"
+                  data-master-mute
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
+                    <path d="M13 7.5a4 4 0 0 1 0 5" />
+                  </svg>
+                </button>
+                <span class="master-value">76%</span>
               </div>
-              <span class="device-ready">Connected</span>
-            </div>
+              <label class="master-range">
+                <span class="sr-only">AirPods Pro master volume</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value="76"
+                  data-master-volume
+                  aria-label="AirPods Pro master volume"
+                />
+              </label>
+              <div class="stereo-output" aria-hidden="true">
+                <span>L</span><i><b style="--meter: 72%"></b></i>
+                <span>R</span><i><b style="--meter: 64%"></b></i>
+              </div>
+            </section>
 
-            <div class="app-list">
-              <article class="app-row" data-app="music">
-                <div class="app-icon music-icon" aria-hidden="true">♪</div>
-                <div class="app-details">
-                  <div class="app-heading">
-                    <strong>Music</strong>
-                    <span>AirPods Pro</span>
+            <section class="applications-panel">
+              <div class="applications-header">
+                <span>Applications</span>
+                <span class="test-sound"><i>▶</i> Test Sound</span>
+              </div>
+
+              <div class="app-list">
+                <article class="app-row" data-app="music">
+                  <div class="app-identity">
+                    <div class="app-icon music-icon" aria-hidden="true">♪</div>
+                    <div class="app-heading">
+                      <strong>Music <i aria-hidden="true"></i></strong>
+                      <span>System Output · AirPods Pro</span>
+                    </div>
                   </div>
                   <label class="range-wrap">
                     <span class="sr-only">Music volume</span>
@@ -141,33 +199,36 @@
                     />
                     <span class="range-value" aria-hidden="true">68%</span>
                   </label>
-                </div>
-                <button
-                  class="mute-button"
-                  type="button"
-                  aria-label="Mute Music"
-                  aria-pressed="false"
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
-                    <path d="M13 7.5a4 4 0 0 1 0 5" />
-                  </svg>
-                </button>
-                <div class="vu-meter" aria-hidden="true">
-                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-                </div>
-              </article>
+                  <button
+                    class="mute-button"
+                    type="button"
+                    aria-label="Mute Music"
+                    aria-pressed="false"
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
+                      <path d="M13 7.5a4 4 0 0 1 0 5" />
+                    </svg>
+                  </button>
+                  <span class="route-button" aria-hidden="true">
+                    <svg viewBox="0 0 20 20">
+                      <path d="M4 11V9a6 6 0 0 1 12 0v2" />
+                      <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
+                    </svg>
+                  </span>
+                </article>
 
-              <article class="app-row" data-app="meet">
-                <div class="app-icon meet-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M4 6h10v12H4zM14 10l6-3v10l-6-3z" />
-                  </svg>
-                </div>
-                <div class="app-details">
-                  <div class="app-heading">
-                    <strong>Meet</strong>
-                    <span>AirPods Pro</span>
+                <article class="app-row" data-app="meet">
+                  <div class="app-identity">
+                    <div class="app-icon meet-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M4 6h10v12H4zM14 10l6-3v10l-6-3z" />
+                      </svg>
+                    </div>
+                    <div class="app-heading">
+                      <strong>Meet <i aria-hidden="true"></i></strong>
+                      <span>AirPods Pro · Routed</span>
+                    </div>
                   </div>
                   <label class="range-wrap">
                     <span class="sr-only">Meet volume</span>
@@ -181,34 +242,37 @@
                     />
                     <span class="range-value" aria-hidden="true">42%</span>
                   </label>
-                </div>
-                <button
-                  class="mute-button"
-                  type="button"
-                  aria-label="Mute Meet"
-                  aria-pressed="false"
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
-                    <path d="M13 7.5a4 4 0 0 1 0 5" />
-                  </svg>
-                </button>
-                <div class="vu-meter vu-low" aria-hidden="true">
-                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-                </div>
-              </article>
+                  <button
+                    class="mute-button"
+                    type="button"
+                    aria-label="Mute Meet"
+                    aria-pressed="false"
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
+                      <path d="M13 7.5a4 4 0 0 1 0 5" />
+                    </svg>
+                  </button>
+                  <span class="route-button" aria-hidden="true">
+                    <svg viewBox="0 0 20 20">
+                      <path d="M4 11V9a6 6 0 0 1 12 0v2" />
+                      <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
+                    </svg>
+                  </span>
+                </article>
 
-              <article class="app-row is-muted" data-app="safari">
-                <div class="app-icon safari-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="9" />
-                    <path d="m14.6 8.4-1.4 4.8-4.8 1.4 1.4-4.8 4.8-1.4Z" />
-                  </svg>
-                </div>
-                <div class="app-details">
-                  <div class="app-heading">
-                    <strong>Safari</strong>
-                    <span>MacBook Speakers</span>
+                <article class="app-row is-muted" data-app="safari">
+                  <div class="app-identity">
+                    <div class="app-icon safari-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="m14.6 8.4-1.4 4.8-4.8 1.4 1.4-4.8 4.8-1.4Z" />
+                      </svg>
+                    </div>
+                    <div class="app-heading">
+                      <strong>Safari</strong>
+                      <span>System Output · AirPods Pro</span>
+                    </div>
                   </div>
                   <label class="range-wrap">
                     <span class="sr-only">Safari volume</span>
@@ -222,31 +286,39 @@
                     />
                     <span class="range-value" aria-hidden="true">28%</span>
                   </label>
-                </div>
-                <button
-                  class="mute-button"
-                  type="button"
-                  aria-label="Unmute Safari"
-                  aria-pressed="true"
-                >
-                  <svg viewBox="0 0 20 20" aria-hidden="true">
-                    <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
-                    <path d="m13 8 4 4M17 8l-4 4" />
-                  </svg>
-                </button>
-                <div class="vu-meter" aria-hidden="true">
-                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-                </div>
-              </article>
-            </div>
+                  <button
+                    class="mute-button"
+                    type="button"
+                    aria-label="Unmute Safari"
+                    aria-pressed="true"
+                  >
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M3 8h3l4-3v10l-4-3H3V8Z" />
+                      <path d="m13 8 4 4M17 8l-4 4" />
+                    </svg>
+                  </button>
+                  <span class="route-button" aria-hidden="true">
+                    <svg viewBox="0 0 20 20">
+                      <path d="M4 11V9a6 6 0 0 1 12 0v2" />
+                      <path d="M4 10H2.8v5H6v-5H4ZM16 10h1.2v5H14v-5h2Z" />
+                    </svg>
+                  </span>
+                </article>
+              </div>
+            </section>
 
-            <div class="mixer-note">
-              <span class="live-pill">
-                <span aria-hidden="true"></span>
-                Interactive model
-              </span>
-              <p>Drag a slider or mute an app.</p>
+            <div class="popup-footer">
+              <span><i aria-hidden="true">◎</i> semper.systems</span>
+              <span>Quit <kbd>⌘Q</kbd></span>
             </div>
+          </div>
+
+          <div class="model-hint">
+            <span class="live-pill">
+              <span aria-hidden="true"></span>
+              Interactive model
+            </span>
+            <p>Drag a slider or mute an app.</p>
           </div>
         </div>
 
@@ -262,61 +334,138 @@
           <h2>macOS gives all of them <em>one slider.</em></h2>
         </div>
 
-        <div class="signal-board reveal" aria-label="Three app signals converging">
-          <div class="signal-source">
-            <span class="signal-app music-icon">♪</span>
-            <div>
-              <strong>Music</strong>
-              <small>Too quiet</small>
+        <div class="signal-story reveal" data-signal-story data-phase="split">
+          <div class="signal-stage">
+            <div class="signal-story-head" aria-hidden="true">
+              <span class="micro-label">THE SIGNAL PATH</span>
+              <p class="signal-story-copy">
+                <span data-signal-copy="start">Three apps. One system control.</span>
+                <span data-signal-copy="collision">One slider changes everything at once.</span>
+                <span data-signal-copy="split">Semper splits the signal before output.</span>
+              </p>
+              <div class="signal-phase-markers"><i></i><i></i><i></i></div>
             </div>
-            <span class="signal-level">28</span>
-          </div>
-          <div class="signal-source">
-            <span class="signal-app meet-icon">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 6h10v12H4zM14 10l6-3v10l-6-3z" />
-              </svg>
-            </span>
-            <div>
-              <strong>Meet</strong>
-              <small>Too loud</small>
-            </div>
-            <span class="signal-level">82</span>
-          </div>
-          <div class="signal-source">
-            <span class="signal-app safari-icon">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" />
-                <path d="m14.6 8.4-1.4 4.8-4.8 1.4 1.4-4.8 4.8-1.4Z" />
-              </svg>
-            </span>
-            <div>
-              <strong>Safari</strong>
-              <small>Not needed</small>
-            </div>
-            <span class="signal-level">64</span>
-          </div>
 
-          <div class="signal-lines" aria-hidden="true">
-            <svg viewBox="0 0 500 220" preserveAspectRatio="none">
-              <path d="M0 28 C260 28 260 110 500 110" />
-              <path d="M0 110 H500" />
-              <path d="M0 192 C260 192 260 110 500 110" />
-            </svg>
-          </div>
+            <div
+              class="signal-board"
+              role="group"
+              aria-label="Three app signals moving from one system control to independent Semper channels"
+            >
+              <div class="signal-source">
+                <span class="signal-app music-icon">♪</span>
+                <div>
+                  <strong>Music</strong>
+                  <small>Too quiet</small>
+                </div>
+                <span class="signal-level">28</span>
+              </div>
+              <div class="signal-source">
+                <span class="signal-app meet-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 6h10v12H4zM14 10l6-3v10l-6-3z" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Meet</strong>
+                  <small>Too loud</small>
+                </div>
+                <span class="signal-level">82</span>
+              </div>
+              <div class="signal-source">
+                <span class="signal-app safari-icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="m14.6 8.4-1.4 4.8-4.8 1.4 1.4-4.8 4.8-1.4Z" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Safari</strong>
+                  <small>Not needed</small>
+                </div>
+                <span class="signal-level">64</span>
+              </div>
 
-          <div class="system-slider">
-            <span class="system-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M3 9h4l5-4v14l-5-4H3V9Z" />
-                <path d="M16 8a6 6 0 0 1 0 8M18.5 5a10 10 0 0 1 0 14" />
-              </svg>
-            </span>
-            <div>
-              <small>SYSTEM VOLUME</small>
-              <div class="single-track"><span></span></div>
+              <div class="signal-lines" aria-hidden="true">
+                <svg viewBox="0 0 500 220" preserveAspectRatio="none">
+                  <path
+                    class="signal-path signal-path-input"
+                    data-signal-input
+                    pathLength="1"
+                    d="M0 28 C260 28 260 110 500 110"
+                  />
+                  <path
+                    class="signal-path signal-path-input"
+                    data-signal-input
+                    pathLength="1"
+                    d="M0 110 H500"
+                  />
+                  <path
+                    class="signal-path signal-path-input"
+                    data-signal-input
+                    pathLength="1"
+                    d="M0 192 C260 192 260 110 500 110"
+                  />
+                  <path
+                    class="signal-path signal-path-split"
+                    data-signal-split
+                    pathLength="1"
+                    d="M0 28 H500"
+                  />
+                  <path
+                    class="signal-path signal-path-split"
+                    data-signal-split
+                    pathLength="1"
+                    d="M0 110 H500"
+                  />
+                  <path
+                    class="signal-path signal-path-split"
+                    data-signal-split
+                    pathLength="1"
+                    d="M0 192 H500"
+                  />
+                  <circle class="signal-packet signal-packet-music" data-signal-packet r="6" />
+                  <circle class="signal-packet signal-packet-meet" data-signal-packet r="6" />
+                  <circle class="signal-packet signal-packet-safari" data-signal-packet r="6" />
+                  <circle class="signal-impact" cx="500" cy="110" r="23" />
+                </svg>
+              </div>
+
+              <div class="system-slider signal-master" aria-hidden="true">
+                <span class="system-icon">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M3 9h4l5-4v14l-5-4H3V9Z" />
+                    <path d="M16 8a6 6 0 0 1 0 8M18.5 5a10 10 0 0 1 0 14" />
+                  </svg>
+                </span>
+                <div>
+                  <small>SYSTEM VOLUME</small>
+                  <div class="single-track"><span></span></div>
+                </div>
+                <strong>56%</strong>
+              </div>
+
+              <div class="split-mixer">
+                <div class="split-mixer-head">
+                  <span><i aria-hidden="true"></i> SEMPER MIXER</span>
+                  <strong>3 CHANNELS</strong>
+                </div>
+                <div class="split-channel">
+                  <span>Music</span>
+                  <i><b style="--signal-level: 68%"></b></i>
+                  <strong>68</strong>
+                </div>
+                <div class="split-channel">
+                  <span>Meet</span>
+                  <i><b style="--signal-level: 42%"></b></i>
+                  <strong>42</strong>
+                </div>
+                <div class="split-channel">
+                  <span>Safari</span>
+                  <i><b style="--signal-level: 0%"></b></i>
+                  <strong>0</strong>
+                </div>
+              </div>
             </div>
-            <strong>56%</strong>
           </div>
         </div>
 
@@ -427,7 +576,7 @@
 
             <div class="eq-stage">
               <div class="eq-zero"><span>+12</span><span>0 dB</span><span>-12</span></div>
-              <div class="eq-bands" aria-label="Ten-band EQ model">
+              <div class="eq-bands" role="img" aria-label="Ten-band EQ model">
                 <div class="eq-band"><i style="--gain: 48%"></i><span>32</span></div>
                 <div class="eq-band"><i style="--gain: 48%"></i><span>64</span></div>
                 <div class="eq-band"><i style="--gain: 48%"></i><span>125</span></div>
@@ -527,28 +676,78 @@
             </a>
           </div>
 
-          <div class="code-card reveal" aria-label="Selected Semper source files">
+          <div
+            class="code-card reveal"
+            role="region"
+            aria-label="Selected Semper source files"
+          >
             <div class="code-card-head">
               <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
               <span>semper / source</span>
               <span>Swift</span>
             </div>
             <div class="file-tree">
-              <div><span class="tree-branch">├─</span><span class="tree-dir">Audio</span></div>
-              <div class="tree-indent">
-                <span class="tree-branch">├─</span><span>ProcessTapController.swift</span>
+              <div class="tree-directory">
+                <span class="tree-branch">├─</span><span class="tree-dir">Audio</span>
               </div>
-              <div class="tree-indent">
-                <span class="tree-branch">├─</span><span>SoftLimiter.swift</span>
+              <a
+                class="tree-file tree-indent"
+                href="https://github.com/niharnm/Semper/blob/main/Semper/Audio/Engine/ProcessTapController.swift"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span class="tree-branch">├─</span>
+                <span class="tree-file-name">ProcessTapController.swift</span>
+                <span class="tree-file-role">Process taps</span>
+                <span class="tree-open" aria-hidden="true">↗</span>
+              </a>
+              <a
+                class="tree-file tree-indent"
+                href="https://github.com/niharnm/Semper/blob/main/Semper/Audio/Engine/SoftLimiter.swift"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span class="tree-branch">├─</span>
+                <span class="tree-file-name">SoftLimiter.swift</span>
+                <span class="tree-file-role">Output safety</span>
+                <span class="tree-open" aria-hidden="true">↗</span>
+              </a>
+              <a
+                class="tree-file tree-indent"
+                href="https://github.com/niharnm/Semper/blob/main/Semper/Audio/AutoEQ/AutoEQProcessor.swift"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span class="tree-branch">└─</span>
+                <span class="tree-file-name">AutoEQProcessor.swift</span>
+                <span class="tree-file-role">Headphone EQ</span>
+                <span class="tree-open" aria-hidden="true">↗</span>
+              </a>
+              <div class="tree-directory">
+                <span class="tree-branch">├─</span><span class="tree-dir">Views</span>
               </div>
-              <div class="tree-indent">
-                <span class="tree-branch">└─</span><span>AutoEQProcessor.swift</span>
-              </div>
-              <div><span class="tree-branch">├─</span><span class="tree-dir">Views</span></div>
-              <div class="tree-indent">
-                <span class="tree-branch">└─</span><span>MenuBarPopupView.swift</span>
-              </div>
-              <div><span class="tree-branch">└─</span><span class="tree-dir">SemperTests</span></div>
+              <a
+                class="tree-file tree-indent"
+                href="https://github.com/niharnm/Semper/blob/main/Semper/Views/MenuBarPopupView.swift"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span class="tree-branch">└─</span>
+                <span class="tree-file-name">MenuBarPopupView.swift</span>
+                <span class="tree-file-role">Menu-bar UI</span>
+                <span class="tree-open" aria-hidden="true">↗</span>
+              </a>
+              <a
+                class="tree-file tree-root-file"
+                href="https://github.com/niharnm/Semper/tree/main/SemperTests"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <span class="tree-branch">└─</span>
+                <span class="tree-file-name tree-dir">SemperTests</span>
+                <span class="tree-file-role">Test suite</span>
+                <span class="tree-open" aria-hidden="true">↗</span>
+              </a>
             </div>
             <div class="code-proof">
               <span>GPL-3.0</span>
@@ -597,6 +796,33 @@
           Semper is an open-source project for making macOS audio control make
           sense. If that matters to you, join in.
         </p>
+        <div
+          class="download-command reveal"
+          role="group"
+          aria-label="Download the Semper source"
+        >
+          <div class="download-command-line">
+            <span class="command-prompt" aria-hidden="true">$</span>
+            <code data-download-command>curl -fL https://github.com/niharnm/Semper/archive/refs/heads/main.zip -o &quot;$HOME/Downloads/Semper.zip&quot; &amp;&amp; open &quot;$HOME/Downloads/Semper.zip&quot;</code>
+            <button
+              class="command-copy"
+              type="button"
+              aria-label="Copy download command"
+              data-copy-command
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <rect x="7" y="7" width="9" height="9" rx="1.5" />
+                <path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-7A1.5 1.5 0 0 0 3 5.5v7A1.5 1.5 0 0 0 4.5 14H7" />
+              </svg>
+              <span data-copy-label>Copy</span>
+            </button>
+          </div>
+          <div class="download-command-meta">
+            <span>Source archive</span>
+            <span>Downloads main as Semper.zip, then opens it.</span>
+          </div>
+          <p class="sr-only" role="status" aria-live="polite" data-copy-status></p>
+        </div>
         <a
           class="button button-primary reveal"
           href="https://github.com/niharnm/Semper"
