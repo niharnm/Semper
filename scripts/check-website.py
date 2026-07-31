@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 WEBSITE = ROOT / "website"
+INDEXNOW_KEY = "88c9034f2d635eff6940e8c74d3a1826"
 CANONICALS = {
     "index.html": "https://www.semper.systems/",
     "about.html": "https://www.semper.systems/about.html",
@@ -126,6 +127,13 @@ if index.release_links != ["https://github.com/niharnm/Semper/releases"]:
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
         fail(f"missing required public file: {required_file}")
+
+indexnow_file = WEBSITE / f"{INDEXNOW_KEY}.txt"
+if (
+    not indexnow_file.is_file()
+    or indexnow_file.read_text(encoding="utf-8").strip() != INDEXNOW_KEY
+):
+    fail("missing or invalid IndexNow ownership key file")
 
 if not (ROOT / "LICENSE").is_file():
     fail("missing root GPL-3.0-only license file")
