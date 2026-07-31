@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 WEBSITE = ROOT / "website"
+INDEXNOW_KEY = "88c9034f2d635eff6940e8c74d3a1826"
 CANONICALS = {
     "index.html": "https://www.semper.systems/",
     "about.html": "https://www.semper.systems/about.html",
@@ -26,6 +27,7 @@ class SiteParser(HTMLParser):
         self.release_links: list[str] = []
         self.canonical: str | None = None
         self.has_robots_meta = False
+        self.has_google_site_verification = False
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
@@ -52,6 +54,8 @@ class SiteParser(HTMLParser):
 
         if tag == "meta" and values.get("name") == "robots":
             self.has_robots_meta = True
+        if tag == "meta" and values.get("name") == "google-site-verification":
+            self.has_google_site_verification = bool(values.get("content"))
 
         if "data-release-status" in values and href:
             self.release_links.append(href)
@@ -110,6 +114,9 @@ parsers = {
 }
 index = parsers["index.html"]
 
+if not index.has_google_site_verification:
+    fail("index.html is missing the Google Search Console verification tag")
+
 for required_id in ("release", "faq"):
     if required_id not in index.ids:
         fail(f"index.html is missing the {required_id} section")
@@ -120,6 +127,13 @@ if index.release_links != ["https://github.com/niharnm/Semper/releases"]:
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
         fail(f"missing required public file: {required_file}")
+
+indexnow_file = WEBSITE / f"{INDEXNOW_KEY}.txt"
+if (
+    not indexnow_file.is_file()
+    or indexnow_file.read_text(encoding="utf-8").strip() != INDEXNOW_KEY
+):
+    fail("missing or invalid IndexNow ownership key file")
 
 if not (ROOT / "LICENSE").is_file():
     fail("missing root GPL-3.0-only license file")
