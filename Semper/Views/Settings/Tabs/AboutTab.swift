@@ -50,7 +50,7 @@ struct AboutTab: View {
                     url: DesignTokens.Links.koFi
                 )
                 AboutLinkChip(
-                    label: "GPL-3.0",
+                    label: "Apache-2.0",
                     icon: "doc.text",
                     hoverIcon: "doc.text.fill",
                     hoverColor: .orange,
