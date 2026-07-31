@@ -892,44 +892,29 @@ input[type="range"]::-moz-range-thumb {
 .model-hint {
   position: relative;
   z-index: 4;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   width: min(100%, 510px);
-  margin: 0.8rem auto 0;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(251, 249, 244, 0.9);
-  color: var(--ink-soft);
-  box-shadow: 0 8px 24px rgba(16, 17, 22, 0.08);
-  backdrop-filter: blur(12px);
-}
-
-.model-hint .live-pill {
+  margin: 1rem auto 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
   color: var(--ink-soft);
 }
 
 .model-hint p {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
   margin: 0;
-  font-size: 0.62rem;
+  gap: 1rem;
+  font-size: 0.68rem;
 }
 
-.live-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: rgba(255, 255, 255, 0.65);
+.model-hint strong {
+  color: var(--ink);
   font-family: var(--mono);
-  font-size: 0.58rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.live-pill span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
+  white-space: nowrap;
 }
 
 .hero-footnote {
@@ -3002,7 +2987,9 @@ footer p:last-child {
   }
 
   .model-hint p {
-    display: none;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .problem-heading {
