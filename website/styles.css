@@ -364,15 +364,9 @@ h2 em {
   fill: currentColor;
 }
 
-.button-coffee {
-  border-color: var(--ink);
-  background: #ffdd00;
-  color: var(--ink);
-  box-shadow: 0 12px 30px rgba(23, 23, 23, 0.16);
-}
-
-.button-coffee:hover {
-  box-shadow: 0 16px 34px rgba(23, 23, 23, 0.22);
+.kofi-widget {
+  display: flex;
+  align-items: center;
 }
 
 .experiment-label-treatment {

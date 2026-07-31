@@ -49,11 +49,11 @@ struct AboutTab: View {
                     isPrimary: true
                 )
                 AboutLinkChip(
-                    label: "Buy me a coffee",
+                    label: "Support on Ko-fi",
                     icon: "cup.and.saucer",
                     hoverIcon: "cup.and.saucer.fill",
-                    hoverColor: .yellow,
-                    url: DesignTokens.Links.buyMeACoffee
+                    hoverColor: .blue,
+                    url: DesignTokens.Links.koFi
                 )
                 AboutLinkChip(
                     label: "GPL-3.0",

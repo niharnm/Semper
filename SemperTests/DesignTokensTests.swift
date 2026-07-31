@@ -121,8 +121,8 @@ struct DesignTokensTimingTests {
 @Suite("DesignTokens — Links")
 struct DesignTokensLinkTests {
 
-    @Test("Buy Me a Coffee points to the Semper page")
-    func buyMeACoffeeURL() {
-        #expect(DesignTokens.Links.buyMeACoffee.absoluteString == "https://buymeacoffee.com/semper")
+    @Test("Ko-fi points to Nihar's page")
+    func koFiURL() {
+        #expect(DesignTokens.Links.koFi.absoluteString == "https://ko-fi.com/niharm")
     }
 }
