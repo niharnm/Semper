@@ -1,0 +1,8 @@
+# Default review owner. Add area-specific maintainers as the project grows.
+* @niharnm
+
+/Semper/Audio/ @niharnm
+/Semper/Views/ @niharnm
+/.github/ @niharnm
+/guide/ @niharnm
+/website/ @niharnm

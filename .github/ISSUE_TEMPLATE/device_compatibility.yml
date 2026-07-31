@@ -1,0 +1,85 @@
+name: Device compatibility report
+description: Contribute verified behavior for one privacy-safe audio-device setup.
+title: "[Device]: "
+labels:
+  - help wanted
+  - area: devices
+  - needs hardware
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Device reports help turn hardware-specific behavior into tests and documentation. Use a generic model or device class if the visible name contains personal information.
+  - type: input
+    id: version
+    attributes:
+      label: Semper commit
+      placeholder: Full commit SHA from the tested source build
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac architecture
+      placeholder: macOS 15.5, Apple silicon
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Device transport
+      options:
+        - Built-in
+        - Bluetooth or Bluetooth LE
+        - USB
+        - HDMI
+        - DisplayPort
+        - AirPlay
+        - Thunderbolt
+        - Aggregate device
+        - Virtual device
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Test setup
+      description: List the device class, audio-producing apps, permissions, and routing arrangement without private names.
+    validations:
+      required: true
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: Behaviors tested
+      options:
+        - label: Per-app volume and mute
+        - label: Route change to this device
+        - label: Disconnect and reconnect
+        - label: Device volume or software-volume fallback
+        - label: Balance
+        - label: EQ or AutoEQ
+        - label: Semper relaunch
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: For each checked behavior, state whether it passed and describe any unexpected result.
+    validations:
+      required: true
+  - type: textarea
+    id: follow_up
+    attributes:
+      label: Suggested documentation or test follow-up
+      description: Name the guide, test, or small code boundary that could capture the result.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I tested a current source build and included its commit SHA.
+          required: true
+        - label: I removed private information from device names and attachments.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true

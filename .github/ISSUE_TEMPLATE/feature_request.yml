@@ -1,0 +1,77 @@
+name: Feature request
+description: Propose a bounded change for a clear Mac audio-control problem.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Early ideas and tradeoff questions belong in GitHub Discussions. Use this form when the problem and intended behavior are clear enough to evaluate.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the Mac audio task that is difficult today. Do not begin with the proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: State what Semper should do and what the user would observe.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Audio engine or DSP
+        - Routing or device control
+        - SwiftUI or accessibility
+        - Settings or persistence
+        - Shortcuts, media keys, or HUD
+        - AutoEQ or headphone support
+        - Documentation or website
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Affected apps and device classes
+      description: Include transports such as Bluetooth, USB, HDMI, DisplayPort, built-in, aggregate, or virtual when relevant.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current alternatives
+      description: Explain current Semper or macOS workarounds and why they do not solve the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Non-goals and boundaries
+      description: State what this proposal should not change.
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Are you willing to contribute this change?
+      options:
+        - Yes, I can open a pull request
+        - Yes, with maintainer guidance
+        - I can test or document it
+        - No
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues, discussions, and the roadmap.
+          required: true
+        - label: This request concerns Semper's supported Mac audio scope.
+          required: true
+        - label: I agree to follow the Code of Conduct.
+          required: true

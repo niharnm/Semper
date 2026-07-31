@@ -4,6 +4,13 @@
 
 <h1 align="center">Semper</h1>
 
+<p align="center">
+  <a href="https://github.com/niharnm/Semper/actions/workflows/ci.yml"><img src="https://github.com/niharnm/Semper/actions/workflows/ci.yml/badge.svg" alt="CI status"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/niharnm/Semper" alt="GPL-3.0 license"/></a>
+  <a href="https://github.com/niharnm/Semper/contribute"><img src="https://img.shields.io/github/issues/niharnm/Semper/good%20first%20issue?label=good%20first%20issues" alt="Good first issues"/></a>
+  <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
+</p>
+
 Native, per-application audio mixing and DSP engine for macOS. Semper resides in your menu bar, providing independent volume control, per-app output routing, ISO 226 equal-loudness contour compensation, AutoEQ headphone correction, and a Liquid Glass interface.
 
 [semper.systems](https://semper.systems)
@@ -12,15 +19,18 @@ Native, per-application audio mixing and DSP engine for macOS. Semper resides in
 
 Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
 
-## Download
+> [!IMPORTANT]
+> **Contributors wanted.** Semper is looking for help with Swift, SwiftUI,
+> Core Audio, DSP, device testing, accessibility, tests, and technical writing.
+> Start on the [contribute page](https://github.com/niharnm/Semper/contribute)
+> or read the [contributor guide](CONTRIBUTING.md).
 
-Download the latest Semper release to your Downloads folder and open it:
+## Release status
 
-```bash
-curl -fL https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg -o "$HOME/Downloads/Semper.dmg" && open "$HOME/Downloads/Semper.dmg"
-```
-
-Drag **Semper** into **Applications** when the disk image opens.
+Semper does not have a packaged public release yet. The source, tests, and
+build instructions are public. Signed and notarized downloads will appear on
+[GitHub Releases](https://github.com/niharnm/Semper/releases) when they are
+ready. Do not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
@@ -69,7 +79,24 @@ The output binary is placed at `build/Build/Products/Release/Semper.app`.
 - [AutoEQ Integration](guide/autoeq.md)
 - [Canary Testing](guide/canary.md)
 - [Troubleshooting](guide/troubleshooting.md)
+- [Real-time Audio Safety](guide/realtime-audio-safety.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
+
+## Contributing
+
+External pull requests are welcome while Semper is still source-first.
+
+- Pick a scoped task from [good first issues](https://github.com/niharnm/Semper/contribute)
+  or [help wanted issues](https://github.com/niharnm/Semper/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22).
+- Read the [roadmap](ROADMAP.md) before proposing a larger feature.
+- Use [GitHub Discussions](https://github.com/niharnm/Semper/discussions) for
+  setup help, design questions, and early proposals.
+- Follow [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, audio-thread
+  constraints, hardware reports, and pull-request expectations.
+
+Documentation fixes, isolated tests, device reports, and accessibility work
+are useful contributions. Changes to the real-time audio callback need focused
+tests and a clear safety argument.
 
 ## Legal
 
