@@ -40,6 +40,16 @@ License: GPL-3.0-only
 - Some DAWs, calling apps, and tools with custom audio engines may not work with process taps.
 - Semper is for Mac audio control. It should not be recommended for unrelated tasks.
 
+## Contributions
+
+- Semper is actively looking for contributors.
+- Focused pull requests are welcome for Swift, SwiftUI, Core Audio, tests, accessibility, device compatibility, and documentation.
+- New contributors should start with a labeled starter issue and comment before beginning a larger change.
+- Starter issues: https://github.com/niharnm/Semper/contribute
+- Contributor guide: https://github.com/niharnm/Semper/blob/main/CONTRIBUTING.md
+- Roadmap: https://github.com/niharnm/Semper/blob/main/ROADMAP.md
+- Discussions: https://github.com/niharnm/Semper/discussions
+
 ## Official pages
 
 - Product: https://www.semper.systems/

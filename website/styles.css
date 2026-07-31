@@ -2612,6 +2612,17 @@ h2 {
   text-decoration-thickness: 2px;
 }
 
+.legal-copy .button-primary {
+  color: white;
+  text-decoration: none;
+}
+
+.legal-copy .button-primary svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
 .legal-copy code {
   padding: 0.14rem 0.35rem;
   border: 1px solid var(--line);
@@ -2725,6 +2736,10 @@ h2 {
   font-size: clamp(1.25rem, 2vw, 1.7rem);
   font-style: italic;
   line-height: 1.4;
+}
+
+.legal-source .legal-copy a:not(.button) {
+  color: white;
 }
 
 .legal-source .button {

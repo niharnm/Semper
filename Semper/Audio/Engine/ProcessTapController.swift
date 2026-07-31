@@ -16,7 +16,7 @@ import os
 //    - processAudioCallback() — unified callback with runtime role via callbackID
 //    - Reads nonisolated(unsafe) vars; writes the primary/secondary stereo peak levels,
 //      _primaryCurrentVolume/_secondaryCurrentVolume, _lastRenderHostTime, _hasRenderedAudio
-//    - MUST NOT allocate, lock, log, or call ObjC. See .claude/rules/rt-safety.md
+//    - MUST NOT allocate, lock, log, or call ObjC. See guide/realtime-audio-safety.md
 //
 // The nonisolated(unsafe) annotation marks variables that cross the thread boundary.
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
@@ -1572,7 +1572,7 @@ final class ProcessTapController: ProcessTapControlling {
 
     // MARK: - RT-Safe Audio Callback (DO NOT MODIFY WITHOUT RT-SAFETY REVIEW)
     // This callback runs on CoreAudio's real-time HAL I/O thread.
-    // See .claude/rules/rt-safety.md for constraints.
+    // See guide/realtime-audio-safety.md for constraints.
 
     /// Unified audio processing callback for both primary and secondary taps.
     /// Role is determined at runtime via callbackID comparison (atomic UInt32 read).
