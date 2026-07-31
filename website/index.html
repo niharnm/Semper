@@ -1104,10 +1104,26 @@
         </div>
         <div class="final-actions reveal">
           <div class="kofi-widget">
+            <a
+              class="button button-primary"
+              href="https://ko-fi.com/niharm"
+              target="_blank"
+              rel="noreferrer"
+              data-kofi-fallback
+            >
+              Support me on Ko-fi
+            </a>
             <script src="https://storage.ko-fi.com/cdn/widget/Widget_2.js"></script>
             <script>
-              kofiwidget2.init("Support me on Ko-fi", "#286bde", "X3O4247XRX");
-              kofiwidget2.draw();
+              (() => {
+                const fallback = document.currentScript.parentElement.querySelector(
+                  "[data-kofi-fallback]"
+                );
+                if (!window.kofiwidget2 || !fallback) return;
+
+                kofiwidget2.init("Support me on Ko-fi", "#286bde", "niharm");
+                fallback.outerHTML = kofiwidget2.getHTML();
+              })();
             </script>
           </div>
           <a

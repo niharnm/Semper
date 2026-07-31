@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).resolve().parents[1]
 WEBSITE = ROOT / "website"
 INDEXNOW_KEY = "88c9034f2d635eff6940e8c74d3a1826"
+KO_FI_URL = "https://ko-fi.com/niharm"
 CANONICALS = {
     "index.html": "https://www.semper.systems/",
     "about.html": "https://www.semper.systems/about.html",
@@ -113,6 +114,7 @@ parsers = {
     for filename, canonical in CANONICALS.items()
 }
 index = parsers["index.html"]
+index_source = (WEBSITE / "index.html").read_text(encoding="utf-8")
 
 if not index.has_google_site_verification:
     fail("index.html is missing the Google Search Console verification tag")
@@ -123,6 +125,8 @@ for required_id in ("release", "faq"):
 
 if index.release_links != ["https://github.com/niharnm/Semper/releases"]:
     fail("the release status link must point to the official releases page")
+if f'href="{KO_FI_URL}"' not in index_source:
+    fail("index.html is missing the canonical Ko-fi fallback link")
 
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
@@ -175,6 +179,8 @@ for filename in ("index.html", "about.html", "llms.txt"):
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
 if "releases/latest/download/Semper.dmg" in readme:
     fail("README.md contains a broken packaged download link")
+if f"]({KO_FI_URL})" not in readme:
+    fail("README.md is missing the canonical Ko-fi badge link")
 
 print(
     f"website check passed: {len(CANONICALS)} pages, "
