@@ -190,10 +190,11 @@ struct ShortcutsTab: View {
 
     private var targetAppControl: some View {
         VStack(alignment: .trailing, spacing: 6) {
+            let hasActiveAudioApps = !shortcutsRegistry.targetAppOptions().isEmpty
             Picker("", selection: $settings.appSettings.shortcutTargetMode) {
                 ForEach(ShortcutTargetMode.allCases) { mode in
                     Text(mode.description).tag(mode)
-                        .disabled(mode == .selectedApp && shortcutsRegistry.targetAppOptions().isEmpty)
+                        .disabled(mode == .selectedApp && !hasActiveAudioApps)
                 }
             }
             .pickerStyle(.menu)
