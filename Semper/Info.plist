@@ -15,7 +15,7 @@
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/niharnm/Semper/update-feed/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>$(SPARKLE_PUBLIC_ED_KEY)</string>
+	<string>BHwh9ZvelOqy2MJ4o1OPjMeB7WPqM/OFU/0JREA/NN8=</string>
 	<key>SemperDefaultUpdateChannel</key>
 	<string>$(SEMPER_DEFAULT_UPDATE_CHANNEL)</string>
 	<key>CFBundleURLTypes</key>

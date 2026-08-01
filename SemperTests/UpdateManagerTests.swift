@@ -6,6 +6,18 @@ import Testing
 struct UpdateManagerTests {
     private let validPublicKey = Data(repeating: 1, count: 32).base64EncodedString()
 
+    @Test("app bundle contains valid updater metadata")
+    func bundledConfiguration() {
+        let info = Bundle(for: UpdateManager.self).infoDictionary
+
+        #expect(
+            UpdaterConfiguration.isValid(
+                feedURL: info?["SUFeedURL"] as? String,
+                publicKey: info?["SUPublicEDKey"] as? String
+            )
+        )
+    }
+
     @Test("accepts a valid HTTPS feed and Ed25519 public key")
     func validConfiguration() {
         #expect(
