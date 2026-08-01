@@ -12,12 +12,6 @@ struct AboutTab: View {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
     }
 
-    private var yearText: String {
-        let startYear = 2026
-        let currentYear = Calendar.current.component(.year, from: .now)
-        return startYear == currentYear ? "\(startYear)" : "\(startYear)-\(currentYear)"
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -56,7 +50,7 @@ struct AboutTab: View {
                     url: DesignTokens.Links.koFi
                 )
                 AboutLinkChip(
-                    label: "GPL-3.0",
+                    label: "Apache-2.0",
                     icon: "doc.text",
                     hoverIcon: "doc.text.fill",
                     hoverColor: .orange,
@@ -64,19 +58,12 @@ struct AboutTab: View {
                 )
             }
 
-            footer
+            Text("© 2026 Semper")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
                 .padding(.top, 16)
                 .padding(.bottom, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var footer: some View {
-        VStack(spacing: 4) {
-            Text("Semper is led by Nihar Manchikakapudi.")
-            Text("© \(yearText) Nihar Manchikakapudi and contributors")
-        }
-        .font(.system(size: 10))
-        .foregroundStyle(.tertiary)
     }
 }

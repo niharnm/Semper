@@ -199,7 +199,7 @@ if (
     fail("missing or invalid IndexNow ownership key file")
 
 if not (ROOT / "LICENSE").is_file():
-    fail("missing root GPL-3.0-only license file")
+    fail("missing root Apache-2.0 license file")
 
 robots = (WEBSITE / "robots.txt").read_text(encoding="utf-8")
 if "User-agent: OAI-SearchBot" not in robots:
