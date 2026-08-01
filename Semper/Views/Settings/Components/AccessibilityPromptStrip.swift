@@ -56,7 +56,7 @@ struct AccessibilityPromptStrip: View {
                         Text("Open Settings")
                         Image(systemName: "arrow.up.right.square")
                             .font(.system(size: 9, weight: .medium))
-                    }
+                            .accessibilityHidden(true)
                     .font(DesignTokens.Typography.pickerText)
                 }
                 .buttonStyle(.borderedProminent)
