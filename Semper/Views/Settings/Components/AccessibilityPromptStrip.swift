@@ -32,6 +32,7 @@ struct AccessibilityPromptStrip: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .frame(width: 30, height: 30)
+            .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                 Text(showingGrantedFlourish ? "Access Granted" : "Accessibility Required")
