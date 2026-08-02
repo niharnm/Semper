@@ -101,6 +101,6 @@ struct AboutLinkChip: View {
     }
     .padding(24)
     .frame(width: 520, height: 80)
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
