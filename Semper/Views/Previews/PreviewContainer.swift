@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// Container view for consistent preview styling
-/// Wraps content with dark material background matching the app's menu bar popup
+/// Wraps content with the popup glass background matching the app's menu bar popup
 struct PreviewContainer<Content: View>: View {
     let width: CGFloat
     let content: Content
@@ -19,7 +19,7 @@ struct PreviewContainer<Content: View>: View {
         content
             .frame(width: width)
             .padding(DesignTokens.Spacing.lg)
-            .darkGlassBackground()
+            .popupGlassBackground()
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius))
             .environment(\.colorScheme, .dark)
     }
@@ -36,7 +36,7 @@ struct ComponentPreviewContainer<Content: View>: View {
     var body: some View {
         content
             .padding(DesignTokens.Spacing.lg)
-            .darkGlassBackground()
+            .popupGlassBackground()
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius))
             .environment(\.colorScheme, .dark)
     }

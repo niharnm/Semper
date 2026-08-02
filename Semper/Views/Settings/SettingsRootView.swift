@@ -131,7 +131,7 @@ struct SettingsRootView: View {
             Divider()
             selectedPane
         }
-        .darkGlassBackground()
+        .popupGlassBackground()
     }
 
     private var paneHeader: some View {
