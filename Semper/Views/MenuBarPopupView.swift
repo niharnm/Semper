@@ -128,7 +128,7 @@ struct MenuBarPopupView: View {
             WindowAppearanceBridge(appearance: audioEngine.settingsManager.appSettings.appearance.nsAppearance)
                 .frame(width: 0, height: 0)
         )
-        .darkGlassBackground()
+        .popupGlassBackground()
         .preferredColorScheme(audioEngine.settingsManager.appSettings.appearance.swiftUIColorScheme)
         .environment(\.appearancePreference, audioEngine.settingsManager.appSettings.appearance)
         .onAppear {

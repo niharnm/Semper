@@ -198,7 +198,7 @@ extension View {
         .hoverableRow()
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
 
@@ -211,7 +211,7 @@ extension View {
             .sectionHeaderStyle()
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
 
@@ -222,7 +222,7 @@ extension View {
         Text("0%").percentageStyle()
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
 
@@ -244,7 +244,7 @@ extension View {
         .iconButtonStyle(isActive: false)
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
 
@@ -261,7 +261,7 @@ extension View {
         .glassButtonStyle()
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
 
@@ -292,6 +292,6 @@ extension View {
         }
     }
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
