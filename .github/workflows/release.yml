@@ -136,6 +136,7 @@ jobs:
           bash -n scripts/verify-release-signature.sh
           plutil -lint ExportOptions.plist Semper/Info.plist
           xmllint --noout appcast.xml
+          python3 scripts/test_update_local.py
           python3 scripts/test_release_tools.py
 
       - name: Check website

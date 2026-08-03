@@ -875,7 +875,7 @@
         >
           <div class="download-command-line">
             <span class="command-prompt" aria-hidden="true">$</span>
-            <code data-command-value>open &quot;semper://update&quot;</code>
+            <code data-command-value>/usr/bin/curl -fsSL https://raw.githubusercontent.com/niharnm/Semper/main/scripts/update-local.sh | /bin/bash</code>
             <button
               class="command-copy"
               type="button"
@@ -891,7 +891,7 @@
           </div>
           <div class="download-command-meta">
             <span>Already installed?</span>
-            <span>Checks for a signed update without opening Settings.</span>
+            <span>Confirms, builds GitHub main, then replaces the installed app.</span>
           </div>
           <p class="sr-only" role="status" aria-live="polite" data-command-status></p>
         </div>

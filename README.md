@@ -72,11 +72,16 @@ xcodebuild \
 
 The output binary is placed at `build/Build/Products/Release/Semper.app`.
 
-Once Semper is installed, you can start an update from Terminal without opening Settings:
+To build the current GitHub `main` commit and replace the installed app, run:
 
 ```bash
-open "semper://update"
+/usr/bin/curl -fsSL https://raw.githubusercontent.com/niharnm/Semper/main/scripts/update-local.sh | /bin/bash
 ```
+
+The updater shows the installed and GitHub versions, asks for confirmation,
+then replaces `/Applications/Semper.app` and reopens it. Declining leaves the
+installed app unchanged. This is a local source build, not a signed public
+release.
 
 ## Documentation & Guides
 
