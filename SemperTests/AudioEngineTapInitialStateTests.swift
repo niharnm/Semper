@@ -60,6 +60,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var currentDeviceUID: String? { currentDeviceUIDs.first }
     var tapSourceDeviceUID: String? = nil
     var shouldFailDeviceSwitch = false
+    private(set) var lastSwitchRequiredExclusiveOutput: Bool?
 
     init(app: AudioApp, deviceUIDs: [String]) {
         self.app = app
@@ -98,7 +99,11 @@ final class RecordingProcessTapController: ProcessTapControlling {
         self.balance = balance
     }
 
-    func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
+    func switchDevice(
+        to newDeviceUID: String,
+        preferredTapSourceDeviceUID: String?,
+        requiresExclusiveOutput: Bool
+    ) async throws {
         if shouldFailDeviceSwitch {
             throw NSError(
                 domain: "SemperTests.Route",
@@ -106,10 +111,15 @@ final class RecordingProcessTapController: ProcessTapControlling {
                 userInfo: [NSLocalizedDescriptionKey: "Test route failed"]
             )
         }
+        lastSwitchRequiredExclusiveOutput = requiresExclusiveOutput
         currentDeviceUIDs = [newDeviceUID]
     }
 
-    func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
+    func updateDevices(
+        to newDeviceUIDs: [String],
+        preferredTapSourceDeviceUID: String?,
+        requiresExclusiveOutput: Bool
+    ) async throws {
         currentDeviceUIDs = newDeviceUIDs
     }
 
@@ -490,6 +500,33 @@ struct AudioEngineTapInitialStateTests {
             return
         }
         #expect(previousUIDs == [fix.device.uid])
+    }
+
+    @Test("Manual app route switches without overlapping the previous output")
+    func manualRouteRequiresExclusiveOutput() async throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+
+        let secondDevice = AudioDevice(
+            id: 100,
+            uid: "uid-second",
+            name: "Second Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addOutputDevice(secondDevice)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: secondDevice.uid)
+        for _ in 0..<20 {
+            if tap.lastSwitchRequiredExclusiveOutput != nil {
+                break
+            }
+            await Task.yield()
+        }
+
+        #expect(tap.lastSwitchRequiredExclusiveOutput == true)
+        #expect(tap.currentDeviceUID == secondDevice.uid)
     }
 
     @Test("A newly discovered helper process rebuilds the app tap")

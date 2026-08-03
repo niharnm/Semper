@@ -196,10 +196,10 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     nonisolated static func shouldUseCrossfade(
-        sourceDeviceDead: Bool,
-        sourceHasRecentAudio: Bool
+        sourceHasRecentAudio: Bool,
+        requiresExclusiveOutput: Bool
     ) -> Bool {
-        !sourceDeviceDead && sourceHasRecentAudio
+        sourceHasRecentAudio && !requiresExclusiveOutput
     }
 
     /// Health checks should only run after activation has settled and at least one callback occurred.
@@ -450,7 +450,7 @@ final class ProcessTapController: ProcessTapControlling {
     /// Recreates the aggregate at the device's new rate on a Bluetooth A2DP↔SCO change. Recreation is
     /// the only reliable way to re-rate the IOProc — in-place nominal-rate or buffer-size writes
     /// silence a running aggregate's IOProc, which can't be reconfigured live. Routed through the
-    /// destructive switch with `sourceAlreadySilent: true` so the old aggregate is force-silenced
+    /// destructive switch with `skipTimedTransition: true` so the old aggregate is force-silenced
     /// first (cutting the rate-mismatched garbage) before the rebuild, then volume ramps back up — a
     /// brief clean dip rather than a crackle. The switch can't be fully gapless: the BT link itself
     /// renegotiates across the profile change.
@@ -458,7 +458,7 @@ final class ProcessTapController: ProcessTapControlling {
         guard activated, let primaryUID = currentDeviceUIDs.first else { return }
         guard primaryResources.tapDescription != nil else { throw CrossfadeError.noTapDescription }
         logger.info("[RATE] \(self.app.name): recreating aggregate at new rate")
-        try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: currentDeviceUIDs, sourceAlreadySilent: true)
+        try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: currentDeviceUIDs, skipTimedTransition: true)
     }
 
     private func preferredStereoChannels(for deviceUID: String?) -> (left: Int, right: Int) {
@@ -731,17 +731,29 @@ final class ProcessTapController: ProcessTapControlling {
         logger.info("Tap activated for \(self.app.name) on \(self.targetDeviceUIDs.count) device(s)")
     }
 
-    /// Switch to a single device (convenience for backward compatibility).
-    /// - Parameter sourceDeviceDead: If true, skips crossfade (source has no audio to blend from).
-    func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String? = nil, sourceDeviceDead: Bool = false) async throws {
-        try await updateDevices(to: [newDeviceUID], preferredTapSourceDeviceUID: preferredTapSourceDeviceUID, sourceDeviceDead: sourceDeviceDead)
+    /// Switch to a single device.
+    /// - Parameters:
+    ///   - requiresExclusiveOutput: If true, silences the source before starting the selected output.
+    func switchDevice(
+        to newDeviceUID: String,
+        preferredTapSourceDeviceUID: String? = nil,
+        requiresExclusiveOutput: Bool = false
+    ) async throws {
+        try await updateDevices(
+            to: [newDeviceUID],
+            preferredTapSourceDeviceUID: preferredTapSourceDeviceUID,
+            requiresExclusiveOutput: requiresExclusiveOutput
+        )
     }
 
     /// Updates output devices using crossfade for seamless transition.
     /// Creates a second tap+aggregate for the new device set, crossfades, then destroys the old one.
-    /// - Parameter sourceDeviceDead: If true, skips crossfade and uses destructive switch
-    ///   (the source device is disconnected, so there's no audio to blend from).
-    func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String? = nil, sourceDeviceDead: Bool = false) async throws {
+    /// - Parameter requiresExclusiveOutput: If true, silences the source before starting the new output.
+    func updateDevices(
+        to newDeviceUIDs: [String],
+        preferredTapSourceDeviceUID: String? = nil,
+        requiresExclusiveOutput: Bool = false
+    ) async throws {
         precondition(!newDeviceUIDs.isEmpty, "Must have at least one target device")
         self.preferredTapSourceDeviceUID = preferredTapSourceDeviceUID
 
@@ -753,22 +765,37 @@ final class ProcessTapController: ProcessTapControlling {
         guard newDeviceUIDs != currentDeviceUIDs else { return }
 
         let startTime = CFAbsoluteTimeGetCurrent()
-        logger.info("[UPDATE] Switching \(self.app.name) to \(newDeviceUIDs.count) device(s)\(sourceDeviceDead ? " (source dead)" : "")")
+        logger.info("[UPDATE] Switching \(self.app.name) to \(newDeviceUIDs.count) device(s)\(requiresExclusiveOutput ? " (exclusive)" : "")")
 
         // For now, crossfade uses the first (primary) device
         // All devices in the aggregate will be included
         let primaryDeviceUID = newDeviceUIDs[0]
 
         let useCrossfade = Self.shouldUseCrossfade(
-            sourceDeviceDead: sourceDeviceDead,
-            sourceHasRecentAudio: hasRecentAudioCallback(within: 0.5)
+            sourceHasRecentAudio: hasRecentAudioCallback(within: 0.5),
+            requiresExclusiveOutput: requiresExclusiveOutput
         )
 
         if !useCrossfade {
+            if let inFlightCrossfade = crossfadeTask {
+                inFlightCrossfade.cancel()
+                do {
+                    try await inFlightCrossfade.value
+                } catch is CancellationError {
+                    logger.info("[UPDATE] Cancelled in-flight crossfade before exclusive switch")
+                } catch {
+                    logger.warning("[UPDATE] In-flight crossfade ended with an error: \(error.localizedDescription)")
+                }
+                crossfadeTask = nil
+            }
             guard primaryResources.tapDescription != nil else {
                 throw CrossfadeError.noTapDescription
             }
-            try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs, sourceAlreadySilent: true)
+            try await performDestructiveDeviceSwitch(
+                to: primaryDeviceUID,
+                allDeviceUIDs: newDeviceUIDs,
+                skipTimedTransition: requiresExclusiveOutput
+            )
         } else {
             crossfadeTask?.cancel()
             crossfadeTask = Task {
@@ -1176,9 +1203,9 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     /// Performs a destructive (non-crossfade) device switch with silence padding.
-    /// - Parameter sourceAlreadySilent: If true (e.g. source device disconnected), skips the
+    /// - Parameter skipTimedTransition: If true (e.g. source device disconnected), skips the
     ///   pre-switch silence wait and uses a shorter post-switch settle time.
-    private func performDestructiveDeviceSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil, sourceAlreadySilent: Bool = false) async throws {
+    private func performDestructiveDeviceSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil, skipTimedTransition: Bool = false) async throws {
         let deviceUIDs = allDeviceUIDs ?? [primaryDeviceUID]
         let originalVolume = _volume
 
@@ -1186,16 +1213,16 @@ final class ProcessTapController: ProcessTapControlling {
         OSMemoryBarrier()
         // LIFE-011: Ensure _forceSilence is always cleared, even if switch throws
         defer { _forceSilence = false; OSMemoryBarrier() }
-        logger.info("[SWITCH-DESTROY] Enabled _forceSilence=true (sourceAlreadySilent=\(sourceAlreadySilent))")
+        logger.info("[SWITCH-DESTROY] Enabled _forceSilence=true (skipTimedTransition=\(skipTimedTransition))")
 
-        if !sourceAlreadySilent {
+        if !skipTimedTransition {
             // Wait for current audio to drain before tearing down the old device
             try await Task.sleep(for: .milliseconds(100))
         }
 
         try performDeviceSwitch(to: deviceUIDs)
 
-        if sourceAlreadySilent {
+        if skipTimedTransition {
             _primaryCurrentVolume = originalVolume
             _volume = originalVolume
             _outputGateRawPhase = 0

@@ -1177,7 +1177,8 @@ final class AudioEngine {
                     if tap.currentDeviceUIDs != [targetUID] {
                         try await tap.switchDevice(
                             to: targetUID,
-                            preferredTapSourceDeviceUID: preferredTapSourceUID
+                            preferredTapSourceDeviceUID: preferredTapSourceUID,
+                            requiresExclusiveOutput: true
                         )
                     } else if previouslyFollowedDefault != shouldFollowDefault {
                         try await tap.refreshTapSource(preferredTapSourceUID)
@@ -1787,7 +1788,7 @@ final class AudioEngine {
                 for (tap, fallbackUID) in singleModeTapsToSwitch {
                     do {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [fallbackUID], isFollowsDefault: true)
-                        try await tap.switchDevice(to: fallbackUID, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
+                        try await tap.switchDevice(to: fallbackUID, preferredTapSourceDeviceUID: preferredTapSourceUID, requiresExclusiveOutput: true)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [fallbackUID])
                         self.applyAutoEQToTap(tap)
                     } catch {
@@ -1800,7 +1801,7 @@ final class AudioEngine {
                 for (tap, remainingUIDs) in multiModeTapsToUpdate {
                     do {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: remainingUIDs, isFollowsDefault: self.followsDefault.contains(tap.app.id))
-                        try await tap.updateDevices(to: remainingUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
+                        try await tap.updateDevices(to: remainingUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID, requiresExclusiveOutput: true)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: remainingUIDs)
                         self.logger.debug("Removed \(deviceName) from \(tap.app.name) multi-device output")
                     } catch {

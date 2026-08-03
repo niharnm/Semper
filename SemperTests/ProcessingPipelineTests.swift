@@ -246,19 +246,19 @@ struct StereoMeteringTests {
 struct DeviceSwitchSelectionTests {
     @Test("Crossfade is used only for a live source with recent audio",
           arguments: [
-              (sourceDead: false, recentAudio: true, expected: true),
-              (sourceDead: false, recentAudio: false, expected: false),
-              (sourceDead: true, recentAudio: true, expected: false),
-              (sourceDead: true, recentAudio: false, expected: false)
+              (recentAudio: true, exclusiveOutput: false, expected: true),
+              (recentAudio: false, exclusiveOutput: false, expected: false),
+              (recentAudio: true, exclusiveOutput: true, expected: false),
+              (recentAudio: false, exclusiveOutput: true, expected: false)
           ])
     func crossfadeDecision(
-        sourceDead: Bool,
         recentAudio: Bool,
+        exclusiveOutput: Bool,
         expected: Bool
     ) {
         #expect(ProcessTapController.shouldUseCrossfade(
-            sourceDeviceDead: sourceDead,
-            sourceHasRecentAudio: recentAudio
+            sourceHasRecentAudio: recentAudio,
+            requiresExclusiveOutput: exclusiveOutput
         ) == expected)
     }
 }
