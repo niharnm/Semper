@@ -446,6 +446,137 @@ struct AudioEngineTapInitialStateTests {
         #expect(fix.engine.masterOutputVolume(for: fix.device) == 3)
     }
 
+    @Test("A hardware ceiling above the device volume does not attenuate the tap")
+    func hardwareCeilingDoesNotAttenuateTap() throws {
+        let fix = makeFixture(deviceVolume: 0.4)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let tap = try #require(fix.lastTap())
+        #expect(tap.volume == 1)
+    }
+
+    @Test("A failed ceiling remains visible above the configured limit")
+    func failedCeilingDoesNotMaskReadback() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.4)
+
+        #expect(fix.engine.masterOutputVolume(for: fix.device) == 0.8)
+    }
+
+    @Test("A software ceiling does not apply the device volume twice")
+    func softwareCeilingDoesNotDoubleAttenuateTap() throws {
+        let fix = makeFixture(deviceVolume: 0.4)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .software
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let tap = try #require(fix.lastTap())
+        #expect(tap.volume == 0.4)
+    }
+
+    @Test("A failed ceiling write restores the prior setting")
+    func failedCeilingWriteRollsBack() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.volumeWritesSucceed = false
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+    }
+
+    @Test("A failed asynchronous DDC ceiling write restores the prior setting")
+    func failedDDCCeilingWriteRollsBack() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        fix.settings.setOutputMasterGain(for: fix.device.uid, to: 2)
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+        #expect(fix.settings.getOutputMasterGain(for: fix.device.uid) == 2)
+    }
+
+    @Test("Disabling a ceiling wins over a late DDC failure")
+    func disableSupersedesPendingDDCCeiling() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+        fix.engine.commitOutputVolumeLimitChange(for: fix.device.uid, to: nil)
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+    }
+
+    @Test("A newer ceiling owns rollback for a late DDC failure")
+    func newerCeilingSupersedesPendingDDCCeiling() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let first = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: first
+        )
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.45)
+        let second = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.4),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: second
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == 0.8)
+    }
+
     @Test("Unknown physical volume has no known master value")
     func unknownMasterOutputVolume() {
         let fix = makeFixture()

@@ -10,6 +10,12 @@ enum MasterOutputVolumeWriteResult: Equatable {
     case rejected
 }
 
+enum DefaultOutputSwitchResult: Equatable {
+    case applied
+    case accepted
+    case rejected
+}
+
 @Observable
 @MainActor
 final class AudioEngine {
@@ -36,11 +42,15 @@ final class AudioEngine {
         let previousGain: Float?
         var requestedGain: Float
     }
+    private struct PendingOutputVolumeLimitChange {
+        let previousLimit: Float?
+    }
     private struct PendingDDCOutputCommand {
         let deviceUID: String
         let key: AudioControlKey
     }
     private var pendingMasterOutputWrites: [String: PendingMasterOutputWrite] = [:]
+    private var pendingOutputVolumeLimitChanges: [String: PendingOutputVolumeLimitChange] = [:]
     private var pendingDDCOutputCommands: [AudioDeviceID: PendingDDCOutputCommand] = [:]
     private var outputBalances: [String: Float] = [:]
     private var appRouteLifecycles: [pid_t: AppRouteLifecycle] = [:]
@@ -52,6 +62,27 @@ final class AudioEngine {
     private var nextAppRouteOperationGeneration: UInt64 = 0
     private var appRouteOperationGenerations: [pid_t: UInt64] = [:]
     private var pendingAppRouteOperations: [pid_t: PendingAppRouteOperation] = [:]
+    private struct PendingSafeOutputSwitch {
+        let generation: UInt64
+        let deviceID: AudioDeviceID
+        let reportsCommandResult: Bool
+        let requiresDDCConfirmation: Bool
+        let ownsOutputVolumeLimitChange: Bool
+        var state: SafeOutputSwitchState
+    }
+    private var nextSafeOutputSwitchGeneration: UInt64 = 0
+    private var pendingSafeOutputSwitch: PendingSafeOutputSwitch?
+    private var safeOutputSwitchTimeoutTask: Task<Void, Never>?
+    private struct PendingDefaultOutputConfirmation {
+        let generation: UInt64
+        let deviceID: AudioDeviceID
+        let deviceUID: String
+        let echoToken: Int
+        let reportsCommandResult: Bool
+    }
+    private var nextDefaultOutputConfirmationGeneration: UInt64 = 0
+    private var pendingDefaultOutputConfirmation: PendingDefaultOutputConfirmation?
+    private var defaultOutputConfirmationTimeoutTask: Task<Void, Never>?
 
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
@@ -195,12 +226,58 @@ final class AudioEngine {
         return min(maximumGain, deviceVolume)
     }
 
+    func beginOutputVolumeLimitChange(for deviceUID: String, to limit: Float) {
+        rollbackPendingOutputVolumeLimitChange(for: deviceUID)
+        pendingOutputVolumeLimitChanges[deviceUID] = PendingOutputVolumeLimitChange(
+            previousLimit: settingsManager.outputVolumeLimit(for: deviceUID)
+        )
+        settingsManager.setOutputVolumeLimit(for: deviceUID, to: limit)
+    }
+
+    func hasPendingOutputVolumeLimitChange(for deviceUID: String) -> Bool {
+        pendingOutputVolumeLimitChanges[deviceUID] != nil
+    }
+
+    func commitOutputVolumeLimitChange(for deviceUID: String, to limit: Float?) {
+        pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
+        settingsManager.setOutputVolumeLimit(for: deviceUID, to: limit)
+    }
+
+    func resolveOutputVolumeLimitChange(
+        for deviceUID: String,
+        commandResult: AudioCommandResult
+    ) {
+        switch commandResult {
+        case .applied:
+            pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
+        case .unchanged:
+            if pendingMasterOutputWrites[deviceUID] == nil {
+                pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
+            }
+        case .accepted:
+            break
+        case .rejected:
+            rollbackPendingOutputVolumeLimitChange(for: deviceUID)
+        }
+    }
+
+    private func rollbackPendingOutputVolumeLimitChange(for deviceUID: String) {
+        guard let pending = pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID) else {
+            return
+        }
+        settingsManager.setOutputVolumeLimit(for: deviceUID, to: pending.previousLimit)
+        refreshTapOutputStates(forDeviceUID: deviceUID)
+    }
+
     @discardableResult
     func setMasterOutputVolume(
         for device: AudioDevice,
         to gain: Float
     ) -> MasterOutputVolumeWriteResult {
-        let maximumGain = outputCapabilities(for: device).maximumGain
+        let maximumGain = min(
+            outputCapabilities(for: device).maximumGain,
+            settingsManager.outputVolumeLimit(for: device.uid) ?? .greatestFiniteMagnitude
+        )
         let clampedGain = max(0, min(maximumGain, gain))
         let previousGain = outputMasterGains[device.uid]
             ?? settingsManager.getOutputMasterGain(for: device.uid)
@@ -265,12 +342,18 @@ final class AudioEngine {
         }
     }
 
-    func supersedePendingMasterOutputWrite(for deviceUID: String) {
+    func supersedePendingMasterOutputWrite(
+        for deviceUID: String,
+        preservingVolumeLimitChange: Bool = false
+    ) {
         guard let pending = pendingMasterOutputWrites.removeValue(forKey: deviceUID) else {
             return
         }
         pendingDDCOutputCommands = pendingDDCOutputCommands.filter { _, command in
             command.key != .outputMasterGain(deviceUID)
+        }
+        if !preservingVolumeLimitChange {
+            rollbackPendingOutputVolumeLimitChange(for: deviceUID)
         }
         setStoredMasterOutputGain(pending.previousGain, deviceUID: deviceUID)
         refreshTapOutputStates(forDeviceUID: deviceUID)
@@ -623,12 +706,19 @@ final class AudioEngine {
 
         deviceVolumeMonitor.onOutputWriteCompleted = { [weak self] deviceID, succeeded in
             guard let self else { return }
+            self.handleSafeOutputPreflightWriteCompleted(
+                deviceID: deviceID,
+                succeeded: succeeded
+            )
             let pendingCommand = self.pendingDDCOutputCommands.removeValue(forKey: deviceID)
             let deviceUID = pendingCommand?.deviceUID
                 ?? self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid
             guard let deviceUID else { return }
             let pendingMasterWrite = self.pendingMasterOutputWrites.removeValue(forKey: deviceUID)
             if !succeeded {
+                if pendingCommand?.key == .outputMasterGain(deviceUID) {
+                    self.rollbackPendingOutputVolumeLimitChange(for: deviceUID)
+                }
                 if let pendingMasterWrite {
                     self.setStoredMasterOutputGain(
                         pendingMasterWrite.previousGain,
@@ -640,6 +730,10 @@ final class AudioEngine {
                     self.onCommandWriteRejected?(key)
                 }
                 return
+            }
+
+            if pendingCommand?.key == .outputMasterGain(deviceUID) {
+                self.pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
             }
 
             guard let key = pendingCommand?.key else { return }
@@ -718,6 +812,7 @@ final class AudioEngine {
         }
 
         deviceVolumeMonitor.onDefaultDeviceChanged = { [weak self] newDefaultUID in
+            self?.handleDefaultOutputConfirmation(newDefaultUID)
             self?.onCommandValueObserved?(.defaultOutput, .identifier(newDefaultUID))
             self?.handleDefaultDeviceChanged(newDefaultUID)
         }
@@ -1015,6 +1110,11 @@ final class AudioEngine {
 
     func stop() {
         stopHealthMonitor()
+        cancelPendingSafeOutputSwitch(reportFailure: true)
+        cancelPendingDefaultOutputConfirmation(reportFailure: true)
+        for deviceUID in Array(pendingOutputVolumeLimitChanges.keys) {
+            rollbackPendingOutputVolumeLimitChange(for: deviceUID)
+        }
         for pending in pendingAppRouteOperations.values {
             pending.task.cancel()
             onCommandWriteRejected?(pending.key)
@@ -1131,9 +1231,11 @@ final class AudioEngine {
         let deviceGain = outputVolumeBackend(for: device.id) == .software
             ? deviceVolumeMonitor.outputProcessingGain(for: device.id)
             : 1.0
-        let masterGain = outputMasterGains[primaryUID]
+        let storedMasterGain = outputMasterGains[primaryUID]
             ?? settingsManager.getOutputMasterGain(for: primaryUID)
-            ?? 1.0
+        let masterGain = storedMasterGain.map {
+            min($0, settingsManager.outputVolumeLimit(for: primaryUID) ?? $0)
+        } ?? 1
         return appGain * deviceGain * masterGain
     }
 
@@ -1351,19 +1453,239 @@ final class AudioEngine {
         }
     }
 
-    /// Sets the system default output device, routes followsDefault apps, and registers
-    /// an echo so the resulting CoreAudio callback is consumed rather than treated as
-    /// an external change.
-    /// UI code should call this instead of `deviceVolumeMonitor.setDefaultDevice` directly.
     @discardableResult
-    func setDefaultOutputDevice(_ deviceID: AudioDeviceID) -> Bool {
-        guard deviceVolumeMonitor.setDefaultDevice(deviceID) else { return false }
-        if let uid = deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid {
-            outputEchoTracker.increment(uid)
-            lastConfirmedDefaultUID = uid
-            routeFollowsDefaultApps(to: uid)
+    func requestDefaultOutputDeviceSwitch(_ deviceID: AudioDeviceID) -> DefaultOutputSwitchResult {
+        beginDefaultOutputSwitch(deviceID, reportsCommandResult: true)
+    }
+
+    private func beginDefaultOutputSwitch(
+        _ deviceID: AudioDeviceID,
+        reportsCommandResult: Bool
+    ) -> DefaultOutputSwitchResult {
+        guard let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
+              isAliveCheck(deviceID) else {
+            return .rejected
         }
-        return true
+
+        cancelPendingSafeOutputSwitch(
+            reportFailure: true,
+            transferringVolumeLimitTo: device.uid
+        )
+        cancelPendingDefaultOutputConfirmation(reportFailure: true)
+        let state = SafeOutputSwitchState(
+            targetDeviceUID: device.uid,
+            volumeLimit: settingsManager.outputVolumeLimit(for: device.uid),
+            observedTargetVolume: deviceVolumeMonitor.confirmedOutputVolume(for: deviceID)
+        )
+
+        switch state.action {
+        case .switchOutput:
+            pendingOutputVolumeLimitChanges.removeValue(forKey: device.uid)
+            return performDefaultOutputSwitch(
+                to: device,
+                reportsCommandResult: reportsCommandResult
+            )
+
+        case .lowerTargetVolume(_, let limit):
+            let ownsOutputVolumeLimitChange = pendingOutputVolumeLimitChanges[device.uid] != nil
+            supersedePendingMasterOutputWrite(
+                for: device.uid,
+                preservingVolumeLimitChange: ownsOutputVolumeLimitChange
+            )
+            if let pendingCommand = pendingDDCOutputCommands.removeValue(forKey: deviceID) {
+                onCommandWriteRejected?(pendingCommand.key)
+            }
+
+            nextSafeOutputSwitchGeneration &+= 1
+            let generation = nextSafeOutputSwitchGeneration
+            let requiresDDCConfirmation = deviceVolumeMonitor.outputVolumeBackend(for: deviceID) == .ddc
+            pendingSafeOutputSwitch = PendingSafeOutputSwitch(
+                generation: generation,
+                deviceID: deviceID,
+                reportsCommandResult: reportsCommandResult,
+                requiresDDCConfirmation: requiresDDCConfirmation,
+                ownsOutputVolumeLimitChange: ownsOutputVolumeLimitChange,
+                state: state
+            )
+            deviceVolumeMonitor.setVolume(for: deviceID, to: limit)
+            safeOutputSwitchTimeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: SafeOutputSwitchState.preflightTimeout)
+                guard let self, !Task.isCancelled else { return }
+                self.finishSafeOutputPreflight(generation: generation, writeSucceeded: nil)
+            }
+            return .accepted
+
+        case .keepCurrentOutput:
+            return .rejected
+        }
+    }
+
+    private func finishSafeOutputPreflight(
+        generation: UInt64,
+        writeSucceeded: Bool?
+    ) {
+        guard var pending = pendingSafeOutputSwitch,
+              pending.generation == generation else {
+            return
+        }
+
+        let observedVolume = deviceVolumeMonitor.confirmedOutputVolume(for: pending.deviceID)
+        let action: SafeOutputSwitchState.Action
+        if let writeSucceeded {
+            action = pending.state.handle(.writeCompleted(
+                succeeded: writeSucceeded,
+                observedTargetVolume: observedVolume
+            ))
+        } else if pending.requiresDDCConfirmation {
+            action = pending.state.handle(.writeCompleted(
+                succeeded: false,
+                observedTargetVolume: observedVolume
+            ))
+        } else {
+            action = pending.state.handle(.timeout(observedTargetVolume: observedVolume))
+        }
+
+        if pending.ownsOutputVolumeLimitChange {
+            if case .switchOutput = action {
+                pendingOutputVolumeLimitChanges.removeValue(forKey: pending.state.targetDeviceUID)
+            } else {
+                rollbackPendingOutputVolumeLimitChange(for: pending.state.targetDeviceUID)
+            }
+        }
+
+        pendingSafeOutputSwitch = nil
+        safeOutputSwitchTimeoutTask?.cancel()
+        safeOutputSwitchTimeoutTask = nil
+
+        guard case .switchOutput(let deviceUID) = action,
+              let device = deviceMonitor.device(for: deviceUID),
+              device.id == pending.deviceID,
+              isAliveCheck(device.id) else {
+            if pending.reportsCommandResult {
+                onCommandWriteRejected?(.defaultOutput)
+            }
+            return
+        }
+
+        let result = performDefaultOutputSwitch(
+            to: device,
+            reportsCommandResult: pending.reportsCommandResult
+        )
+        switch result {
+        case .applied:
+            if pending.reportsCommandResult {
+                onCommandValueObserved?(.defaultOutput, .identifier(device.uid))
+            }
+        case .accepted:
+            break
+        case .rejected:
+            if pending.reportsCommandResult {
+                onCommandWriteRejected?(.defaultOutput)
+            }
+        }
+    }
+
+    private func handleSafeOutputPreflightWriteCompleted(
+        deviceID: AudioDeviceID,
+        succeeded: Bool
+    ) {
+        guard let pending = pendingSafeOutputSwitch,
+              pending.deviceID == deviceID,
+              pending.requiresDDCConfirmation else {
+            return
+        }
+        finishSafeOutputPreflight(
+            generation: pending.generation,
+            writeSucceeded: succeeded
+        )
+    }
+
+    private func cancelPendingSafeOutputSwitch(
+        reportFailure: Bool,
+        transferringVolumeLimitTo deviceUID: String? = nil
+    ) {
+        safeOutputSwitchTimeoutTask?.cancel()
+        safeOutputSwitchTimeoutTask = nil
+        guard let pending = pendingSafeOutputSwitch else { return }
+        pendingSafeOutputSwitch = nil
+        if pending.ownsOutputVolumeLimitChange,
+           pending.state.targetDeviceUID != deviceUID {
+            rollbackPendingOutputVolumeLimitChange(for: pending.state.targetDeviceUID)
+        }
+        if reportFailure, pending.reportsCommandResult {
+            onCommandWriteRejected?(.defaultOutput)
+        }
+    }
+
+    private func performDefaultOutputSwitch(
+        to device: AudioDevice,
+        reportsCommandResult: Bool
+    ) -> DefaultOutputSwitchResult {
+        guard deviceVolumeMonitor.setDefaultDevice(device.id) else { return .rejected }
+        let echoToken = outputEchoTracker.increment(device.uid)
+        if deviceVolumeMonitor.defaultDeviceUID == device.uid {
+            lastConfirmedDefaultUID = device.uid
+            routeFollowsDefaultApps(to: device.uid)
+            return .applied
+        }
+
+        nextDefaultOutputConfirmationGeneration &+= 1
+        let generation = nextDefaultOutputConfirmationGeneration
+        pendingDefaultOutputConfirmation = PendingDefaultOutputConfirmation(
+            generation: generation,
+            deviceID: device.id,
+            deviceUID: device.uid,
+            echoToken: echoToken,
+            reportsCommandResult: reportsCommandResult
+        )
+        defaultOutputConfirmationTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, !Task.isCancelled else { return }
+            self.finishDefaultOutputConfirmation(generation: generation)
+        }
+        return .accepted
+    }
+
+    private func handleDefaultOutputConfirmation(_ observedDeviceUID: String) {
+        guard let pending = pendingDefaultOutputConfirmation else { return }
+        guard observedDeviceUID == pending.deviceUID else { return }
+        pendingDefaultOutputConfirmation = nil
+        defaultOutputConfirmationTimeoutTask?.cancel()
+        defaultOutputConfirmationTimeoutTask = nil
+        lastConfirmedDefaultUID = pending.deviceUID
+        routeFollowsDefaultApps(to: pending.deviceUID)
+    }
+
+    private func finishDefaultOutputConfirmation(generation: UInt64) {
+        guard let pending = pendingDefaultOutputConfirmation,
+              pending.generation == generation else {
+            return
+        }
+        pendingDefaultOutputConfirmation = nil
+        defaultOutputConfirmationTimeoutTask = nil
+        outputEchoTracker.cancel(pending.deviceUID, token: pending.echoToken)
+        guard deviceVolumeMonitor.defaultDeviceUID == pending.deviceUID else {
+            if pending.reportsCommandResult {
+                onCommandWriteRejected?(.defaultOutput)
+            }
+            return
+        }
+        lastConfirmedDefaultUID = pending.deviceUID
+        routeFollowsDefaultApps(to: pending.deviceUID)
+        if pending.reportsCommandResult {
+            onCommandValueObserved?(.defaultOutput, .identifier(pending.deviceUID))
+        }
+    }
+
+    private func cancelPendingDefaultOutputConfirmation(reportFailure: Bool) {
+        defaultOutputConfirmationTimeoutTask?.cancel()
+        defaultOutputConfirmationTimeoutTask = nil
+        guard let pending = pendingDefaultOutputConfirmation else { return }
+        pendingDefaultOutputConfirmation = nil
+        outputEchoTracker.cancel(pending.deviceUID, token: pending.echoToken)
+        if reportFailure, pending.reportsCommandResult {
+            onCommandWriteRejected?(.defaultOutput)
+        }
     }
 
     /// Sets the output device for an app.
@@ -1974,12 +2296,16 @@ final class AudioEngine {
            let device = deviceMonitor.device(for: restoreUID),
            isAliveCheck(device.id) {
             if deviceVolumeMonitor.defaultDeviceUID != restoreUID {
-                if deviceVolumeMonitor.setDefaultDevice(device.id) {
-                    outputEchoTracker.increment(restoreUID)
+                let result = beginDefaultOutputSwitch(
+                    device.id,
+                    reportsCommandResult: false
+                )
+                if result != .rejected {
                     logger.info("Restored default → \(device.name)")
                 }
+            } else {
+                routeFollowsDefaultApps(to: restoreUID)
             }
-            routeFollowsDefaultApps(to: restoreUID)
         } else {
             reEvaluateOutputDefault()
         }
@@ -1999,14 +2325,17 @@ final class AudioEngine {
 
         let currentDefault = deviceVolumeMonitor.defaultDeviceUID
         if target.uid != currentDefault {
-            if deviceVolumeMonitor.setDefaultDevice(target.id) {
-                outputEchoTracker.increment(target.uid)
+            let result = beginDefaultOutputSwitch(
+                target.id,
+                reportsCommandResult: false
+            )
+            if result != .rejected {
                 logger.info("System default → \(target.name)")
             }
+        } else {
+            lastConfirmedDefaultUID = target.uid
+            routeFollowsDefaultApps(to: target.uid)
         }
-
-        lastConfirmedDefaultUID = target.uid
-        routeFollowsDefaultApps(to: target.uid)
         return target.uid
     }
 
@@ -2064,6 +2393,13 @@ final class AudioEngine {
     private func handleDeviceDisconnected(_ deviceUID: String, name deviceName: String) {
         // Clean up alive watcher — use UID lookup since device is already removed from monitor
         removeAliveWatcher(forUID: deviceUID)
+
+        if pendingSafeOutputSwitch?.state.targetDeviceUID == deviceUID {
+            cancelPendingSafeOutputSwitch(reportFailure: true)
+        }
+        if pendingDefaultOutputConfirmation?.deviceUID == deviceUID {
+            cancelPendingDefaultOutputConfirmation(reportFailure: true)
+        }
 
         // If we were waiting for macOS to auto-switch to this device, cancel — it's gone
         if case .pendingAutoSwitch(let uid, let task) = outputPriorityState, uid == deviceUID {

@@ -447,14 +447,20 @@ struct MenuBarPopupView: View {
         openSettings()
     }
 
+    @discardableResult
     private func dispatchPopup(
         _ command: AudioCommand,
         source: AudioCommandSource = .popup,
+        reason: AudioChangeReason = .directUser,
         transactionID: UUID = UUID()
-    ) {
+    ) -> AudioCommandResult {
         audioCommands.dispatch(
             command,
-            context: AudioCommandContext(source: source, transactionID: transactionID)
+            context: AudioCommandContext(
+                source: source,
+                reason: reason,
+                transactionID: transactionID
+            )
         )
     }
 
@@ -865,9 +871,37 @@ struct MenuBarPopupView: View {
                         transportType: device.id.readTransportType(),
                         autoDetectedTier: deviceVolumeMonitor.autoDetectedOutputVolumeBackend(for: device.id),
                         currentOverride: audioEngine.settingsManager.getDeviceVolumeTierOverride(for: device.uid),
+                        currentVolumeLimit: audioEngine.settingsManager.outputVolumeLimit(for: device.uid),
                         onOverrideChange: { newTier in
                             audioEngine.settingsManager.setDeviceVolumeTierOverride(for: device.uid, to: newTier)
                             deviceVolumeMonitor.applyTierOverrideChange(for: device.id)
+                        },
+                        onVolumeLimitChange: { newLimit in
+                            let currentGain = audioEngine.masterOutputVolume(for: device)
+                            if let newLimit,
+                               currentGain > newLimit + SafeOutputSwitchState.volumeTolerance
+                                || audioEngine.hasPendingOutputVolumeLimitChange(for: device.uid) {
+                                audioEngine.beginOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    to: newLimit
+                                )
+                                let result = dispatchPopup(
+                                    .setOutputMasterGain(
+                                        deviceUID: device.uid,
+                                        gain: currentGain
+                                    ),
+                                    reason: .safeCap
+                                )
+                                audioEngine.resolveOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    commandResult: result
+                                )
+                            } else {
+                                audioEngine.commitOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    to: newLimit
+                                )
+                            }
                         },
                         onDismiss: {}
                     )

@@ -159,9 +159,15 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     /// than being silently short-circuited by a forced cast.
     private(set) var setVolumeCalls: [(deviceID: AudioDeviceID, volume: Float)] = []
     private(set) var setMuteCalls: [(deviceID: AudioDeviceID, muted: Bool)] = []
+    private(set) var setDefaultDeviceCalls: [AudioDeviceID] = []
+    var volumeWritesSucceed = true
+    var defaultDeviceWritesSucceed = true
+    var defaultDeviceWritesPublishState = true
+    var confirmedOutputVolumes: [AudioDeviceID: Float] = [:]
 
     func setVolume(for deviceID: AudioDeviceID, to volume: Float) {
         setVolumeCalls.append((deviceID, volume))
+        guard volumeWritesSucceed else { return }
         volumes[deviceID] = volume
         onVolumeChanged?(deviceID, volume)
     }
@@ -207,7 +213,22 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     }
 
     @discardableResult
-    func setDefaultDevice(_ deviceID: AudioDeviceID) -> Bool { true }
+    func setDefaultDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDefaultDeviceCalls.append(deviceID)
+        guard defaultDeviceWritesSucceed,
+              let device = deviceMonitor.device(for: deviceID) else {
+            return false
+        }
+        guard defaultDeviceWritesPublishState else { return true }
+        defaultDeviceID = deviceID
+        defaultDeviceUID = device.uid
+        let callback = onDefaultDeviceChanged
+        Task { @MainActor in
+            await Task.yield()
+            callback?(device.uid)
+        }
+        return true
+    }
 
     @discardableResult
     func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool { true }
@@ -218,6 +239,16 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
             return override
         }
         return autoDetectedTiersByID[deviceID] ?? defaultTier
+    }
+
+    func confirmedOutputVolume(for deviceID: AudioDeviceID) -> Float? {
+        confirmedOutputVolumes[deviceID] ?? volumes[deviceID]
+    }
+
+    func outputProcessingGain(for deviceID: AudioDeviceID) -> Float {
+        outputVolumeBackend(for: deviceID) == .software
+            ? volumes[deviceID] ?? 1
+            : 1
     }
 
     var applyTierOverrideChangeCalls: [AudioDeviceID] = []
@@ -351,10 +382,10 @@ struct SettingsMigrationV10toV11Tests {
         #expect(decoded.softwareDeviceSavedVolumes.isEmpty)
     }
 
-    @Test("Re-encode after v10 decode bumps to v12 on a fresh Settings instance")
-    func defaultSettingsVersionIsTwelve() {
+    @Test("Re-encode after v10 decode bumps to v13 on a fresh Settings instance")
+    func defaultSettingsVersionIsThirteen() {
         let fresh = SettingsManager.Settings()
-        #expect(fresh.version == 12)
+        #expect(fresh.version == 13)
         #expect(fresh.deviceVolumeTierOverride.isEmpty)
     }
 
@@ -465,6 +496,19 @@ struct DeviceVolumeStoredVolumeTests {
         #expect(DeviceVolumeMonitor.storedVolume(0.0001, tier: .software) == 0.0001)
         #expect(DeviceVolumeMonitor.storedVolume(0.5, tier: .software) == 0.5)
         #expect(DeviceVolumeMonitor.storedVolume(0.0, tier: .software) == 0.0)
+    }
+
+    @Test("Output limits clamp every volume tier at the write boundary")
+    func outputLimitClamp() {
+        #expect(DeviceVolumeMonitor.storedVolume(0.8, tier: .hardware, limit: 0.4) == 0.4)
+        #expect(DeviceVolumeMonitor.storedVolume(0.8, tier: .ddc, limit: 0.4) == 0.4)
+        #expect(DeviceVolumeMonitor.storedVolume(0.8, tier: .software, limit: 0.4) == 0.4)
+        #expect(DeviceVolumeMonitor.storedVolume(0.2, tier: .hardware, limit: 0.4) == 0.2)
+    }
+
+    @Test("A saved software volume is clamped before unmute")
+    func softwareUnmuteClamp() {
+        #expect(DeviceVolumeMonitor.storedVolume(0.9, tier: .software, limit: 0.35) == 0.35)
     }
 
     /// Issue #295: pre-fix the < 0.01 floor zeroed software gain, so each step re-derived
