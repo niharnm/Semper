@@ -92,6 +92,8 @@ private struct BaseMuteButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(MuteButtonPressStyle())
+        .accessibilityLabel(isMuted ? mutedHelp : unmutedHelp)
+        .accessibilityValue(isMuted ? "Muted" : "Unmuted")
         .onHover { hovering in
             isHovered = hovering
         }

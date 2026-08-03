@@ -8,11 +8,18 @@ struct VolumeSlider: View {
     @Binding var value: Float
     let range: ClosedRange<Float>
     let width: CGFloat
+    let accessibilityLabel: String
 
-    init(_ value: Binding<Float>, range: ClosedRange<Float> = 0...1, width: CGFloat = 160) {
+    init(
+        _ value: Binding<Float>,
+        range: ClosedRange<Float> = 0...1,
+        width: CGFloat = 160,
+        accessibilityLabel: String = "Volume"
+    ) {
         self._value = value
         self.range = range
         self.width = width
+        self.accessibilityLabel = accessibilityLabel
     }
 
     private var percentageRange: ClosedRange<Int> {
@@ -29,13 +36,16 @@ struct VolumeSlider: View {
                 in: Double(range.lowerBound)...Double(range.upperBound)
             )
             .frame(width: width)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(AudioAccessibility.percentage(Double(value)))
 
             EditablePercentage(
                 percentage: Binding(
                     get: { Int(round(value * 100)) },
                     set: { value = Float($0) / 100.0 }
                 ),
-                range: percentageRange
+                range: percentageRange,
+                accessibilityName: "\(accessibilityLabel) percentage"
             )
             .frame(width: DesignTokens.Dimensions.settingsPercentageWidth, alignment: .trailing)
         }

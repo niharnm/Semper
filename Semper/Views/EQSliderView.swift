@@ -127,6 +127,20 @@ struct EQSliderView: View {
         .onChange(of: gain) { _, newValue in
             localGain = newValue  // Sync from external changes
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(frequency) hertz equalizer gain")
+        .accessibilityValue(formatGain(localGain))
+        .accessibilityHint("Adjusts this frequency band in one decibel steps")
+        .accessibilityAdjustableAction { direction in
+            let adjusted = AudioAccessibility.adjustedValue(
+                Double(localGain),
+                direction: direction,
+                step: 1,
+                range: Double(range.lowerBound)...Double(range.upperBound)
+            )
+            localGain = Float(adjusted)
+            gain = Float(adjusted)
+        }
     }
 }
 
