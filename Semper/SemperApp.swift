@@ -175,6 +175,13 @@ struct SemperApp: App {
             callMode?.handleActivities(activities)
         }
         _callMode = State(initialValue: callMode)
+        SemperAppIntentRuntime.install(
+            AppShortcutController(
+                engine: engine,
+                commands: commandDispatcher,
+                callMode: callMode
+            )
+        )
         let bluetoothHDGuard = BluetoothHDGuardCoordinator(
             settings: settings,
             activityStore: activityStore,
