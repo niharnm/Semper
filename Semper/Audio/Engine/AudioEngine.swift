@@ -4,6 +4,12 @@ import Foundation
 import os
 import UserNotifications
 
+enum MasterOutputVolumeWriteResult: Equatable {
+    case applied(Float)
+    case accepted
+    case rejected
+}
+
 @Observable
 @MainActor
 final class AudioEngine {
@@ -16,6 +22,9 @@ final class AudioEngine {
     let autoEQProfileManager: AutoEQProfileManager
     let permission: AudioRecordingPermission
     let appListCoordinator: AppListCoordinator
+    let modeOverlayStore: AudioModeOverlayStore
+    var onCommandValueObserved: ((AudioControlKey, AudioControlValue) -> Void)?
+    var onCommandWriteRejected: ((AudioControlKey) -> Void)?
 
     #if !APP_STORE
     let ddcController: DDCController
@@ -23,8 +32,26 @@ final class AudioEngine {
 
     private var taps: [pid_t: any ProcessTapControlling] = [:]
     private var outputMasterGains: [String: Float] = [:]
+    private struct PendingMasterOutputWrite {
+        let previousGain: Float?
+        var requestedGain: Float
+    }
+    private struct PendingDDCOutputCommand {
+        let deviceUID: String
+        let key: AudioControlKey
+    }
+    private var pendingMasterOutputWrites: [String: PendingMasterOutputWrite] = [:]
+    private var pendingDDCOutputCommands: [AudioDeviceID: PendingDDCOutputCommand] = [:]
     private var outputBalances: [String: Float] = [:]
     private var appRouteLifecycles: [pid_t: AppRouteLifecycle] = [:]
+    private struct PendingAppRouteOperation {
+        let generation: UInt64
+        let key: AudioControlKey
+        let task: Task<Void, Never>
+    }
+    private var nextAppRouteOperationGeneration: UInt64 = 0
+    private var appRouteOperationGenerations: [pid_t: UInt64] = [:]
+    private var pendingAppRouteOperations: [pid_t: PendingAppRouteOperation] = [:]
 
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
@@ -131,30 +158,137 @@ final class AudioEngine {
         return .unavailable(message: "Routing is not active for this audio")
     }
 
+    private func beginAppRouteOperation(
+        for app: AudioApp,
+        key: AudioControlKey
+    ) -> (generation: UInt64, predecessor: Task<Void, Never>?) {
+        let predecessor = pendingAppRouteOperations.removeValue(forKey: app.id)
+        if let pending = predecessor {
+            pending.task.cancel()
+            onCommandWriteRejected?(pending.key)
+        }
+        nextAppRouteOperationGeneration &+= 1
+        appRouteOperationGenerations[app.id] = nextAppRouteOperationGeneration
+        return (nextAppRouteOperationGeneration, predecessor?.task)
+    }
+
+    private func isCurrentAppRouteOperation(for appID: pid_t, generation: UInt64) -> Bool {
+        appRouteOperationGenerations[appID] == generation
+    }
+
+    private func finishAppRouteOperation(for appID: pid_t, generation: UInt64) {
+        guard pendingAppRouteOperations[appID]?.generation == generation else { return }
+        pendingAppRouteOperations.removeValue(forKey: appID)
+    }
+
     func masterOutputVolume(for device: AudioDevice) -> Float {
+        knownMasterOutputVolume(for: device) ?? 1
+    }
+
+    func knownMasterOutputVolume(for device: AudioDevice) -> Float? {
         let maximumGain = outputCapabilities(for: device).maximumGain
         if let boostedGain = outputMasterGains[device.uid]
             ?? settingsManager.getOutputMasterGain(for: device.uid) {
             return min(maximumGain, boostedGain)
         }
-        return min(maximumGain, deviceVolumeMonitor.volumes[device.id] ?? 1.0)
+        guard let deviceVolume = deviceVolumeMonitor.volumes[device.id] else { return nil }
+        return min(maximumGain, deviceVolume)
     }
 
-    func setMasterOutputVolume(for device: AudioDevice, to gain: Float) {
+    @discardableResult
+    func setMasterOutputVolume(
+        for device: AudioDevice,
+        to gain: Float
+    ) -> MasterOutputVolumeWriteResult {
         let maximumGain = outputCapabilities(for: device).maximumGain
         let clampedGain = max(0, min(maximumGain, gain))
-        if clampedGain > 1 {
-            outputMasterGains[device.uid] = clampedGain
-            settingsManager.setOutputMasterGain(for: device.uid, to: clampedGain)
-            if (deviceVolumeMonitor.volumes[device.id] ?? 1.0) != 1.0 {
-                deviceVolumeMonitor.setVolume(for: device.id, to: 1.0)
-            }
-        } else {
-            outputMasterGains.removeValue(forKey: device.uid)
-            settingsManager.setOutputMasterGain(for: device.uid, to: nil)
-            deviceVolumeMonitor.setVolume(for: device.id, to: clampedGain)
-        }
+        let previousGain = outputMasterGains[device.uid]
+            ?? settingsManager.getOutputMasterGain(for: device.uid)
+        let physicalTarget = min(1, clampedGain)
+        let tier = deviceVolumeMonitor.outputVolumeBackend(for: device.id)
+
+        setStoredMasterOutputGain(clampedGain > 1 ? clampedGain : nil, deviceUID: device.uid)
         refreshTapOutputStates(forDeviceUID: device.uid)
+
+        if tier == .ddc, var pending = pendingMasterOutputWrites[device.uid] {
+            pending.requestedGain = clampedGain
+            pendingMasterOutputWrites[device.uid] = pending
+        }
+
+        if let currentVolume = deviceVolumeMonitor.volumes[device.id],
+           AudioControlValue.scalar(currentVolume).matches(.scalar(physicalTarget)) {
+            if tier == .ddc, pendingMasterOutputWrites[device.uid] != nil {
+                beginPendingDDCOutputCommand(
+                    .outputMasterGain(device.uid),
+                    deviceID: device.id,
+                    deviceUID: device.uid
+                )
+                return .accepted
+            }
+            return .applied(clampedGain)
+        }
+
+        if tier == .ddc, pendingMasterOutputWrites[device.uid] == nil {
+            pendingMasterOutputWrites[device.uid] = PendingMasterOutputWrite(
+                previousGain: previousGain,
+                requestedGain: clampedGain
+            )
+        }
+        deviceVolumeMonitor.setVolume(for: device.id, to: physicalTarget)
+        guard let observedVolume = deviceVolumeMonitor.volumes[device.id],
+              AudioControlValue.scalar(physicalTarget).matches(.scalar(observedVolume)) else {
+            pendingMasterOutputWrites.removeValue(forKey: device.uid)
+            setStoredMasterOutputGain(previousGain, deviceUID: device.uid)
+            refreshTapOutputStates(forDeviceUID: device.uid)
+            return .rejected
+        }
+
+        if tier == .ddc {
+            beginPendingDDCOutputCommand(
+                .outputMasterGain(device.uid),
+                deviceID: device.id,
+                deviceUID: device.uid
+            )
+            return .accepted
+        }
+
+        return .applied(clampedGain)
+    }
+
+    private func setStoredMasterOutputGain(_ gain: Float?, deviceUID: String) {
+        if let gain {
+            outputMasterGains[deviceUID] = gain
+            settingsManager.setOutputMasterGain(for: deviceUID, to: gain)
+        } else {
+            outputMasterGains.removeValue(forKey: deviceUID)
+            settingsManager.setOutputMasterGain(for: deviceUID, to: nil)
+        }
+    }
+
+    func supersedePendingMasterOutputWrite(for deviceUID: String) {
+        guard let pending = pendingMasterOutputWrites.removeValue(forKey: deviceUID) else {
+            return
+        }
+        pendingDDCOutputCommands = pendingDDCOutputCommands.filter { _, command in
+            command.key != .outputMasterGain(deviceUID)
+        }
+        setStoredMasterOutputGain(pending.previousGain, deviceUID: deviceUID)
+        refreshTapOutputStates(forDeviceUID: deviceUID)
+        onCommandWriteRejected?(.outputMasterGain(deviceUID))
+    }
+
+    func beginPendingDDCOutputCommand(
+        _ key: AudioControlKey,
+        deviceID: AudioDeviceID,
+        deviceUID: String
+    ) {
+        if let previous = pendingDDCOutputCommands[deviceID], previous.key != key {
+            onCommandWriteRejected?(previous.key)
+        }
+        pendingDDCOutputCommands[deviceID] = PendingDDCOutputCommand(
+            deviceUID: deviceUID,
+            key: key
+        )
     }
 
     func outputBalance(for deviceUID: String) -> Float {
@@ -296,6 +430,7 @@ final class AudioEngine {
         deviceProvider: (any AudioDeviceProviding)? = nil,
         processMonitor: (any AudioProcessMonitoring)? = nil,
         deviceVolumeMonitor: (any DeviceVolumeProviding)? = nil,
+        modeOverlayStore: AudioModeOverlayStore? = nil,
         tapFactory: (@MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling)? = nil,
         isAlive: ((AudioDeviceID) -> Bool)? = nil,
         startMonitorsAutomatically: Bool = true
@@ -306,6 +441,7 @@ final class AudioEngine {
         self.appListCoordinator = AppListCoordinator(settingsManager: manager)
         self.autoEQProfileManager = autoEQProfileManager
         self.volumeState = VolumeState(settingsManager: manager)
+        self.modeOverlayStore = modeOverlayStore ?? AudioModeOverlayStore()
         self.isAliveCheck = isAlive ?? { $0.isDeviceAlive() }
 
         // If a custom deviceProvider is given, use it directly.
@@ -377,6 +513,9 @@ final class AudioEngine {
 
         // Wire callbacks — needed for both test and production mode
         wireCallbacks()
+        self.modeOverlayStore.onChange = { [weak self] identifiers in
+            self?.refreshTapOutputStates(forAppIdentifiers: identifiers)
+        }
 
         if startMonitorsAutomatically {
             Task { @MainActor [self] in
@@ -437,7 +576,15 @@ final class AudioEngine {
         deviceVolumeMonitor.onVolumeChanged = { [weak self] deviceID, newVolume in
             guard let self else { return }
             guard let deviceUID = self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else { return }
-            if newVolume < 1 {
+            let tier = self.deviceVolumeMonitor.outputVolumeBackend(for: deviceID)
+            if tier != .ddc {
+                self.onCommandValueObserved?(.outputVolume(deviceUID), .scalar(newVolume))
+                let masterGain = self.deviceMonitor.device(for: deviceUID)
+                    .flatMap { self.knownMasterOutputVolume(for: $0) }
+                    ?? newVolume
+                self.onCommandValueObserved?(.outputMasterGain(deviceUID), .scalar(masterGain))
+            }
+            if newVolume < 1, self.pendingMasterOutputWrites[deviceUID] == nil {
                 self.outputMasterGains.removeValue(forKey: deviceUID)
                 self.settingsManager.setOutputMasterGain(for: deviceUID, to: nil)
             }
@@ -460,6 +607,9 @@ final class AudioEngine {
         deviceVolumeMonitor.onMuteChanged = { [weak self] deviceID, isMuted in
             guard let self else { return }
             guard let deviceUID = self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else { return }
+            if self.deviceVolumeMonitor.outputVolumeBackend(for: deviceID) != .ddc {
+                self.onCommandValueObserved?(.outputMute(deviceUID), .flag(isMuted))
+            }
             for (_, tap) in self.taps {
                 if tap.currentDeviceUID == deviceUID {
                     tap.isDeviceMuted = isMuted
@@ -469,6 +619,62 @@ final class AudioEngine {
                     }
                 }
             }
+        }
+
+        deviceVolumeMonitor.onOutputWriteCompleted = { [weak self] deviceID, succeeded in
+            guard let self else { return }
+            let pendingCommand = self.pendingDDCOutputCommands.removeValue(forKey: deviceID)
+            let deviceUID = pendingCommand?.deviceUID
+                ?? self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid
+            guard let deviceUID else { return }
+            let pendingMasterWrite = self.pendingMasterOutputWrites.removeValue(forKey: deviceUID)
+            if !succeeded {
+                if let pendingMasterWrite {
+                    self.setStoredMasterOutputGain(
+                        pendingMasterWrite.previousGain,
+                        deviceUID: deviceUID
+                    )
+                    self.refreshTapOutputStates(forDeviceUID: deviceUID)
+                }
+                if let key = pendingCommand?.key {
+                    self.onCommandWriteRejected?(key)
+                }
+                return
+            }
+
+            guard let key = pendingCommand?.key else { return }
+            switch key {
+            case .outputVolume:
+                if let volume = self.deviceVolumeMonitor.volumes[deviceID] {
+                    self.onCommandValueObserved?(key, .scalar(volume))
+                }
+            case .outputMasterGain:
+                if let masterGain = pendingMasterWrite?.requestedGain {
+                    self.onCommandValueObserved?(key, .scalar(masterGain))
+                }
+            case .outputMute:
+                if let muted = self.deviceVolumeMonitor.muteStates[deviceID] {
+                    self.onCommandValueObserved?(key, .flag(muted))
+                }
+            default:
+                break
+            }
+        }
+
+        deviceVolumeMonitor.onInputVolumeChanged = { [weak self] deviceID, volume in
+            guard let self,
+                  let uid = self.deviceMonitor.inputDevices.first(where: { $0.id == deviceID })?.uid else {
+                return
+            }
+            self.onCommandValueObserved?(.inputVolume(uid), .scalar(volume))
+        }
+
+        deviceVolumeMonitor.onInputMuteChanged = { [weak self] deviceID, muted in
+            guard let self,
+                  let uid = self.deviceMonitor.inputDevices.first(where: { $0.id == deviceID })?.uid else {
+                return
+            }
+            self.onCommandValueObserved?(.inputMute(uid), .flag(muted))
         }
 
         processMonitor.onAppsChanged = { [weak self] apps in
@@ -512,11 +718,13 @@ final class AudioEngine {
         }
 
         deviceVolumeMonitor.onDefaultDeviceChanged = { [weak self] newDefaultUID in
+            self?.onCommandValueObserved?(.defaultOutput, .identifier(newDefaultUID))
             self?.handleDefaultDeviceChanged(newDefaultUID)
         }
 
         deviceVolumeMonitor.onDefaultInputDeviceChanged = { [weak self] newDefaultInputUID in
             Task { @MainActor [weak self] in
+                self?.onCommandValueObserved?(.defaultInput, .identifier(newDefaultInputUID))
                 self?.handleDefaultInputDeviceChanged(newDefaultInputUID)
             }
         }
@@ -807,8 +1015,17 @@ final class AudioEngine {
 
     func stop() {
         stopHealthMonitor()
+        for pending in pendingAppRouteOperations.values {
+            pending.task.cancel()
+            onCommandWriteRejected?(pending.key)
+        }
+        pendingAppRouteOperations.removeAll()
+        appRouteOperationGenerations.removeAll()
         processMonitor.stop()
         deviceMonitor.stop()
+        #if !APP_STORE
+        ddcController.stop()
+        #endif
         for tap in taps.values {
             tap.invalidate()
         }
@@ -898,7 +1115,12 @@ final class AudioEngine {
     /// Per-device software gain, master boost, and balance apply only to single-device
     /// routing because they have no unambiguous meaning across fan-out.
     private func effectiveVolume(for pid: pid_t, deviceUIDs: [String]? = nil) -> Float {
-        let appGain = volumeState.getVolume(for: pid) * volumeState.getBoost(for: pid).rawValue
+        let identifier = taps[pid]?.app.persistenceIdentifier
+            ?? apps.first(where: { $0.id == pid })?.persistenceIdentifier
+        let overlayGain = identifier.map(modeOverlayStore.effectiveGain(for:)) ?? 1
+        let appGain = volumeState.getVolume(for: pid)
+            * volumeState.getBoost(for: pid).rawValue
+            * overlayGain
 
         guard let resolvedUIDs = deviceUIDs, resolvedUIDs.count == 1,
               let primaryUID = resolvedUIDs.first,
@@ -919,7 +1141,9 @@ final class AudioEngine {
     /// Does not include boost (intentional amplification beyond reference).
     /// The compensator's phon estimation clamps to [0,1] so values > 1 are treated as reference.
     private func effectiveLoudnessVolume(for tap: any ProcessTapControlling) -> Float {
-        tap.currentDeviceVolume * volumeState.getVolume(for: tap.app.id)
+        tap.currentDeviceVolume
+            * volumeState.getVolume(for: tap.app.id)
+            * modeOverlayStore.effectiveGain(for: tap.app.persistenceIdentifier)
     }
 
     private func applyTapOutputState(to tap: any ProcessTapControlling, for pid: pid_t, deviceUIDs: [String]? = nil) {
@@ -951,6 +1175,16 @@ final class AudioEngine {
     private func refreshTapOutputStates(forDeviceUID deviceUID: String) {
         for tap in taps.values where tap.currentDeviceUIDs == [deviceUID] {
             applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: tap.currentDeviceUIDs)
+        }
+    }
+
+    private func refreshTapOutputStates(forAppIdentifiers identifiers: Set<String>) {
+        for tap in taps.values where identifiers.contains(tap.app.persistenceIdentifier) {
+            applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: tap.currentDeviceUIDs)
+            tap.updateLoudnessCompensation(
+                volume: effectiveLoudnessVolume(for: tap),
+                enabled: settingsManager.appSettings.loudnessCompensationEnabled
+            )
         }
     }
 
@@ -1165,6 +1399,10 @@ final class AudioEngine {
             return
         }
 
+        let target = AudioAppCommandTarget.active(app)
+        let commandKey = AudioControlKey.appDevice(target)
+        let operation = beginAppRouteOperation(for: app, key: commandKey)
+        let generation = operation.generation
         appRouteLifecycles[app.id] = .preparing(deviceUIDs: [targetUID])
         let preferredTapSourceUID = preferredTapSourceDeviceUID(
             forOutputUIDs: [targetUID],
@@ -1172,7 +1410,16 @@ final class AudioEngine {
         )
 
         if let tap = taps[app.id] {
-            Task {
+            let task = Task { @MainActor [weak self] in
+                if let predecessor = operation.predecessor {
+                    await predecessor.value
+                }
+                guard let self,
+                      !Task.isCancelled,
+                      self.isCurrentAppRouteOperation(for: app.id, generation: generation) else {
+                    return
+                }
+                defer { self.finishAppRouteOperation(for: app.id, generation: generation) }
                 do {
                     if tap.currentDeviceUIDs != [targetUID] {
                         try await tap.switchDevice(
@@ -1182,6 +1429,10 @@ final class AudioEngine {
                     } else if previouslyFollowedDefault != shouldFollowDefault {
                         try await tap.refreshTapSource(preferredTapSourceUID)
                     }
+                    guard !Task.isCancelled,
+                          self.isCurrentAppRouteOperation(for: app.id, generation: generation) else {
+                        return
+                    }
                     self.commitSingleDeviceRoute(
                         for: app,
                         deviceUID: targetUID,
@@ -1190,15 +1441,29 @@ final class AudioEngine {
                     self.applyTapOutputState(to: tap, for: app.id, deviceUIDs: [targetUID])
                     self.applyAutoEQToTap(tap)
                     self.appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
+                    self.onCommandValueObserved?(
+                        commandKey,
+                        .identifier(shouldFollowDefault ? nil : targetUID)
+                    )
                     self.logger.debug("Switched \(app.name) to device: \(targetUID)")
                 } catch {
+                    guard !Task.isCancelled,
+                          self.isCurrentAppRouteOperation(for: app.id, generation: generation) else {
+                        return
+                    }
                     self.appRouteLifecycles[app.id] = .failed(
                         previousDeviceUIDs: tap.currentDeviceUIDs,
                         message: error.localizedDescription
                     )
+                    self.onCommandWriteRejected?(commandKey)
                     self.logger.error("Failed to switch device for \(app.name): \(error.localizedDescription)")
                 }
             }
+            pendingAppRouteOperations[app.id] = PendingAppRouteOperation(
+                generation: generation,
+                key: commandKey,
+                task: task
+            )
         } else {
             commitSingleDeviceRoute(
                 for: app,
@@ -1275,6 +1540,7 @@ final class AudioEngine {
     /// Triggers tap reconfiguration when mode changes.
     func setDeviceSelectionMode(for app: AudioApp, to mode: DeviceSelectionMode) {
         let previousMode = volumeState.getDeviceSelectionMode(for: app.id)
+        let previousUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
         if mode == .multi,
            volumeState.getSelectedDeviceUIDs(for: app.id).isEmpty,
            let currentUID = appDeviceRouting[app.id] {
@@ -1288,15 +1554,46 @@ final class AudioEngine {
 
         guard previousMode != mode else { return }
 
-        Task {
-            if !(await updateTapForCurrentMode(for: app)) {
+        let key = AudioControlKey.appDeviceMode(.active(app))
+        let operation = beginAppRouteOperation(for: app, key: key)
+        let generation = operation.generation
+        let task = Task { @MainActor [weak self] in
+            if let predecessor = operation.predecessor {
+                await predecessor.value
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentAppRouteOperation(for: app.id, generation: generation) else {
+                return
+            }
+            defer { self.finishAppRouteOperation(for: app.id, generation: generation) }
+            switch await self.updateTapForCurrentMode(for: app, generation: generation) {
+            case .applied:
+                self.onCommandValueObserved?(
+                    key,
+                    .mode(mode.rawValue)
+                )
+            case .failed:
                 self.volumeState.setDeviceSelectionMode(
                     for: app.id,
                     to: previousMode,
                     identifier: app.persistenceIdentifier
                 )
+                self.volumeState.setSelectedDeviceUIDs(
+                    for: app.id,
+                    to: previousUIDs,
+                    identifier: app.persistenceIdentifier
+                )
+                self.onCommandWriteRejected?(key)
+            case .superseded:
+                break
             }
         }
+        pendingAppRouteOperations[app.id] = PendingAppRouteOperation(
+            generation: generation,
+            key: key,
+            task: task
+        )
     }
 
     /// Gets the selected device UIDs for multi-mode
@@ -1308,25 +1605,63 @@ final class AudioEngine {
     /// Triggers tap reconfiguration when in multi mode.
     func setSelectedDeviceUIDs(for app: AudioApp, to uids: Set<String>) {
         let previousUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
+        guard previousUIDs != uids else { return }
         volumeState.setSelectedDeviceUIDs(for: app.id, to: uids, identifier: app.persistenceIdentifier)
+        guard getDeviceSelectionMode(for: app) == .multi else { return }
 
-        guard previousUIDs != uids,
-              getDeviceSelectionMode(for: app) == .multi else { return }
-
-        Task {
-            if !(await updateTapForCurrentMode(for: app)) {
+        let key = AudioControlKey.appDevices(.active(app))
+        let operation = beginAppRouteOperation(for: app, key: key)
+        let generation = operation.generation
+        let task = Task { @MainActor [weak self] in
+            if let predecessor = operation.predecessor {
+                await predecessor.value
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.isCurrentAppRouteOperation(for: app.id, generation: generation) else {
+                return
+            }
+            defer { self.finishAppRouteOperation(for: app.id, generation: generation) }
+            switch await self.updateTapForCurrentMode(for: app, generation: generation) {
+            case .applied:
+                self.onCommandValueObserved?(
+                    key,
+                    .identifiers(uids)
+                )
+            case .failed:
                 self.volumeState.setSelectedDeviceUIDs(
                     for: app.id,
                     to: previousUIDs,
                     identifier: app.persistenceIdentifier
                 )
+                self.onCommandWriteRejected?(key)
+            case .superseded:
+                break
             }
         }
+        pendingAppRouteOperations[app.id] = PendingAppRouteOperation(
+            generation: generation,
+            key: key,
+            task: task
+        )
+    }
+
+    private enum AppRouteUpdateResult {
+        case applied
+        case failed
+        case superseded
     }
 
     /// Updates tap configuration based on current mode and selected devices
     @discardableResult
-    private func updateTapForCurrentMode(for app: AudioApp) async -> Bool {
+    private func updateTapForCurrentMode(
+        for app: AudioApp,
+        generation: UInt64? = nil
+    ) async -> AppRouteUpdateResult {
+        guard !Task.isCancelled,
+              generation.map({ isCurrentAppRouteOperation(for: app.id, generation: $0) }) ?? true else {
+            return .superseded
+        }
         let mode = getDeviceSelectionMode(for: app)
 
         let deviceUIDs: [String]
@@ -1341,7 +1676,7 @@ final class AudioEngine {
             } else {
                 logger.warning("No device available for \(app.name) in single mode")
                 appRouteLifecycles[app.id] = .unavailable(message: "No output is available")
-                return false
+                return .failed
             }
 
         case .multi:
@@ -1350,7 +1685,7 @@ final class AudioEngine {
                 appRouteLifecycles[app.id] = .unavailable(
                     message: "Select at least one output"
                 )
-                return false
+                return .failed
             }
             deviceUIDs = selectedUIDs
         }
@@ -1364,7 +1699,7 @@ final class AudioEngine {
                 previousDeviceUIDs: taps[app.id]?.currentDeviceUIDs ?? [],
                 message: "One of the selected outputs is unavailable"
             )
-            return false
+            return .failed
         }
 
         appRouteLifecycles[app.id] = .preparing(deviceUIDs: deviceUIDs)
@@ -1376,24 +1711,32 @@ final class AudioEngine {
                 do {
                     let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: followsDefault.contains(app.id))
                     try await tap.updateDevices(to: deviceUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID)
+                    guard !Task.isCancelled,
+                          generation.map({ isCurrentAppRouteOperation(for: app.id, generation: $0) }) ?? true else {
+                        return .superseded
+                    }
                     applyTapOutputState(to: tap, for: app.id, deviceUIDs: deviceUIDs)
                     appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
                     logger.debug("Updated \(app.name) to \(deviceUIDs.count) device(s)")
                 } catch {
+                    guard !Task.isCancelled,
+                          generation.map({ isCurrentAppRouteOperation(for: app.id, generation: $0) }) ?? true else {
+                        return .superseded
+                    }
                     appRouteLifecycles[app.id] = .failed(
                         previousDeviceUIDs: tap.currentDeviceUIDs,
                         message: error.localizedDescription
                     )
                     logger.error("Failed to update devices for \(app.name): \(error.localizedDescription)")
-                    return false
+                    return .failed
                 }
             } else {
                 appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
             }
-            return true
+            return .applied
         } else {
             // No tap exists - create one
-            return ensureTapWithDevices(for: app, deviceUIDs: deviceUIDs)
+            return ensureTapWithDevices(for: app, deviceUIDs: deviceUIDs) ? .applied : .failed
         }
     }
 
@@ -2512,17 +2855,24 @@ final class AudioEngine {
 
     /// Called when user explicitly selects an input device (via Semper UI).
     /// Persists the choice and applies the change.
-    func setLockedInputDevice(_ device: AudioDevice) {
+    @discardableResult
+    func setLockedInputDevice(_ device: AudioDevice) -> Bool {
         logger.info("User locked input device to: \(device.name)")
 
-        // Persist the choice — both current lock and preferred (user intent)
+        guard deviceVolumeMonitor.setDefaultInputDevice(device.id) else { return false }
         settingsManager.setLockedInputDeviceUID(device.uid)
         settingsManager.setPreferredInputDeviceUID(device.uid)
+        inputEchoTracker.increment(device.uid)
+        return true
+    }
 
-        // Apply the change
-        if deviceVolumeMonitor.setDefaultInputDevice(device.id) {
+    @discardableResult
+    func setTemporaryInputDevice(_ device: AudioDevice) -> Bool {
+        let success = deviceVolumeMonitor.setDefaultInputDevice(device.id)
+        if success {
             inputEchoTracker.increment(device.uid)
         }
+        return success
     }
 
     /// Called when an input device connects — restores locked/preferred device and guards against auto-switch.

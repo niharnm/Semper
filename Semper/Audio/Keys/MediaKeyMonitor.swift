@@ -26,6 +26,7 @@ final class MediaKeyMonitor {
 
     private let decoder: any MediaKeyEventDecoding
     private let audioEngine: AudioEngine
+    private let audioCommands: any AudioCommandDispatching
     private let settingsManager: SettingsManager
     private let accessibility: any AccessibilityTrustProviding
     private let hudController: MediaKeyHUDPresenting
@@ -62,6 +63,7 @@ final class MediaKeyMonitor {
     init(
         decoder: any MediaKeyEventDecoding,
         audioEngine: AudioEngine,
+        audioCommands: any AudioCommandDispatching,
         settingsManager: SettingsManager,
         accessibility: any AccessibilityTrustProviding,
         hudController: MediaKeyHUDPresenting,
@@ -70,6 +72,7 @@ final class MediaKeyMonitor {
     ) {
         self.decoder = decoder
         self.audioEngine = audioEngine
+        self.audioCommands = audioCommands
         self.settingsManager = settingsManager
         self.accessibility = accessibility
         self.hudController = hudController
@@ -231,6 +234,17 @@ final class MediaKeyMonitor {
         }
         let tier = volumeMonitor.outputVolumeBackend(for: deviceID)
         let deviceName = audioEngine.deviceMonitor.outputDevices.first { $0.id == deviceID }?.name ?? ""
+        guard let deviceUID = volumeMonitor.defaultDeviceUID
+            ?? audioEngine.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else {
+            logger.debug("Ignoring media key: default output has no stable UID")
+            return
+        }
+        let transactionID = UUID()
+        let context = AudioCommandContext(
+            source: .mediaKey,
+            reason: .shortcut,
+            transactionID: transactionID
+        )
         handleCore(
             event: event,
             deviceID: deviceID,
@@ -238,8 +252,18 @@ final class MediaKeyMonitor {
             deviceName: deviceName,
             currentVolume: volumeMonitor.volumes[deviceID] ?? 0,
             currentMute: volumeMonitor.muteStates[deviceID] ?? false,
-            setVolume: { id, vol in volumeMonitor.setVolume(for: id, to: vol) },
-            setMute:   { id, mute in volumeMonitor.setMute(for: id, to: mute) },
+            setVolume: { [audioCommands] _, volume in
+                audioCommands.dispatch(
+                    .setOutputVolume(deviceUID: deviceUID, volume: volume),
+                    context: context
+                )
+            },
+            setMute: { [audioCommands] _, muted in
+                audioCommands.dispatch(
+                    .setOutputMute(deviceUID: deviceUID, muted: muted),
+                    context: context
+                )
+            },
             playFeedback: { gain in
                 self.feedbackPlayer?.requestFeedback(
                     gain: gain,

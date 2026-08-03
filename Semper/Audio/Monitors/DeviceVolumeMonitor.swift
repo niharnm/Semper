@@ -39,6 +39,10 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Called when any output device's mute state changes (deviceID, isMuted)
     var onMuteChanged: ((AudioDeviceID, Bool) -> Void)?
 
+    var onOutputWriteFailed: ((AudioDeviceID) -> Void)?
+    /// Called after a delayed DDC write publishes its applied or restored state.
+    var onOutputWriteCompleted: ((AudioDeviceID, Bool) -> Void)?
+
     /// Called when the default output device changes (newDeviceUID)
     var onDefaultDeviceChanged: ((String) -> Void)?
 
@@ -148,11 +152,47 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
         self.ddcController = ddcController
+        ddcController?.onWriteResult = { [weak self] deviceID, result in
+            self?.handleDDCWriteResult(deviceID: deviceID, result: result)
+        }
     }
     #else
     init(deviceMonitor: AudioDeviceMonitor, settingsManager: SettingsManager) {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
+    }
+    #endif
+
+    #if !APP_STORE
+    func handleDDCWriteResult(deviceID: AudioDeviceID, result: DDCWriteResult) {
+        switch result {
+        case .applied(let volume):
+            let scalar = Self.storedVolume(Float(volume) / 100, tier: .ddc)
+            volumes[deviceID] = scalar
+            onVolumeChanged?(deviceID, scalar)
+            if let ddcController {
+                let muted = ddcController.isMuted(for: deviceID)
+                muteStates[deviceID] = muted
+                onMuteChanged?(deviceID, muted)
+            }
+            onOutputWriteCompleted?(deviceID, true)
+        case .failed(let restoredVolume, let restoredMute):
+            if let restoredVolume {
+                let scalar = Self.storedVolume(Float(restoredVolume) / 100, tier: .ddc)
+                volumes[deviceID] = scalar
+                onVolumeChanged?(deviceID, scalar)
+            } else {
+                volumes.removeValue(forKey: deviceID)
+            }
+
+            let muted = restoredMute ?? ddcController?.isMuted(for: deviceID)
+            if let muted {
+                muteStates[deviceID] = muted
+                onMuteChanged?(deviceID, muted)
+            }
+            onOutputWriteCompleted?(deviceID, false)
+            onOutputWriteFailed?(deviceID)
+        }
     }
     #endif
 

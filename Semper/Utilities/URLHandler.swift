@@ -22,19 +22,22 @@ protocol URLHandlerEngine {
 @MainActor
 final class URLHandler {
     private let audioEngine: any URLHandlerEngine
+    private let audioCommands: any AudioCommandDispatching
     private let checkForUpdates: () -> Void
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "URLHandler")
 
     init(
         audioEngine: any URLHandlerEngine,
+        audioCommands: any AudioCommandDispatching,
         checkForUpdates: @escaping () -> Void = {}
     ) {
         self.audioEngine = audioEngine
+        self.audioCommands = audioCommands
         self.checkForUpdates = checkForUpdates
     }
     
     func handleURL(_ url: URL) {
-        logger.info("Received URL: \(url.absoluteString)")
+        logger.info("Received URL action: \(url.host ?? "unknown")")
         
         guard url.scheme == "semper" else {
             logger.warning("Unknown URL scheme: \(url.scheme ?? "nil")")
@@ -116,11 +119,17 @@ final class URLHandler {
             let gain = Float(volumePercent) / 100.0
 
             if let app = findApp(by: identifier) {
-                audioEngine.setVolume(for: app, to: gain)
+                audioCommands.dispatch(
+                    .setAppVolume(target: .active(app), volume: gain),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Set volume for \(app.name) to \(volumePercent)%")
             } else {
                 // App not active - persist for when it launches
-                audioEngine.setVolumeForInactive(identifier: identifier, to: gain)
+                audioCommands.dispatch(
+                    .setAppVolume(target: .persisted(identifier), volume: gain),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Set volume for inactive app \(identifier) to \(volumePercent)%")
             }
         }
@@ -160,7 +169,10 @@ final class URLHandler {
         }
 
         let newGain = VolumeMapping.sliderToGain(sliderPosition)
-        audioEngine.setVolume(for: app, to: newGain)
+        audioCommands.dispatch(
+            .setAppVolume(target: .active(app), volume: newGain),
+            context: AudioCommandContext(source: .url)
+        )
         let newPercent = Int(round(newGain * 100))
         logger.info("Stepped volume \(direction) for \(app.name) to \(newPercent)%")
     }
@@ -207,10 +219,16 @@ final class URLHandler {
 
         for (identifier, muted) in pairs {
             if let app = findApp(by: identifier) {
-                audioEngine.setMute(for: app, to: muted)
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: muted),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Set mute for \(app.name) to \(muted)")
             } else {
-                audioEngine.setMuteForInactive(identifier: identifier, to: muted)
+                audioCommands.dispatch(
+                    .setAppMute(target: .persisted(identifier), muted: muted),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Set mute for inactive app \(identifier) to \(muted)")
             }
         }
@@ -231,11 +249,17 @@ final class URLHandler {
         for identifier in identifiers {
             if let app = findApp(by: identifier) {
                 let current = audioEngine.getMute(for: app)
-                audioEngine.setMute(for: app, to: !current)
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: !current),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Toggled mute for \(app.name) to \(!current)")
             } else {
                 let current = audioEngine.getMuteForInactive(identifier: identifier)
-                audioEngine.setMuteForInactive(identifier: identifier, to: !current)
+                audioCommands.dispatch(
+                    .setAppMute(target: .persisted(identifier), muted: !current),
+                    context: AudioCommandContext(source: .url)
+                )
                 logger.info("Toggled mute for inactive app \(identifier) to \(!current)")
             }
         }
@@ -261,7 +285,10 @@ final class URLHandler {
             return
         }
 
-        audioEngine.setDevice(for: app, deviceUID: deviceUID)
+        audioCommands.dispatch(
+            .setAppDevice(target: .active(app), deviceUID: deviceUID),
+            context: AudioCommandContext(source: .url)
+        )
         logger.info("Routed \(app.name) to device \(deviceUID)")
     }
 
@@ -276,19 +303,40 @@ final class URLHandler {
             // Reset all active apps to 100% and unmute
             let apps = audioEngine.apps
             for app in apps {
-                audioEngine.setVolume(for: app, to: 1.0)
-                audioEngine.setMute(for: app, to: false)
+                let transactionID = UUID()
+                audioCommands.dispatch(
+                    .setAppVolume(target: .active(app), volume: 1),
+                    context: AudioCommandContext(source: .url, transactionID: transactionID)
+                )
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: false),
+                    context: AudioCommandContext(source: .url, transactionID: transactionID)
+                )
             }
             logger.info("Reset all \(apps.count) apps to 100% (unmuted)")
         } else {
             for identifier in identifiers {
                 if let app = findApp(by: identifier) {
-                    audioEngine.setVolume(for: app, to: 1.0)
-                    audioEngine.setMute(for: app, to: false)
+                    let transactionID = UUID()
+                    audioCommands.dispatch(
+                        .setAppVolume(target: .active(app), volume: 1),
+                        context: AudioCommandContext(source: .url, transactionID: transactionID)
+                    )
+                    audioCommands.dispatch(
+                        .setAppMute(target: .active(app), muted: false),
+                        context: AudioCommandContext(source: .url, transactionID: transactionID)
+                    )
                     logger.info("Reset \(app.name) to 100% (unmuted)")
                 } else {
-                    audioEngine.setVolumeForInactive(identifier: identifier, to: 1.0)
-                    audioEngine.setMuteForInactive(identifier: identifier, to: false)
+                    let transactionID = UUID()
+                    audioCommands.dispatch(
+                        .setAppVolume(target: .persisted(identifier), volume: 1),
+                        context: AudioCommandContext(source: .url, transactionID: transactionID)
+                    )
+                    audioCommands.dispatch(
+                        .setAppMute(target: .persisted(identifier), muted: false),
+                        context: AudioCommandContext(source: .url, transactionID: transactionID)
+                    )
                     logger.info("Reset inactive app \(identifier) to 100% (unmuted)")
                 }
             }

@@ -58,7 +58,7 @@ struct ShortcutsRegistryTests {
         #expect(engine.setVolumeCalls.first?.volume == 0.0)
     }
 
-    @Test("dispatch(.targetAppMuteToggle) calls toggleMute and reports new mute state")
+    @Test("dispatch(.targetAppMuteToggle) applies the opposite mute state and reports it")
     func dispatchFrontmostMuteHappyPath() {
         let app = makeAudioApp(id: 1, bundleID: "com.test.app")
         let engine = RecordingAudioEngine(apps: [app], initialMuted: false)
@@ -71,7 +71,8 @@ struct ShortcutsRegistryTests {
 
         registry.dispatch(.targetAppMuteToggle)
 
-        #expect(engine.toggleMuteCalls.count == 1)
+        #expect(engine.setMuteCalls.count == 1)
+        #expect(engine.setMuteCalls.first?.mute == true)
         #expect(hud.successCalls == 1)
     }
 
@@ -266,11 +267,32 @@ struct ShortcutsRegistryTests {
         audioEngine: (any AudioEngineDispatching)? = nil,
         hud: (any PerAppHUDPresenting)? = nil
     ) -> ShortcutsRegistry {
-        ShortcutsRegistry(
+        let resolvedEngine = audioEngine ?? RecordingAudioEngine(apps: [])
+        let commands = RecordingAudioCommandSink()
+        commands.onDispatch = { command in
+            switch command {
+            case .setAppVolume(let target, let volume):
+                guard let app = resolvedEngine.apps.first(where: {
+                    $0.persistenceIdentifier == target.identifier
+                        && (target.processID == nil || $0.id == target.processID)
+                }) else { return }
+                resolvedEngine.setVolume(for: app, to: volume)
+            case .setAppMute(let target, let muted):
+                guard let app = resolvedEngine.apps.first(where: {
+                    $0.persistenceIdentifier == target.identifier
+                        && (target.processID == nil || $0.id == target.processID)
+                }) else { return }
+                resolvedEngine.setMute(for: app, to: muted)
+            default:
+                break
+            }
+        }
+        return ShortcutsRegistry(
             settings: settings ?? makeIsolatedSettings(),
             popupController: popupController ?? RecordingPopupController(),
             resolver: resolver ?? StubTargetResolver(target: nil),
-            audioEngine: audioEngine ?? RecordingAudioEngine(apps: []),
+            audioEngine: resolvedEngine,
+            audioCommands: commands,
             hud: hud ?? RecordingHUDController()
         )
     }

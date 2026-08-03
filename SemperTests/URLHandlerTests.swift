@@ -9,7 +9,7 @@ struct URLHandlerTests {
     func updateURLStartsUpdateCheck() {
         let engine = URLHandlerEngineStub()
         var updateCheckCount = 0
-        let handler = URLHandler(audioEngine: engine) {
+        let handler = URLHandler(audioEngine: engine, audioCommands: RecordingAudioCommandSink()) {
             updateCheckCount += 1
         }
 
@@ -22,13 +22,34 @@ struct URLHandlerTests {
     func unknownURLDoesNotStartUpdateCheck() {
         let engine = URLHandlerEngineStub()
         var updateCheckCount = 0
-        let handler = URLHandler(audioEngine: engine) {
+        let handler = URLHandler(audioEngine: engine, audioCommands: RecordingAudioCommandSink()) {
             updateCheckCount += 1
         }
 
         handler.handleURL(URL(string: "semper://unknown")!)
 
         #expect(updateCheckCount == 0)
+    }
+
+    @Test("Volume URLs dispatch stable identifiers with URL source metadata")
+    func volumeURLDispatchesCommand() {
+        let commands = RecordingAudioCommandSink()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: commands
+        )
+
+        handler.handleURL(
+            URL(string: "semper://set-volumes?app=com.test.inactive&volume=25")!
+        )
+
+        #expect(commands.calls.count == 1)
+        #expect(commands.calls.first?.command == .setAppVolume(
+            target: .persisted("com.test.inactive"),
+            volume: 0.25
+        ))
+        #expect(commands.calls.first?.context.source == .url)
+        #expect(commands.calls.first?.context.reason == .directUser)
     }
 }
 

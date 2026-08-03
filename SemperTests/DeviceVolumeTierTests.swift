@@ -127,6 +127,12 @@ final class MockAudioDeviceMonitor: AudioDeviceProviding {
         devicesByID[device.id] = device
     }
 
+    func addInputDevice(_ device: AudioDevice) {
+        inputDevices.append(device)
+        devicesByUID[device.uid] = device
+        devicesByID[device.id] = device
+    }
+
     func device(for uid: String) -> AudioDevice? { devicesByUID[uid] }
     func inputDevice(for uid: String) -> AudioDevice? { devicesByUID[uid] }
     func device(for id: AudioDeviceID) -> AudioDevice? { devicesByID[id] }
@@ -140,10 +146,13 @@ final class MockAudioDeviceMonitor: AudioDeviceProviding {
 @MainActor
 final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     var defaultDeviceID: AudioDeviceID = 0
+    var defaultInputDeviceID: AudioDeviceID = 0
     var defaultDeviceUID: String?
     var defaultInputDeviceUID: String?
     var volumes: [AudioDeviceID: Float] = [:]
     var muteStates: [AudioDeviceID: Bool] = [:]
+    var inputVolumes: [AudioDeviceID: Float] = [:]
+    var inputMuteStates: [AudioDeviceID: Bool] = [:]
 
     /// Records every `setVolume` call the MediaKeyMonitor makes. Tests inspect
     /// this to assert the full write path (protocol → mock) is exercised rather
@@ -163,8 +172,22 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
         onMuteChanged?(deviceID, muted)
     }
 
+    func setInputVolume(for deviceID: AudioDeviceID, to volume: Float) {
+        inputVolumes[deviceID] = volume
+        onInputVolumeChanged?(deviceID, volume)
+    }
+
+    func setInputMute(for deviceID: AudioDeviceID, to muted: Bool) {
+        inputMuteStates[deviceID] = muted
+        onInputMuteChanged?(deviceID, muted)
+    }
+
     var onVolumeChanged: ((AudioDeviceID, Float) -> Void)?
     var onMuteChanged: ((AudioDeviceID, Bool) -> Void)?
+    var onInputVolumeChanged: ((AudioDeviceID, Float) -> Void)?
+    var onInputMuteChanged: ((AudioDeviceID, Bool) -> Void)?
+    var onOutputWriteFailed: ((AudioDeviceID) -> Void)?
+    var onOutputWriteCompleted: ((AudioDeviceID, Bool) -> Void)?
     var onDefaultDeviceChanged: ((String) -> Void)?
     var onDefaultInputDeviceChanged: ((String) -> Void)?
 
@@ -461,4 +484,3 @@ struct DeviceVolumeStoredVolumeTests {
         #expect(stored > 0, "\(step) software step-up stuck at silence — issue #295 regression")
     }
 }
-

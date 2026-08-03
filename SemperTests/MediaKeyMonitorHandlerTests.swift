@@ -28,7 +28,9 @@ struct MediaKeyMonitorHandlerTests {
 
     private func makeMonitor(
         hudController: HUDWindowController? = nil,
-        popupVisible: Bool = false
+        popupVisible: Bool = false,
+        audioCommands: (any AudioCommandDispatching)? = nil,
+        withDefaultOutput: Bool = false
     ) -> (monitor: MediaKeyMonitor, hud: HUDWindowController, popup: PopupVisibilityService, settingsManager: SettingsManager) {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -39,6 +41,21 @@ struct MediaKeyMonitorHandlerTests {
 
         let deviceMonitor = MockAudioDeviceMonitor()
         let mockVolume = MockDeviceVolumeProviding(deviceMonitor: deviceMonitor)
+        if withDefaultOutput {
+            let device = AudioDevice(
+                id: 1,
+                uid: "test-output",
+                name: "Test Output",
+                icon: nil,
+                supportsAutoEQ: false
+            )
+            deviceMonitor.addOutputDevice(device)
+            mockVolume.defaultDeviceID = device.id
+            mockVolume.defaultDeviceUID = device.uid
+            mockVolume.volumes[device.id] = 0.5
+            mockVolume.muteStates[device.id] = false
+            mockVolume.defaultTier = .hardware
+        }
         let engine = AudioEngine(
             permission: AudioRecordingPermission(),
             settingsManager: settings,
@@ -58,6 +75,7 @@ struct MediaKeyMonitorHandlerTests {
         let monitor = MediaKeyMonitor(
             decoder: StubMediaKeyDecoder(),
             audioEngine: engine,
+            audioCommands: audioCommands ?? RecordingAudioCommandSink(),
             settingsManager: settings,
             accessibility: MockAccessibilityTrustProviding(isTrusted: true),
             hudController: hud,
@@ -65,6 +83,26 @@ struct MediaKeyMonitorHandlerTests {
             mediaKeyStatus: mediaKeyStatus
         )
         return (monitor, hud, popup, settings)
+    }
+
+    @Test("Production handler dispatches the media-key command source")
+    func productionHandlerDispatches() {
+        let commands = RecordingAudioCommandSink()
+        let (monitor, _, _, _) = makeMonitor(
+            audioCommands: commands,
+            withDefaultOutput: true
+        )
+
+        monitor.handle(.volumeUp(isRepeat: false))
+
+        guard case .setOutputVolume(let uid, let volume) = commands.calls.last?.command else {
+            Issue.record("Expected an output volume command")
+            return
+        }
+        #expect(uid == "test-output")
+        #expect(volume == 0.5625)
+        #expect(commands.calls.last?.context.source == .mediaKey)
+        #expect(commands.calls.last?.context.reason == .shortcut)
     }
 
     // MARK: - Volume step arithmetic
