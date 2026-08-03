@@ -46,8 +46,16 @@ protocol ProcessTapControlling: AnyObject, Sendable {
     func updateLoudnessCompensation(volume: Float, enabled: Bool)
     func updateLoudnessEqualization(_ settings: LoudnessEqualizerSettings)
     func updateBalance(_ balance: Float)
-    func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws
-    func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws
+    func switchDevice(
+        to newDeviceUID: String,
+        preferredTapSourceDeviceUID: String?,
+        requiresExclusiveOutput: Bool
+    ) async throws
+    func updateDevices(
+        to newDeviceUIDs: [String],
+        preferredTapSourceDeviceUID: String?,
+        requiresExclusiveOutput: Bool
+    ) async throws
     func hasRecentAudioCallback(within seconds: Double) -> Bool
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool
 
@@ -68,14 +76,22 @@ extension ProcessTapControlling {
         try activate(initial: TapInitialState())
     }
 
-    /// Convenience: defaults sourceDeviceDead to false.
+    /// Convenience: allows a crossfade when the source is producing audio.
     func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?) async throws {
-        try await switchDevice(to: newDeviceUID, preferredTapSourceDeviceUID: preferredTapSourceDeviceUID, sourceDeviceDead: false)
+        try await switchDevice(
+            to: newDeviceUID,
+            preferredTapSourceDeviceUID: preferredTapSourceDeviceUID,
+            requiresExclusiveOutput: false
+        )
     }
 
-    /// Convenience: defaults sourceDeviceDead to false.
+    /// Convenience: allows a crossfade when the source is producing audio.
     func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?) async throws {
-        try await updateDevices(to: newDeviceUIDs, preferredTapSourceDeviceUID: preferredTapSourceDeviceUID, sourceDeviceDead: false)
+        try await updateDevices(
+            to: newDeviceUIDs,
+            preferredTapSourceDeviceUID: preferredTapSourceDeviceUID,
+            requiresExclusiveOutput: false
+        )
     }
 
     func invalidateAsync() async {
