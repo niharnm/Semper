@@ -859,47 +859,33 @@ final class ProcessTapController: ProcessTapControlling {
 
     /// Tears down the tap and releases all CoreAudio resources.
     /// Safe to call multiple times - subsequent calls are no-ops.
-    private var _invalidating = false
+    private var invalidationTask: Task<TapResourceCleanupResult, Never>?
+    private var outstandingCleanupCount = 0
+    private var completedOutstandingCleanup = TapResourceCleanupResult.empty
+    private var outstandingCleanupContinuation: CheckedContinuation<TapResourceCleanupResult, Never>?
+
     func invalidate() {
-        guard beginInvalidation() else { return }
-        defer { endInvalidation() }
-
-        // destroyAsync() captures IDs, clears instance state immediately,
-        // then dispatches blocking teardown to a background queue.
-        // Safe even if activate() is called again before cleanup completes.
-        secondaryResources.destroyAsync()
-        primaryResources.destroyAsync()
-
-        logger.info("Tap invalidated for \(self.app.name)")
+        _ = startInvalidationIfNeeded()
     }
 
     /// Awaitable invalidation: suspends until CoreAudio resources are fully
     /// destroyed. Prevents orphaned IO procs when a new tap is created immediately after.
-    func invalidateAsync() async {
-        guard beginInvalidation() else { return }
-        defer { endInvalidation() }
-
-        // Await full teardown of both resource sets (uses .userInitiated QoS for timely cleanup)
-        await withCheckedContinuation { continuation in
-            secondaryResources.destroyAsync(on: .global(qos: .userInitiated)) {
-                continuation.resume()
-            }
-        }
-        await withCheckedContinuation { continuation in
-            primaryResources.destroyAsync(on: .global(qos: .userInitiated)) {
-                continuation.resume()
-            }
-        }
-
-        logger.info("Tap invalidated (async) for \(self.app.name)")
+    func invalidateAsync() async -> TapResourceCleanupResult {
+        guard let task = startInvalidationIfNeeded() else { return .empty }
+        return await task.value
     }
 
     // MARK: - Invalidation Helpers
 
-    /// Shared preamble for invalidation. Returns false if already invalidating or not activated.
-    private func beginInvalidation() -> Bool {
-        guard activated, !_invalidating else { return false }
-        _invalidating = true
+    /// Shared preamble for invalidation. Partial activation resources also require cleanup.
+    private func startInvalidationIfNeeded() -> Task<TapResourceCleanupResult, Never>? {
+        if let invalidationTask { return invalidationTask }
+        guard activated
+                || primaryResources.isActive
+                || secondaryResources.isActive
+                || outstandingCleanupCount > 0 else {
+            return nil
+        }
         activated = false
 
         _lastRenderHostTime = 0
@@ -915,7 +901,16 @@ final class ProcessTapController: ProcessTapControlling {
         _primaryCallbackID = 0
         _secondaryCallbackID = 0
 
-        return true
+        let task = Task { @MainActor [self] in
+            var result = await destroyCurrentResources()
+            result.merge(await waitForOutstandingCleanup())
+            endInvalidation()
+            invalidationTask = nil
+            logger.info("Tap invalidated for \(self.app.name)")
+            return result
+        }
+        invalidationTask = task
+        return task
     }
 
     /// Shared epilogue for invalidation. Clears EQ state and resets the reentrant guard.
@@ -924,11 +919,52 @@ final class ProcessTapController: ProcessTapControlling {
         secondaryAutoEQProcessor = nil
         secondaryLoudnessCompensator = nil
         secondaryLoudnessEqualizerProcessor = nil
-        _invalidating = false
+    }
+
+    private func destroyCurrentResources() async -> TapResourceCleanupResult {
+        var result = await withCheckedContinuation { continuation in
+            secondaryResources.destroyAsync(on: .global(qos: .userInitiated)) { result in
+                continuation.resume(returning: result)
+            }
+        }
+        let primaryResult = await withCheckedContinuation { continuation in
+            primaryResources.destroyAsync(on: .global(qos: .userInitiated)) { result in
+                continuation.resume(returning: result)
+            }
+        }
+        result.merge(primaryResult)
+        return result
+    }
+
+    private func waitForOutstandingCleanup() async -> TapResourceCleanupResult {
+        guard outstandingCleanupCount > 0 else {
+            let result = completedOutstandingCleanup
+            completedOutstandingCleanup = .empty
+            return result
+        }
+        return await withCheckedContinuation { continuation in
+            outstandingCleanupContinuation = continuation
+        }
+    }
+
+    private func recordOutstandingCleanup(_ result: TapResourceCleanupResult) {
+        completedOutstandingCleanup.merge(result)
+        outstandingCleanupCount -= 1
+        guard outstandingCleanupCount == 0,
+              let continuation = outstandingCleanupContinuation else { return }
+        outstandingCleanupContinuation = nil
+        let completed = completedOutstandingCleanup
+        completedOutstandingCleanup = .empty
+        continuation.resume(returning: completed)
+    }
+
+    private func recordSynchronousCleanup(_ result: TapResourceCleanupResult) {
+        completedOutstandingCleanup.merge(result)
     }
 
     isolated deinit {
-        invalidate()
+        secondaryResources.destroyAsync()
+        primaryResources.destroyAsync()
     }
 
     // MARK: - Crossfade Operations
@@ -1045,14 +1081,14 @@ final class ProcessTapController: ProcessTapControlling {
         err = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggID)
         guard err == noErr else {
             // TapResources.destroy() handles correct teardown order + CrashGuard.untrackDevice
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.aggregateCreationFailed(err)
         }
         secondaryResources.aggregateDeviceID = aggID
         CrashGuard.trackDevice(aggID)
 
         guard secondaryResources.aggregateDeviceID.waitUntilReady(timeout: 2.0) else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.deviceNotReady
         }
 
@@ -1112,7 +1148,7 @@ final class ProcessTapController: ProcessTapControlling {
             self.processAudioCallback(inInputData, to: outOutputData, callbackID: secondaryCallbackID)
         }
         guard err == noErr else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1120,7 +1156,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         err = AudioDeviceStart(secondaryResources.aggregateDeviceID, secondaryResources.deviceProcID)
         guard err == noErr else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1128,14 +1164,19 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     private func destroyPrimaryTap() {
-        primaryResources.destroyAsync()
+        outstandingCleanupCount += 1
+        primaryResources.destroyAsync { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.recordOutstandingCleanup(result)
+            }
+        }
     }
 
     /// Tears down any in-progress secondary tap (used by re-entrant crossfade guard).
     private func cleanupSecondaryTap() {
         guard secondaryResources.isActive else { return }
         _secondaryCallbackID = 0
-        secondaryResources.destroy()
+        recordSynchronousCleanup(secondaryResources.destroy())
         secondaryEQProcessor = nil
         secondaryAutoEQProcessor = nil
         secondaryLoudnessCompensator = nil
@@ -1276,14 +1317,14 @@ final class ProcessTapController: ProcessTapControlling {
         var aggID: AudioObjectID = .unknown
         err = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggID)
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.aggregateCreationFailed(err)
         }
         newResources.aggregateDeviceID = aggID
         CrashGuard.trackDevice(aggID)
 
         guard newResources.aggregateDeviceID.waitUntilReady(timeout: 2.0) else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.deviceNotReady
         }
 
@@ -1302,7 +1343,7 @@ final class ProcessTapController: ProcessTapControlling {
             self.processAudioCallback(inInputData, to: outOutputData, callbackID: switchCallbackID)
         }
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1310,12 +1351,12 @@ final class ProcessTapController: ProcessTapControlling {
 
         err = AudioDeviceStart(newResources.aggregateDeviceID, newResources.deviceProcID)
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
         // Destroy old resources, adopt new
-        primaryResources.destroy()
+        recordSynchronousCleanup(primaryResources.destroy())
         primaryResources = newResources
         targetDeviceUIDs = outputUIDs
         currentDeviceUIDs = outputUIDs
@@ -1339,7 +1380,7 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     private func cleanupPartialActivation() {
-        primaryResources.destroy()
+        recordSynchronousCleanup(primaryResources.destroy())
     }
 
     /// Advance the output-gate state machine for one buffer and return the multiplier

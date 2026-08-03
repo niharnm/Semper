@@ -6,6 +6,7 @@ import SwiftUI
 struct SettingsRootView: View {
     @Bindable var settings: SettingsManager
     @Bindable var audioEngine: AudioEngine
+    let audioCommands: any AudioCommandDispatching
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
@@ -180,6 +181,7 @@ struct SettingsRootView: View {
             AudioTab(
                 settings: settings,
                 audioEngine: audioEngine,
+                audioCommands: audioCommands,
                 deviceVolumeMonitor: deviceVolumeMonitor
             )
         case .shortcuts:

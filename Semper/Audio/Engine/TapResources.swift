@@ -2,6 +2,29 @@
 import AudioToolbox
 import os
 
+struct TapResourceCleanupResult: Equatable, Sendable {
+    var stopFailureCount = 0
+    var ioProcFailureCount = 0
+    var aggregateFailureCount = 0
+    var processTapFailureCount = 0
+
+    static let empty = TapResourceCleanupResult()
+
+    var failureCount: Int {
+        stopFailureCount
+            + ioProcFailureCount
+            + aggregateFailureCount
+            + processTapFailureCount
+    }
+
+    mutating func merge(_ other: TapResourceCleanupResult) {
+        stopFailureCount += other.stopFailureCount
+        ioProcFailureCount += other.ioProcFailureCount
+        aggregateFailureCount += other.aggregateFailureCount
+        processTapFailureCount += other.processTapFailureCount
+    }
+}
+
 /// Encapsulates Core Audio tap and aggregate device resources.
 /// Provides safe cleanup with correct teardown order.
 ///
@@ -27,20 +50,24 @@ nonisolated struct TapResources {
 
     /// Destroys all resources in the correct order to prevent leaks and crashes.
     /// Safe to call multiple times — invalid IDs are skipped.
-    mutating func destroy() {
+    @discardableResult
+    mutating func destroy() -> TapResourceCleanupResult {
         // Capture IDs before mutation (os.Logger autoclosure can't capture mutating self)
         let aggID = aggregateDeviceID
         let tID = tapID
+        var result = TapResourceCleanupResult.empty
 
         // Step 1 & 2: Stop and destroy IO proc
         if aggID.isValid {
             if let procID = deviceProcID {
                 let stopErr = AudioDeviceStop(aggID, procID)
                 if stopErr != noErr {
+                    result.stopFailureCount += 1
                     Self.logger.error("AudioDeviceStop failed for aggregate \(aggID): OSStatus \(stopErr)")
                 }
                 let destroyProcErr = AudioDeviceDestroyIOProcID(aggID, procID)
                 if destroyProcErr != noErr {
+                    result.ioProcFailureCount += 1
                     Self.logger.error("AudioDeviceDestroyIOProcID failed for aggregate \(aggID): OSStatus \(destroyProcErr)")
                 }
             }
@@ -52,6 +79,7 @@ nonisolated struct TapResources {
             CrashGuard.untrackDevice(aggID)
             let aggErr = AudioHardwareDestroyAggregateDevice(aggID)
             if aggErr != noErr {
+                result.aggregateFailureCount += 1
                 Self.logger.error("AudioHardwareDestroyAggregateDevice failed for \(aggID): OSStatus \(aggErr)")
             }
         }
@@ -61,12 +89,14 @@ nonisolated struct TapResources {
         if tID.isValid {
             let tapErr = AudioHardwareDestroyProcessTap(tID)
             if tapErr != noErr {
+                result.processTapFailureCount += 1
                 Self.logger.error("AudioHardwareDestroyProcessTap failed for \(tID): OSStatus \(tapErr)")
             }
         }
         tapID = .unknown
 
         tapDescription = nil
+        return result
     }
 
     /// Destroys resources asynchronously on a background queue.
@@ -78,7 +108,10 @@ nonisolated struct TapResources {
     /// - Parameters:
     ///   - queue: Queue to perform destruction on (default: global utility)
     ///   - completion: Optional callback invoked after all resources are destroyed
-    mutating func destroyAsync(on queue: DispatchQueue = .global(qos: .utility), completion: (@Sendable () -> Void)? = nil) {
+    mutating func destroyAsync(
+        on queue: DispatchQueue = .global(qos: .utility),
+        completion: (@Sendable (TapResourceCleanupResult) -> Void)? = nil
+    ) {
         // Capture values before clearing
         let capturedTapID = tapID
         let capturedAggregateID = aggregateDeviceID
@@ -92,14 +125,17 @@ nonisolated struct TapResources {
 
         // Dispatch blocking teardown to background
         queue.async {
+            var result = TapResourceCleanupResult.empty
             // Step 1 & 2: Stop and destroy IO proc
             if capturedAggregateID.isValid, let procID = capturedProcID {
                 let stopErr = AudioDeviceStop(capturedAggregateID, procID)
                 if stopErr != noErr {
+                    result.stopFailureCount += 1
                     Self.logger.error("AudioDeviceStop failed for aggregate \(capturedAggregateID): OSStatus \(stopErr)")
                 }
                 let destroyProcErr = AudioDeviceDestroyIOProcID(capturedAggregateID, procID)
                 if destroyProcErr != noErr {
+                    result.ioProcFailureCount += 1
                     Self.logger.error("AudioDeviceDestroyIOProcID failed for aggregate \(capturedAggregateID): OSStatus \(destroyProcErr)")
                 }
             }
@@ -109,6 +145,7 @@ nonisolated struct TapResources {
                 CrashGuard.untrackDevice(capturedAggregateID)
                 let aggErr = AudioHardwareDestroyAggregateDevice(capturedAggregateID)
                 if aggErr != noErr {
+                    result.aggregateFailureCount += 1
                     Self.logger.error("AudioHardwareDestroyAggregateDevice failed for \(capturedAggregateID): OSStatus \(aggErr)")
                 }
             }
@@ -117,11 +154,12 @@ nonisolated struct TapResources {
             if capturedTapID.isValid {
                 let tapErr = AudioHardwareDestroyProcessTap(capturedTapID)
                 if tapErr != noErr {
+                    result.processTapFailureCount += 1
                     Self.logger.error("AudioHardwareDestroyProcessTap failed for \(capturedTapID): OSStatus \(tapErr)")
                 }
             }
 
-            completion?()
+            completion?(result)
         }
     }
 }
