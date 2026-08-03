@@ -161,6 +161,16 @@ enum AudioCommandResult: Equatable, Sendable {
 protocol AudioCommandDispatching: AnyObject {
     @discardableResult
     func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult
+
+    @discardableResult
+    func undoLastChange(source: AudioCommandSource) -> AudioUndoResult
+}
+
+extension AudioCommandDispatching {
+    @discardableResult
+    func undoLastChange(source: AudioCommandSource) -> AudioUndoResult {
+        .unavailable
+    }
 }
 
 enum AudioBackendApplyResult: Equatable {
@@ -194,22 +204,33 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     let recoveryJournal: AudioAutomationRecoveryJournal
 
     private let backend: any AudioCommandBackend
+    private let undoJournal: AudioUndoJournal
+    private let now: () -> Date
+    private let undoLifetime: TimeInterval
+    private var undoExpirationTask: Task<Void, Never>?
     private struct AcceptanceClaim {
         let token: AudioRecoveryToken?
         let requested: AudioControlValue
         let relinquishOnSuccess: Bool
         let recoveryAliasKeys: Set<AudioControlKey>
+        let receipt: AudioCommandReceipt
     }
     private var pendingAcceptances: [AudioControlKey: [AcceptanceClaim]] = [:]
 
     init(
         backend: any AudioCommandBackend,
         activityStore: AudioActivityStore = AudioActivityStore(),
-        recoveryJournal: AudioAutomationRecoveryJournal = AudioAutomationRecoveryJournal()
+        recoveryJournal: AudioAutomationRecoveryJournal = AudioAutomationRecoveryJournal(),
+        undoJournal: AudioUndoJournal = AudioUndoJournal(),
+        undoLifetime: TimeInterval = 30,
+        now: @escaping () -> Date = Date.init
     ) {
         self.backend = backend
         self.activityStore = activityStore
         self.recoveryJournal = recoveryJournal
+        self.undoJournal = undoJournal
+        self.undoLifetime = max(0.1, undoLifetime)
+        self.now = now
     }
 
     @discardableResult
@@ -220,7 +241,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         let requested = backend.effectiveRequestedValue(for: command)
         let previous = backend.read(key)
         let recoveryAliasKeys = backend.recoveryAliasKeys(for: command)
-        let timestamp = Date()
+        let timestamp = now()
 
         if let previous, previous.matches(requested) {
             if context.owner == nil {
@@ -264,18 +285,10 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
                 recoveryToken: recoveryToken,
                 timestamp: timestamp
             )
-            recordActivity(from: context)
+            recordSuccessful(receipt)
             return .applied(receipt)
 
         case .accepted:
-            pendingAcceptances[key] = suspendedAcceptances + [
-                AcceptanceClaim(
-                    token: recoveryToken,
-                    requested: requested,
-                    relinquishOnSuccess: context.owner == nil,
-                    recoveryAliasKeys: recoveryAliasKeys
-                )
-            ]
             let receipt = AudioCommandReceipt(
                 command: command,
                 context: context,
@@ -284,7 +297,15 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
                 recoveryToken: recoveryToken,
                 timestamp: timestamp
             )
-            recordActivity(from: context)
+            pendingAcceptances[key] = suspendedAcceptances + [
+                AcceptanceClaim(
+                    token: recoveryToken,
+                    requested: requested,
+                    relinquishOnSuccess: context.owner == nil,
+                    recoveryAliasKeys: recoveryAliasKeys,
+                    receipt: receipt
+                )
+            ]
             return .accepted(receipt)
 
         case .rejected(let reason):
@@ -304,13 +325,26 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
             return false
         }
         pendingAcceptances[key] = nil
+        let confirmed: Bool
         if let token = current.token {
-            return recoveryJournal.confirm(token, applied: observed)
+            confirmed = recoveryJournal.confirm(token, applied: observed)
+        } else {
+            confirmed = true
         }
-        if current.relinquishOnSuccess {
+        if confirmed, current.relinquishOnSuccess {
             recoveryJournal.relinquish(key)
             relinquishRecoveryAliases(current.recoveryAliasKeys)
         }
+        guard confirmed else { return false }
+        let receipt = AudioCommandReceipt(
+            command: current.receipt.command,
+            context: current.receipt.context,
+            previousValue: current.receipt.previousValue,
+            observedValue: observed,
+            recoveryToken: current.receipt.recoveryToken,
+            timestamp: current.receipt.timestamp
+        )
+        recordSuccessful(receipt)
         return true
     }
 
@@ -355,33 +389,133 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         }
     }
 
-    private func recordActivity(from context: AudioCommandContext) {
-        guard let presentation = context.presentation ?? Self.defaultPresentation(for: context.reason) else {
-            return
+    @discardableResult
+    func undoLastChange(source: AudioCommandSource = .popup) -> AudioUndoResult {
+        let preparation = undoJournal.prepare(at: now()) { backend.read($0) }
+        undoExpirationTask?.cancel()
+        undoExpirationTask = nil
+
+        switch preparation {
+        case .unavailable(let expiredActivityID):
+            if let expiredActivityID { activityStore.clearAction(for: expiredActivityID) }
+            return .unavailable
+
+        case .stale(let activityID):
+            if let activityID { activityStore.clearAction(for: activityID) }
+            activityStore.record(
+                presentation: AudioActivityPresentation(
+                    message: "Can’t undo because the audio setting changed again",
+                    systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+                ),
+                source: source,
+                reason: .undo
+            )
+            return .stale
+
+        case .ready(let entries, let activityID):
+            if let activityID { activityStore.clearAction(for: activityID) }
+            let transactionID = UUID()
+            var failed = false
+            for entry in entries {
+                guard let command = entry.command.restoring(entry.originalValue) else {
+                    failed = true
+                    break
+                }
+                let result = dispatch(
+                    command,
+                    context: AudioCommandContext(
+                        source: source,
+                        reason: .undo,
+                        transactionID: transactionID
+                    )
+                )
+                if case .rejected = result {
+                    failed = true
+                    break
+                }
+            }
+            activityStore.record(
+                presentation: AudioActivityPresentation(
+                    message: failed
+                        ? "Couldn’t restore every audio setting"
+                        : "Restored the previous audio settings",
+                    systemImage: failed ? "exclamationmark.triangle" : "arrow.uturn.backward"
+                ),
+                source: source,
+                reason: .undo
+            )
+            return failed ? .failed : .restored
         }
-        activityStore.record(
-            presentation: presentation,
-            source: context.source,
-            reason: context.reason
-        )
     }
 
-    private static func defaultPresentation(for reason: AudioChangeReason) -> AudioActivityPresentation? {
-        switch reason {
+    func expireUndoIfNeeded(at timestamp: Date? = nil) {
+        guard let activityID = undoJournal.expire(at: timestamp ?? now()) else { return }
+        activityStore.clearAction(for: activityID)
+        undoExpirationTask?.cancel()
+        undoExpirationTask = nil
+    }
+
+    private func recordSuccessful(_ receipt: AudioCommandReceipt) {
+        guard receipt.context.reason != .undo else { return }
+        let undoUpdate = undoJournal.record(receipt, at: now())
+        if let replacedActivityID = undoUpdate?.replacedActivityID {
+            activityStore.clearAction(for: replacedActivityID)
+        }
+
+        guard var presentation = receipt.context.presentation
+                ?? Self.defaultPresentation(for: receipt.command, context: receipt.context) else {
+            return
+        }
+        if undoUpdate != nil {
+            presentation = presentation.withActionTitle("Undo")
+        }
+        let activityID = activityStore.record(
+            presentation: presentation,
+            source: receipt.context.source,
+            reason: receipt.context.reason,
+            action: undoUpdate == nil ? nil : { [weak self] in
+                _ = self?.undoLastChange(source: .popup)
+            }
+        )
+        if let undoUpdate {
+            undoJournal.attachActivity(activityID, to: undoUpdate.transactionID)
+            scheduleUndoExpiration()
+        }
+    }
+
+    private func scheduleUndoExpiration() {
+        undoExpirationTask?.cancel()
+        undoExpirationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(undoLifetime))
+            guard !Task.isCancelled else { return }
+            expireUndoIfNeeded()
+        }
+    }
+
+    private static func defaultPresentation(
+        for command: AudioCommand,
+        context: AudioCommandContext
+    ) -> AudioActivityPresentation? {
+        let direct = directPresentation(for: command)
+        return switch context.reason {
         case .directUser:
-            nil
+            direct
         case .shortcut:
-            AudioActivityPresentation(message: "Changed by keyboard shortcut", systemImage: "keyboard")
+            AudioActivityPresentation(
+                message: shortcutMessage(for: direct.message, source: context.source),
+                systemImage: context.source == .mediaKey ? "speaker.wave.2" : "keyboard"
+            )
         case .safeCap:
-            AudioActivityPresentation(message: "Adjusted by the device volume limit", systemImage: "speaker.badge.exclamationmark")
+            AudioActivityPresentation(message: "Volume lowered to respect this device’s limit", systemImage: "speaker.badge.exclamationmark")
         case .deviceFallback:
-            AudioActivityPresentation(message: "Changed because an audio device disconnected", systemImage: "arrow.triangle.branch")
+            AudioActivityPresentation(message: "Output changed because the previous device disconnected", systemImage: "arrow.triangle.branch")
         case .deviceReconnect:
-            AudioActivityPresentation(message: "Restored after the audio device reconnected", systemImage: "arrow.clockwise")
+            AudioActivityPresentation(message: "Previous output restored after it reconnected", systemImage: "arrow.clockwise")
         case .callMode:
-            AudioActivityPresentation(message: "Changed by Call Mode", systemImage: "phone")
+            AudioActivityPresentation(message: "Call Mode adjusted other app audio", systemImage: "phone")
         case .bluetoothGuard:
-            AudioActivityPresentation(message: "Changed to protect Bluetooth audio quality", systemImage: "wave.3.right")
+            AudioActivityPresentation(message: "Input changed to keep Bluetooth audio in HD", systemImage: "wave.3.right")
         case .bypass:
             AudioActivityPresentation(message: "Audio processing state changed", systemImage: "waveform")
         case .recovery:
@@ -389,6 +523,45 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         case .undo:
             AudioActivityPresentation(message: "Restored by Undo", systemImage: "arrow.uturn.backward")
         }
+    }
+
+    private static func directPresentation(for command: AudioCommand) -> AudioActivityPresentation {
+        switch command {
+        case .setAppVolume:
+            AudioActivityPresentation(message: "App volume changed", systemImage: "speaker.wave.2")
+        case .setAppMute(_, let muted):
+            AudioActivityPresentation(message: muted ? "App muted" : "App unmuted", systemImage: muted ? "speaker.slash" : "speaker.wave.2")
+        case .setAppBoost:
+            AudioActivityPresentation(message: "App boost changed", systemImage: "dial.high")
+        case .setAppDevice, .setAppDeviceMode, .setAppDevices:
+            AudioActivityPresentation(message: "App output changed", systemImage: "arrow.triangle.branch")
+        case .setOutputVolume, .setOutputMasterGain:
+            AudioActivityPresentation(message: "Output volume changed", systemImage: "speaker.wave.2")
+        case .setOutputMute(_, let muted):
+            AudioActivityPresentation(message: muted ? "Output muted" : "Output unmuted", systemImage: muted ? "speaker.slash" : "speaker.wave.2")
+        case .setOutputBalance:
+            AudioActivityPresentation(message: "Output balance changed", systemImage: "slider.horizontal.2.square")
+        case .setDefaultOutput:
+            AudioActivityPresentation(message: "Default output changed", systemImage: "speaker.wave.2")
+        case .setInputVolume:
+            AudioActivityPresentation(message: "Input volume changed", systemImage: "mic")
+        case .setInputMute(_, let muted):
+            AudioActivityPresentation(message: muted ? "Input muted" : "Input unmuted", systemImage: muted ? "mic.slash" : "mic")
+        case .setDefaultInput:
+            AudioActivityPresentation(message: "Default input changed", systemImage: "mic")
+        case .setAudioProcessingMode:
+            AudioActivityPresentation(message: "Audio processing state changed", systemImage: "waveform")
+        }
+    }
+
+    private static func shortcutMessage(
+        for directMessage: String,
+        source: AudioCommandSource
+    ) -> String {
+        let base = directMessage.prefix(1).lowercased() + directMessage.dropFirst()
+        return source == .mediaKey
+            ? "Media keys \(base)"
+            : "Keyboard shortcut \(base)"
     }
 
     private static func isValid(_ command: AudioCommand) -> Bool {

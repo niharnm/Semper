@@ -191,4 +191,26 @@ struct AudioAutomationStateTests {
         store.dismiss()
         #expect(store.visibleActivity == nil)
     }
+
+    @Test("Clearing an activity action updates history and prevents execution")
+    func clearActivityAction() {
+        let store = AudioActivityStore()
+        var executions = 0
+        let id = store.record(
+            presentation: AudioActivityPresentation(
+                message: "Changed",
+                actionTitle: "Undo"
+            ),
+            source: .popup,
+            reason: .directUser,
+            action: { executions += 1 }
+        )
+
+        store.clearAction(for: id)
+        store.performVisibleAction()
+
+        #expect(executions == 0)
+        #expect(store.visibleActivity?.presentation.actionTitle == nil)
+        #expect(store.history.last?.presentation.actionTitle == nil)
+    }
 }
