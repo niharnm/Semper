@@ -1,9 +1,7 @@
 // Semper/Views/Settings/Components/IconStyleSegmentedControl.swift
 import SwiftUI
 
-/// Compact segmented selector for `MenuBarIconStyle`. Lifted out of the
-/// previous `SettingsIconPickerRow` so it can drop into a `CardRow`'s
-/// trailing slot without dragging row chrome along with it.
+/// Labeled symbol selector for `MenuBarIconStyle`.
 @MainActor
 struct IconStyleSegmentedControl: View {
     @Binding var selection: MenuBarIconStyle
@@ -22,11 +20,11 @@ struct IconStyleSegmentedControl: View {
         }
         .padding(3)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(DesignTokens.Colors.nextControlBackground)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(DesignTokens.Colors.nextControlBorder, lineWidth: 0.5)
         }
     }
@@ -42,35 +40,41 @@ private struct IconOption: View {
 
     var body: some View {
         Button(action: onSelect) {
-            Group {
-                if style.isSystemSymbol {
-                    Image(systemName: style.iconName)
-                        .font(.system(size: 14))
-                } else {
-                    Image(style.iconName)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 14, height: 14)
+            VStack(spacing: 4) {
+                Group {
+                    if style.isSystemSymbol {
+                        Image(systemName: style.iconName)
+                            .font(.system(size: 13, weight: .medium))
+                    } else {
+                        Image(style.iconName)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 13, height: 13)
+                    }
                 }
+
+                Text(style.displayName)
+                    .font(.system(size: 8, weight: .semibold))
+                    .lineLimit(1)
             }
             .foregroundStyle(isSelected ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textSecondary)
-            .frame(width: 30, height: 30)
-            .contentShape(Rectangle())
+            .frame(width: 52, height: 42)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .background {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(
                         isSelected
-                            ? DesignTokens.Colors.accentPrimary.opacity(0.15)
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.14)
                             : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
                     )
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .stroke(
                         isSelected
-                            ? DesignTokens.Colors.accentPrimary
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.28)
                             : isHovered ? DesignTokens.Colors.nextControlBorder : Color.clear,
-                        lineWidth: isSelected ? 1.5 : 0.5
+                        lineWidth: 0.5
                     )
             }
         }

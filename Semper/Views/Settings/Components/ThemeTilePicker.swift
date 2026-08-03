@@ -6,21 +6,28 @@ struct ThemeTilePicker: View {
     @Binding var selection: AppearancePreference
 
     var body: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
+        HStack(spacing: 4) {
             ForEach(AppearancePreference.allCases) { preference in
-                ThemeTile(
+                AppearanceOption(
                     preference: preference,
                     isSelected: selection == preference,
                     onTap: { selection = preference }
                 )
             }
         }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(DesignTokens.Colors.nextControlBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(DesignTokens.Colors.nextControlBorder, lineWidth: 0.5)
+        }
     }
 }
 
-// MARK: - Tile
-
-private struct ThemeTile: View {
+private struct AppearanceOption: View {
     let preference: AppearancePreference
     let isSelected: Bool
     let onTap: () -> Void
@@ -30,40 +37,35 @@ private struct ThemeTile: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 6) {
-                ThemePreviewMockup(preference: preference)
-                    .frame(width: 68, height: 40)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(
-                                isSelected ? Color.accentColor : DesignTokens.Colors.nextControlBorder,
-                                lineWidth: isSelected ? 1.5 : 0.5
-                            )
-                    }
-
+            HStack(spacing: 5) {
+                Image(systemName: iconName)
+                    .font(.system(size: 11, weight: .semibold))
                 Text(preference.description)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(
-                        isSelected
-                            ? DesignTokens.Colors.textPrimary
-                            : DesignTokens.Colors.textSecondary
-                    )
+                    .font(.system(size: 10, weight: .semibold))
             }
-            .padding(DesignTokens.Spacing.xs)
+            .foregroundStyle(
+                isSelected
+                    ? DesignTokens.Colors.accentPrimary
+                    : DesignTokens.Colors.textSecondary
+            )
+            .padding(.horizontal, 10)
+            .frame(height: 30)
             .background {
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(
                         isSelected
-                            ? DesignTokens.Colors.accentPrimary.opacity(0.09)
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.14)
                             : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
                     )
             }
-            .contentShape(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? DesignTokens.Colors.accentPrimary.opacity(0.28) : Color.clear,
+                        lineWidth: 0.5
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -76,59 +78,15 @@ private struct ThemeTile: View {
         .accessibilityLabel(Text(preference.description))
         .accessibilityHint("Changes Semper's appearance")
     }
-}
 
-// MARK: - Mockup
-
-private struct ThemePreviewMockup: View {
-    let preference: AppearancePreference
-
-    var body: some View {
+    private var iconName: String {
         switch preference {
         case .system:
-            HStack(spacing: 0) {
-                MockWindow(scheme: .light)
-                MockWindow(scheme: .dark)
-            }
+            return "circle.lefthalf.filled"
         case .light:
-            MockWindow(scheme: .light)
+            return "sun.max.fill"
         case .dark:
-            MockWindow(scheme: .dark)
-        }
-    }
-}
-
-private struct MockWindow: View {
-    enum Scheme { case light, dark }
-
-    let scheme: Scheme
-
-    private var bg: Color { scheme == .light ? Color(white: 0.93) : Color(white: 0.11) }
-    private var titlebar: Color { scheme == .light ? Color(white: 0.97) : Color(white: 0.18) }
-    private var stripe: Color { scheme == .light ? Color(white: 0.72) : Color(white: 0.36) }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ZStack(alignment: .leading) {
-                titlebar
-                HStack(spacing: 2) {
-                    Circle().fill(Color(red: 1.00, green: 0.37, blue: 0.36)).frame(width: 3, height: 3)
-                    Circle().fill(Color(red: 1.00, green: 0.79, blue: 0.27)).frame(width: 3, height: 3)
-                    Circle().fill(Color(red: 0.24, green: 0.80, blue: 0.34)).frame(width: 3, height: 3)
-                }
-                .padding(.leading, 4)
-            }
-            .frame(height: 9)
-
-            VStack(alignment: .leading, spacing: 2.5) {
-                Capsule().fill(stripe).frame(width: 18, height: 2)
-                Capsule().fill(stripe).frame(width: 26, height: 2)
-                Capsule().fill(stripe.opacity(0.7)).frame(width: 14, height: 2)
-            }
-            .padding(.top, 5)
-            .padding(.leading, 4)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(bg)
+            return "moon.stars.fill"
         }
     }
 }
@@ -140,19 +98,28 @@ struct PopupSizeTilePicker: View {
     @Binding var selection: MenuBarPopupSize
 
     var body: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
+        HStack(spacing: 4) {
             ForEach(MenuBarPopupSize.allCases) { size in
-                PopupSizeTile(
+                PopupFootprintOption(
                     size: size,
                     isSelected: selection == size,
                     onTap: { selection = size }
                 )
             }
         }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(DesignTokens.Colors.nextControlBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(DesignTokens.Colors.nextControlBorder, lineWidth: 0.5)
+        }
     }
 }
 
-private struct PopupSizeTile: View {
+private struct PopupFootprintOption: View {
     let size: MenuBarPopupSize
     let isSelected: Bool
     let onTap: () -> Void
@@ -162,40 +129,47 @@ private struct PopupSizeTile: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 6) {
-                PopupSizeMockup(size: size)
-                    .frame(width: 68, height: 40)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(
-                                isSelected ? Color.accentColor : DesignTokens.Colors.nextControlBorder,
-                                lineWidth: isSelected ? 1.5 : 0.5
-                            )
-                    }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Capsule()
+                        .fill(
+                            isSelected
+                                ? DesignTokens.Colors.accentPrimary
+                                : DesignTokens.Colors.textTertiary
+                        )
+                        .frame(width: indicatorWidth, height: 3)
 
-                Text(size.description)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(
-                        isSelected
-                            ? DesignTokens.Colors.textPrimary
-                            : DesignTokens.Colors.textSecondary
-                    )
+                    Text(size.description)
+                        .font(.system(size: 10, weight: .semibold))
+                }
+
+                Text("\(Int(size.dimensions.width)) pt")
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DesignTokens.Colors.textTertiary)
             }
-            .padding(DesignTokens.Spacing.xs)
+            .foregroundStyle(
+                isSelected
+                    ? DesignTokens.Colors.accentPrimary
+                    : DesignTokens.Colors.textSecondary
+            )
+            .padding(.horizontal, 9)
+            .frame(width: 104, height: 38, alignment: .leading)
             .background {
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(
                         isSelected
-                            ? DesignTokens.Colors.accentPrimary.opacity(0.09)
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.14)
                             : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
                     )
             }
-            .contentShape(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? DesignTokens.Colors.accentPrimary.opacity(0.28) : Color.clear,
+                        lineWidth: 0.5
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovering in
@@ -208,120 +182,25 @@ private struct PopupSizeTile: View {
         .accessibilityLabel(Text(size.description))
         .accessibilityHint("Changes the menu bar popup size")
     }
-}
 
-/// Three rows in every variant so the comparison is honest: only width
-/// and breathing room change between size options.
-private struct PopupSizeMockup: View {
-    let size: MenuBarPopupSize
-
-    private var popupWidth: CGFloat {
+    private var indicatorWidth: CGFloat {
         switch size {
-        case .compact:     return 52
-        case .comfortable: return 62
-        case .spacious:    return 70
-        }
-    }
-
-    private var horizontalPadding: CGFloat {
-        switch size {
-        case .compact:     return 3
-        case .comfortable: return 4.5
-        case .spacious:    return 6
-        }
-    }
-
-    private var verticalPadding: CGFloat {
-        switch size {
-        case .compact:     return 3
-        case .comfortable: return 4.5
-        case .spacious:    return 6
-        }
-    }
-
-    private var rowSpacing: CGFloat {
-        switch size {
-        case .compact:     return 2.5
-        case .comfortable: return 4
-        case .spacious:    return 5.5
-        }
-    }
-
-    var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5)
-                }
-                .frame(width: popupWidth)
-                .overlay {
-                    VStack(spacing: rowSpacing) {
-                        MockDeviceRow()
-                        MockDeviceRow()
-                        MockDeviceRow()
-                    }
-                    .padding(.horizontal, horizontalPadding)
-                    .padding(.vertical, verticalPadding)
-                    .frame(width: popupWidth)
-                }
-        }
-    }
-}
-
-private struct MockDeviceRow: View {
-    private static let element = Color.secondary.opacity(0.55)
-    private static let badge = Color.accentColor.opacity(0.6)
-
-    var body: some View {
-        HStack(spacing: 2) {
-            Circle()
-                .fill(Self.badge)
-                .frame(width: 3, height: 3)
-
-            Capsule()
-                .fill(Self.element)
-                .frame(width: 8, height: 2)
-
-            Spacer(minLength: 1)
-
-            Circle()
-                .fill(Self.element)
-                .frame(width: 2.5, height: 2.5)
-
-            Capsule()
-                .fill(Self.element)
-                .frame(width: 14, height: 2)
-
-            Capsule()
-                .fill(Self.element)
-                .frame(width: 4, height: 2)
+        case .compact:
+            return 12
+        case .comfortable:
+            return 18
+        case .spacious:
+            return 24
         }
     }
 }
 
 #Preview("Popup Size Tiles") {
-    @Previewable @State var dark: MenuBarPopupSize = .comfortable
-    @Previewable @State var light: MenuBarPopupSize = .comfortable
-    return VStack(spacing: 24) {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Dark").font(.caption).foregroundStyle(.secondary)
-            PopupSizeTilePicker(selection: $dark)
-        }
-        .padding(16)
-        .background(Color(white: 0.10))
-        .preferredColorScheme(.dark)
-
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Light").font(.caption).foregroundStyle(.secondary)
-            PopupSizeTilePicker(selection: $light)
-        }
-        .padding(16)
-        .background(Color(white: 0.96))
-        .preferredColorScheme(.light)
+    @Previewable @State var size: MenuBarPopupSize = .comfortable
+    VStack(alignment: .leading, spacing: 16) {
+        ThemeTilePicker(selection: .constant(.system))
+        PopupSizeTilePicker(selection: $size)
     }
     .padding(20)
+    .popupGlassBackground()
 }
