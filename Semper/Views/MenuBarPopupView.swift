@@ -128,7 +128,7 @@ struct MenuBarPopupView: View {
             WindowAppearanceBridge(appearance: audioEngine.settingsManager.appSettings.appearance.nsAppearance)
                 .frame(width: 0, height: 0)
         )
-        .darkGlassBackground()
+        .popupGlassBackground()
         .preferredColorScheme(audioEngine.settingsManager.appSettings.appearance.swiftUIColorScheme)
         .environment(\.appearancePreference, audioEngine.settingsManager.appSettings.appearance)
         .onAppear {
@@ -1526,7 +1526,7 @@ struct MenuBarPopupView: View {
 
     private func adjustVolume(at target: PopupKeyboardNavModel.RowID?, direction: Int, shift: Bool) -> KeyPress.Result {
         guard let target else { return .ignored }
-        let baseStep = audioEngine.settingsManager.appSettings.volumeHotkeyStep.sliderDelta
+        let baseStep = audioEngine.settingsManager.appSettings.volumeHotkeySliderDelta
         let step = shift ? baseStep * 2.0 : baseStep
         let delta = step * Double(direction)
         switch target {

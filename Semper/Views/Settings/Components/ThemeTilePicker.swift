@@ -202,5 +202,5 @@ private struct PopupFootprintOption: View {
         PopupSizeTilePicker(selection: $size)
     }
     .padding(20)
-    .darkGlassBackground()
+    .popupGlassBackground()
 }

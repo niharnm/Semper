@@ -74,7 +74,7 @@ struct SettingsRootView: View {
         .frame(width: 860, height: 610)
         .tint(DesignTokens.Colors.accentPrimary)
         .preferredColorScheme(settings.appSettings.appearance.swiftUIColorScheme)
-        .darkGlassBackground()
+        .popupGlassBackground()
         .background(WindowAppearanceBridge(appearance: settings.appSettings.appearance.nsAppearance))
         .background(WindowTitleBridge(title: "\(selection.title) · Semper"))
     }
@@ -248,6 +248,7 @@ private struct SettingsNavigationButton: View {
                 isHovered = hovering
             }
         }
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel(section.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

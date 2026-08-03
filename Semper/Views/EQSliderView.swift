@@ -138,6 +138,6 @@ struct EQSliderView: View {
     }
     .frame(width: 120, height: 120)
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }

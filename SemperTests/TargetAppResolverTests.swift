@@ -151,4 +151,52 @@ struct TargetAppResolverTests {
         )
         #expect(target == "com.spotify.client")
     }
+
+    // MARK: - User-selected target behavior
+
+    @Test("frontmost mode ignores audible candidates")
+    func frontmostModeIgnoresAudibleCandidates() {
+        let resolver = TargetAppResolver(
+            ownBundleID: Self.ownBundleID,
+            frontmostBundleIDProvider: { "com.apple.Safari" },
+            preferenceProvider: {
+                ShortcutTargetPreference(mode: .frontmostApp, selectedBundleID: nil)
+            }
+        )
+
+        let target = resolver.resolveTargetBundleID(audibleCandidates: ["com.spotify.client"])
+
+        #expect(target == "com.apple.Safari")
+    }
+
+    @Test("selected mode returns the configured app")
+    func selectedModeReturnsConfiguredApp() {
+        let resolver = TargetAppResolver(
+            ownBundleID: Self.ownBundleID,
+            frontmostBundleIDProvider: { "com.apple.Safari" },
+            preferenceProvider: {
+                ShortcutTargetPreference(
+                    mode: .selectedApp,
+                    selectedBundleID: "com.spotify.client"
+                )
+            }
+        )
+
+        let target = resolver.resolveTargetBundleID(audibleCandidates: ["com.apple.Music"])
+
+        #expect(target == "com.spotify.client")
+    }
+
+    @Test("selected mode returns nil without a configured app")
+    func selectedModeWithoutConfiguredAppReturnsNil() {
+        let resolver = TargetAppResolver(
+            ownBundleID: Self.ownBundleID,
+            frontmostBundleIDProvider: { "com.apple.Safari" },
+            preferenceProvider: {
+                ShortcutTargetPreference(mode: .selectedApp, selectedBundleID: nil)
+            }
+        )
+
+        #expect(resolver.resolveTargetBundleID(audibleCandidates: ["com.apple.Music"]) == nil)
+    }
 }

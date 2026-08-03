@@ -86,7 +86,7 @@ struct GeneralTab: View {
         }
     }
 
-    // MARK: - Data
+    // MARK: - Reset
 
     private var dataSection: some View {
         SettingsSection("Reset", subtitle: "Back to defaults") {
