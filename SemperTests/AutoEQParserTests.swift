@@ -100,6 +100,7 @@ struct AutoEQParserTests {
     }
 
     @Test("Parses catalog paths, deduplicates models, prioritizes sources, and sorts names")
+    @MainActor
     func parsesCatalogIndex() {
         let entries = AutoEQFetcher.parseIndexMarkdown("""
             - [Zeta](./crinacle/over-ear/Zeta) by crinacle
