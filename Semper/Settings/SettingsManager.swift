@@ -44,6 +44,13 @@ nonisolated struct AppSettings: Codable, Equatable {
     var hudStyle: HUDStyle = .tahoe                // Visual style of the volume HUD
     var mediaKeyControlEnabled: Bool = true        // Intercept F10/F11/F12 to drive the default output device
     var volumeHotkeyStep: VolumeHotkeyStep = .normal  // Slider-domain step per keypress; user-configurable
+    var customVolumeHotkeyStepPercent: Double = VolumeHotkeyStep.defaultCustomPercent
+    var shortcutTargetMode: ShortcutTargetMode = .playingApp
+    var selectedShortcutTargetBundleID: String?
+
+    var volumeHotkeySliderDelta: Double {
+        volumeHotkeyStep.sliderDelta(customPercent: customVolumeHotkeyStepPercent)
+    }
 
     // Global Hotkeys
     // Keyed by ShortcutAction.rawValue. Values mirror what KeyboardShortcuts persists in
@@ -75,6 +82,13 @@ nonisolated struct AppSettings: Codable, Equatable {
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
         mediaKeyControlEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaKeyControlEnabled) ?? true
         volumeHotkeyStep = try c.decodeIfPresent(VolumeHotkeyStep.self, forKey: .volumeHotkeyStep) ?? .normal
+        customVolumeHotkeyStepPercent = VolumeHotkeyStep.clampedCustomPercent(
+            try c.decodeIfPresent(Double.self, forKey: .customVolumeHotkeyStepPercent)
+                ?? VolumeHotkeyStep.defaultCustomPercent
+        )
+        shortcutTargetMode = try c.decodeIfPresent(ShortcutTargetMode.self, forKey: .shortcutTargetMode) ?? .playingApp
+        selectedShortcutTargetBundleID = try c.decodeIfPresent(String.self, forKey: .selectedShortcutTargetBundleID)
+            .flatMap { $0.isEmpty ? nil : $0 }
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable

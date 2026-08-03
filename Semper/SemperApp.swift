@@ -217,7 +217,13 @@ struct SemperApp: App {
         // status item has been materialized before any hotkey can fire.
         let popupController = MenuBarPopupController()
         let resolver = TargetAppResolver(
-            ownBundleID: Bundle.main.bundleIdentifier ?? "systems.semper.Semper"
+            ownBundleID: Bundle.main.bundleIdentifier ?? "systems.semper.Semper",
+            preferenceProvider: { [settings] in
+                ShortcutTargetPreference(
+                    mode: settings.appSettings.shortcutTargetMode,
+                    selectedBundleID: settings.appSettings.selectedShortcutTargetBundleID
+                )
+            }
         )
         resolver.start()
         let registry = ShortcutsRegistry(

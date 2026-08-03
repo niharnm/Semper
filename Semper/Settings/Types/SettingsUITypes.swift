@@ -142,6 +142,10 @@ enum VolumeHotkeyStep: String, Codable, CaseIterable, Identifiable, CustomString
     case normal
     case fine
     case extraFine
+    case custom
+
+    static let defaultCustomPercent = 5.0
+    static let customPercentRange = 1.0...25.0
 
     var id: String { rawValue }
 
@@ -151,7 +155,18 @@ enum VolumeHotkeyStep: String, Codable, CaseIterable, Identifiable, CustomString
         case .normal:    return 1.0 / 16.0
         case .fine:      return 1.0 / 32.0
         case .extraFine: return 1.0 / 64.0
+        case .custom:    return Self.defaultCustomPercent / 100.0
         }
+    }
+
+    func sliderDelta(customPercent: Double) -> Double {
+        guard self == .custom else { return sliderDelta }
+        return Self.clampedCustomPercent(customPercent) / 100.0
+    }
+
+    static func clampedCustomPercent(_ percent: Double) -> Double {
+        guard percent.isFinite else { return defaultCustomPercent }
+        return min(max(percent, customPercentRange.lowerBound), customPercentRange.upperBound)
     }
 
     var description: String {
@@ -160,6 +175,25 @@ enum VolumeHotkeyStep: String, Codable, CaseIterable, Identifiable, CustomString
         case .normal:    return "Normal (6.25%)"
         case .fine:      return "Fine (3.13%)"
         case .extraFine: return "Extra-Fine (1.56%)"
+        case .custom:    return "Custom"
+        }
+    }
+}
+
+// MARK: - App Hotkey Target
+
+enum ShortcutTargetMode: String, Codable, CaseIterable, Identifiable, CustomStringConvertible {
+    case playingApp
+    case frontmostApp
+    case selectedApp
+
+    var id: String { rawValue }
+
+    var description: String {
+        switch self {
+        case .playingApp: return "Playing App"
+        case .frontmostApp: return "Frontmost App"
+        case .selectedApp: return "Selected App"
         }
     }
 }

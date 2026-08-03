@@ -10,7 +10,6 @@
 		140F6FF7C7CD8F6C1D73121E /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 75DA616DEB24648C4BDE9092 /* KeyboardShortcuts */; };
 		7980FFE92F261AA200AF5F85 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 79SPARK012F0600000008D52 /* Sparkle */; };
 		79B1000B2F35000000000002 /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79B1000A2F35000000000001 /* IOBluetooth.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
-		79C80E5A2F12FF510021442B /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = 79SNAP0012F0600000008D52A /* SnapshotTesting */; };
 		79FLUID0012F0600000008D52 /* FluidMenuBarExtra in Frameworks */ = {isa = PBXBuildFile; productRef = 79FLUID0022F0600000008D52 /* FluidMenuBarExtra */; };
 		D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = C18F337FFBE2D40467959144 /* KeyboardShortcuts */; };
 /* End PBXBuildFile section */
@@ -86,7 +85,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				79C80E5A2F12FF510021442B /* SnapshotTesting in Frameworks */,
 				D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -176,7 +174,6 @@
 			);
 			name = SemperTests;
 			packageProductDependencies = (
-				79SNAP0012F0600000008D52A /* SnapshotTesting */,
 				C18F337FFBE2D40467959144 /* KeyboardShortcuts */,
 			);
 			productName = SemperTests;
@@ -237,7 +234,6 @@
 			mainGroup = 79A607A62F05C9E00008D52A;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */,
 				79FLUID0002F0600000008D52 /* XCRemoteSwiftPackageReference "FluidMenuBarExtra" */,
 				79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
@@ -654,14 +650,6 @@
 				minimumVersion = 1.0.0;
 			};
 		};
-		79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/pointfreeco/swift-snapshot-testing";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.15.0;
-			};
-		};
 		79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -682,11 +670,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 79FLUID0002F0600000008D52 /* XCRemoteSwiftPackageReference "FluidMenuBarExtra" */;
 			productName = FluidMenuBarExtra;
-		};
-		79SNAP0012F0600000008D52A /* SnapshotTesting */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 79SNAP0002F0600000008D52A /* XCRemoteSwiftPackageReference "swift-snapshot-testing" */;
-			productName = SnapshotTesting;
 		};
 		79SPARK012F0600000008D52 /* Sparkle */ = {
 			isa = XCSwiftPackageProductDependency;
