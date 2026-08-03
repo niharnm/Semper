@@ -30,11 +30,15 @@ final class DDCController {
     /// Callback when DDC probe completes (triggers device list refresh)
     var onProbeCompleted: (() -> Void)?
 
-    /// EDID identifiers read directly from a monitor over I2C.
-    private struct DisplayEDID: Sendable {
-        let vendorID: UInt32
-        let productID: UInt32
-        let serialNumber: UInt32
+    private struct DDCProbeDisplay {
+        let entry: io_service_t
+        let service: DDCService
+        let candidate: DDCDisplayCandidate
+    }
+
+    private struct CoreAudioProbeDevice {
+        let id: AudioDeviceID
+        let candidate: CoreAudioDisplayCandidate
     }
 
     init(settingsManager: SettingsManager) {
@@ -159,19 +163,31 @@ final class DDCController {
             //    for both entries, making name matching and IOKit-EDID matching fail.
             //    I2C EDID reads from the same physical bus as DDC commands, guaranteeing
             //    the EDID belongs to the exact monitor this DDCService controls.
-            var audioCapable: [(entry: io_service_t, service: DDCService, displayName: String, edid: DisplayEDID?)] = []
+            var audioCapable: [DDCProbeDisplay] = []
             for (index, (entry, service)) in discovered.enumerated() {
                 let name = Self.getDisplayName(for: entry)
 
                 // Read EDID directly from the monitor over I2C
-                let edid: DisplayEDID? = {
+                let edid: DDCDisplayEDID? = {
                     guard let raw = service.readEDID() else { return nil }
-                    return DisplayEDID(vendorID: raw.vendorID, productID: raw.productID, serialNumber: raw.serialNumber)
+                    return DDCDisplayEDID(
+                        vendorID: raw.vendorID,
+                        productID: raw.productID,
+                        serialNumber: raw.serialNumber
+                    )
                 }()
 
                 logger.info("DDC probe: display \(index + 1) '\(name)' EDID(\(edid != nil ? "I2C" : "none")): \(edid.map { "v\($0.vendorID) p\($0.productID) s\($0.serialNumber)" } ?? "–")")
                 if service.supportsAudioVolume() {
-                    audioCapable.append((entry: entry, service: service, displayName: name, edid: edid))
+                    audioCapable.append(DDCProbeDisplay(
+                        entry: entry,
+                        service: service,
+                        candidate: DDCDisplayCandidate(
+                            id: Self.displayCandidateID(for: entry),
+                            name: name,
+                            edid: edid
+                        )
+                    ))
                     logger.info("DDC audio-capable display: '\(name)'")
                 } else {
                     logger.info("DDC probe: '\(name)' does not support VCP 0x62")
@@ -193,78 +209,67 @@ final class DDCController {
             // 3. Get all CoreAudio output devices (candidates for DDC matching)
             let coreAudioDevices = self.getCoreAudioOutputDevices()
             for ca in coreAudioDevices {
-                logger.info("DDC probe: CoreAudio candidate: '\(ca.name)' (uid: \(ca.uid))")
+                logger.info("DDC probe: CoreAudio candidate: '\(ca.candidate.name)' (uid: \(ca.candidate.id?.rawValue ?? "unavailable"))")
             }
 
             // 4. Match DDC displays to CoreAudio devices
             var matched: [AudioDeviceID: DDCService] = [:]
             var matchedUIDs: [AudioDeviceID: String] = [:]
             var volumes: [AudioDeviceID: Int] = [:]
-            var matchedDDCIndices = Set<Int>()
+            let matchResult = DDCDisplayMatcher.match(
+                displays: audioCapable.map(\.candidate),
+                coreAudioDevices: coreAudioDevices.map(\.candidate)
+            )
 
-            // 4a. First pass: match by display name (fuzzy: case-insensitive, trimmed, substring)
-            for caDevice in coreAudioDevices {
-                for (i, ddcDisplay) in audioCapable.enumerated() where !matchedDDCIndices.contains(i) {
-                    if Self.namesMatch(caDevice.name, ddcDisplay.displayName) {
-                        matched[caDevice.id] = ddcDisplay.service
-                        matchedUIDs[caDevice.id] = caDevice.uid
-                        matchedDDCIndices.insert(i)
-
-                        if let vol = try? ddcDisplay.service.getAudioVolume() {
-                            volumes[caDevice.id] = vol.current
-                        }
-
-                        logger.info("Matched CoreAudio '\(caDevice.name)' → DDC '\(ddcDisplay.displayName)' (by name)")
-                        break
-                    }
+            var displaysByID: [DDCDisplayCandidate.ID: DDCProbeDisplay] = [:]
+            var duplicateDisplayIDs = Set<DDCDisplayCandidate.ID>()
+            for display in audioCapable {
+                guard let id = display.candidate.id else { continue }
+                if displaysByID.updateValue(display, forKey: id) != nil {
+                    duplicateDisplayIDs.insert(id)
                 }
             }
-
-            // 4b. Second pass: match by I2C EDID vendor+product prefix embedded in the CoreAudio UID.
-            //     On Apple Silicon, CoreAudio UIDs for HDMI/DP monitors encode the EDID vendor and
-            //     product IDs as the first 8 hex characters: "{vendor:04x}{product:04x}-..."
-            //     Example: "1E6D5077-0000-0000-071F-..." → vendor=0x1E6D, product=0x5077.
-            //     Reading the same values from the monitor via I2C gives a guaranteed 1:1 mapping.
-            for (i, ddcDisplay) in audioCapable.enumerated() where !matchedDDCIndices.contains(i) {
-                guard let edid = ddcDisplay.edid else { continue }
-
-                for caDevice in coreAudioDevices where !matched.keys.contains(caDevice.id) {
-                    if Self.edidMatchesUID(edid, uid: caDevice.uid) {
-                        matched[caDevice.id] = ddcDisplay.service
-                        matchedUIDs[caDevice.id] = caDevice.uid
-                        matchedDDCIndices.insert(i)
-
-                        if let vol = try? ddcDisplay.service.getAudioVolume() {
-                            volumes[caDevice.id] = vol.current
-                        }
-
-                        logger.info("Matched CoreAudio '\(caDevice.name)' → DDC '\(ddcDisplay.displayName)' (by I2C EDID uid prefix v\(edid.vendorID) p\(edid.productID))")
-                        break
-                    }
-                }
+            for id in duplicateDisplayIDs {
+                displaysByID.removeValue(forKey: id)
             }
 
-            // 4c. Third pass: transport fallback for any remaining unmatched entries
-            //     (HDMI, DisplayPort, Thunderbolt — these are monitor connections)
-            let displayTransports: Set<TransportType> = [.hdmi, .displayPort, .thunderbolt]
-            let unmatchedDisplayDevices = coreAudioDevices.filter { ca in
-                !matched.keys.contains(ca.id) && displayTransports.contains(ca.transport)
-            }
-            let unmatchedDDC = audioCapable.enumerated().filter { !matchedDDCIndices.contains($0.offset) }
-
-            for (i, ddcDisplay) in unmatchedDDC {
-                for caDevice in unmatchedDisplayDevices where !matched.keys.contains(caDevice.id) {
-                    matched[caDevice.id] = ddcDisplay.service
-                    matchedUIDs[caDevice.id] = caDevice.uid
-                    matchedDDCIndices.insert(i)
-
-                    if let vol = try? ddcDisplay.service.getAudioVolume() {
-                        volumes[caDevice.id] = vol.current
-                    }
-
-                    logger.info("Matched CoreAudio '\(caDevice.name)' → DDC '\(ddcDisplay.displayName)' (by transport fallback: \(caDevice.transport))")
-                    break
+            var coreAudioByID: [CoreAudioDisplayCandidate.ID: CoreAudioProbeDevice] = [:]
+            var duplicateCoreAudioIDs = Set<CoreAudioDisplayCandidate.ID>()
+            for device in coreAudioDevices {
+                guard let id = device.candidate.id else { continue }
+                if coreAudioByID.updateValue(device, forKey: id) != nil {
+                    duplicateCoreAudioIDs.insert(id)
                 }
+            }
+            for id in duplicateCoreAudioIDs {
+                coreAudioByID.removeValue(forKey: id)
+            }
+
+            for diagnostic in matchResult.identityDiagnostics {
+                logger.error("DDC match identity diagnostic: \(String(describing: diagnostic))")
+            }
+            for unmatched in matchResult.unmatchedDisplays {
+                logger.info("DDC display \(unmatched.id.rawValue) unmatched: \(String(describing: unmatched.reasons))")
+            }
+            for unmatched in matchResult.unmatchedCoreAudioDevices {
+                logger.info("CoreAudio device '\(unmatched.id.rawValue)' unmatched for DDC: \(String(describing: unmatched.reasons))")
+            }
+
+            for match in matchResult.matches {
+                guard let ddcDisplay = displaysByID[match.displayID],
+                      let caDevice = coreAudioByID[match.coreAudioID] else {
+                    logger.error("DDC matcher returned unresolved candidate identities")
+                    continue
+                }
+
+                matched[caDevice.id] = ddcDisplay.service
+                matchedUIDs[caDevice.id] = match.coreAudioID.rawValue
+
+                if let vol = try? ddcDisplay.service.getAudioVolume() {
+                    volumes[caDevice.id] = vol.current
+                }
+
+                logger.info("Matched CoreAudio '\(caDevice.candidate.name)' to DDC '\(ddcDisplay.candidate.name)' using \(String(describing: match.method))")
             }
 
             // Release IOKit entries
@@ -304,56 +309,41 @@ final class DDCController {
 
     // MARK: - CoreAudio Device Discovery
 
-    private struct CoreAudioDeviceInfo: Sendable {
-        let id: AudioDeviceID
-        let uid: String
-        let name: String
-        let transport: TransportType
-    }
-
     /// Gets all CoreAudio output devices as candidates for DDC matching.
     /// Includes devices both with and without CoreAudio volume control,
     /// since some monitors report having volume control that doesn't actually work.
-    private nonisolated func getCoreAudioOutputDevices() -> [CoreAudioDeviceInfo] {
+    private nonisolated func getCoreAudioOutputDevices() -> [CoreAudioProbeDevice] {
         guard let deviceIDs = try? AudioObjectID.readDeviceList() else { return [] }
 
-        var results: [CoreAudioDeviceInfo] = []
+        var results: [CoreAudioProbeDevice] = []
         for deviceID in deviceIDs {
             guard !deviceID.isAggregateDevice(),
                   !deviceID.isVirtualDevice(),
                   deviceID.hasOutputStreams() else { continue }
 
-            guard let uid = try? deviceID.readDeviceUID(),
-                  let name = try? deviceID.readDeviceName() else { continue }
-
-            results.append(CoreAudioDeviceInfo(id: deviceID, uid: uid, name: name, transport: deviceID.readTransportType()))
+            guard let name = try? deviceID.readDeviceName() else { continue }
+            let uid = try? deviceID.readDeviceUID()
+            let candidateID = uid.flatMap { value in
+                value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : CoreAudioDisplayCandidate.ID(rawValue: value)
+            }
+            results.append(CoreAudioProbeDevice(
+                id: deviceID,
+                candidate: CoreAudioDisplayCandidate(
+                    id: candidateID,
+                    name: name,
+                    transport: deviceID.readTransportType()
+                )
+            ))
         }
         return results
     }
 
-    // MARK: - Matching Helpers
-
-    /// Returns true if the EDID vendor+product IDs match the prefix encoded in a CoreAudio UID.
-    /// On Apple Silicon, HDMI/DP UIDs have the format "{vendor:04x}{product:04x}-..." (case-insensitive).
-    /// The vendor (bytes 8-9) is big-endian in EDID and matches directly.
-    /// The product (bytes 10-11) is little-endian in EDID but the UID encodes the raw bytes
-    /// big-endian ({byte10:02x}{byte11:02x}), so we swap before comparing.
-    private nonisolated static func edidMatchesUID(_ edid: DisplayEDID, uid: String) -> Bool {
-        let productSwapped = ((edid.productID & 0xFF) << 8) | ((edid.productID >> 8) & 0xFF)
-        let prefix = String(format: "%04x%04x", edid.vendorID, productSwapped)
-        return uid.lowercased().hasPrefix(prefix)
-    }
-
-    /// Fuzzy name matching: case-insensitive, trimmed, with substring fallback.
-    /// CoreAudio device names and IOKit display names both come from EDID but may
-    /// differ in casing, whitespace, or truncation.
-    private nonisolated static func namesMatch(_ a: String, _ b: String) -> Bool {
-        let normA = a.trimmingCharacters(in: .whitespaces).lowercased()
-        let normB = b.trimmingCharacters(in: .whitespaces).lowercased()
-        if normA == normB { return true }
-        // Substring fallback: one contains the other
-        if normA.contains(normB) || normB.contains(normA) { return true }
-        return false
+    private nonisolated static func displayCandidateID(for entry: io_service_t) -> DDCDisplayCandidate.ID? {
+        var rawValue: UInt64 = 0
+        guard IORegistryEntryGetRegistryEntryID(entry, &rawValue) == KERN_SUCCESS else { return nil }
+        return DDCDisplayCandidate.ID(rawValue: rawValue)
     }
 
     // MARK: - Display Name from IOKit
