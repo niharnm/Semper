@@ -4,8 +4,8 @@
   version="2.0">
   <channel>
     <title>Semper Updates</title>
-    <link>https://www.semper.systems/appcast.xml</link>
-    <description>Signed Semper releases will appear here after the update channel is configured.</description>
+    <link>https://www.semper.systems/</link>
+    <description>Official signed Semper updates.</description>
     <language>en</language>
   </channel>
 </rss>
