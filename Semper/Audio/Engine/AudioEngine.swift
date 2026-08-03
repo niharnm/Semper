@@ -530,6 +530,25 @@ final class AudioEngine {
         applyPersistedSettings()
         scheduleStaleCleanup()
 
+        let updatedPIDs = Set(updatedApps.map(\.id))
+        for (pid, tap) in taps
+        where tap.app.isHelperBacked && !updatedPIDs.contains(pid) {
+            tapMembershipRefreshTasks[pid]?.cancel()
+            tapMembershipRefreshTasks[pid] = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(750))
+                guard let self else { return }
+                defer {
+                    self.tapMembershipRefreshTasks.removeValue(forKey: pid)
+                }
+                guard !Task.isCancelled,
+                      !self.apps.contains(where: { $0.id == pid }) else {
+                    return
+                }
+                self.logger.info("Removing stale helper-backed tap for PID \(pid)")
+                await self.recreateTap(for: pid)
+            }
+        }
+
         for app in updatedApps {
             guard let tap = taps[app.id],
                   Self.shouldRefreshTapMembership(
@@ -556,7 +575,9 @@ final class AudioEngine {
                 }
                 let currentIDs = Set(currentTap.app.processObjectIDs)
                 let latestIDs = Set(latestApp.processObjectIDs)
-                if !currentIDs.isDisjoint(with: latestIDs),
+                let removedIDs = currentIDs.subtracting(latestIDs)
+                if removedIDs.isEmpty,
+                   !currentIDs.isDisjoint(with: latestIDs),
                    currentTap.hasRecentAudioCallback(within: 1.0) {
                     return
                 }
@@ -574,6 +595,9 @@ final class AudioEngine {
         let currentIDs = Set(currentObjectIDs)
         let latestIDs = Set(latestObjectIDs)
         guard currentIDs != latestIDs else { return false }
+        if !currentIDs.subtracting(latestIDs).isEmpty {
+            return true
+        }
         if currentIDs.isEmpty {
             return !latestIDs.isEmpty
         }

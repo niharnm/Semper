@@ -60,6 +60,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var currentDeviceUID: String? { currentDeviceUIDs.first }
     var tapSourceDeviceUID: String? = nil
     var shouldFailDeviceSwitch = false
+    var hasRecentAudioCallbackResult = false
 
     init(app: AudioApp, deviceUIDs: [String]) {
         self.app = app
@@ -113,7 +114,9 @@ final class RecordingProcessTapController: ProcessTapControlling {
         currentDeviceUIDs = newDeviceUIDs
     }
 
-    func hasRecentAudioCallback(within seconds: Double) -> Bool { false }
+    func hasRecentAudioCallback(within seconds: Double) -> Bool {
+        hasRecentAudioCallbackResult
+    }
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool { false }
 
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {}
@@ -147,7 +150,9 @@ private struct Fixture {
 private func makeFixture(
     supportsAutoEQ: Bool = true,
     deviceVolume: Float = 0.75,
-    outputTopology: OutputDeviceTopology = .assumedStereo
+    outputTopology: OutputDeviceTopology = .assumedStereo,
+    processObjectIDs: [AudioObjectID] = [],
+    isHelperBacked: Bool = false
 ) -> Fixture {
     let tempDir = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)
@@ -169,10 +174,11 @@ private func makeFixture(
 
     let app = AudioApp(
         id: 12345,
-        processObjectIDs: [],
+        processObjectIDs: processObjectIDs,
         name: "TestApp",
         icon: NSImage(),
-        bundleID: "com.test.tapinitial"
+        bundleID: "com.test.tapinitial",
+        isHelperBacked: isHelperBacked
     )
 
     let processMonitor = StubProcessMonitor()
@@ -509,7 +515,7 @@ struct AudioEngineTapInitialStateTests {
         fix.processMonitor.activeApps = [updatedApp]
         fix.processMonitor.onAppsChanged?([updatedApp])
 
-        for _ in 0..<50 {
+        for _ in 0..<100 {
             if let current = fix.lastTap(),
                current !== firstTap,
                current.app.processObjectIDs == [777] {
@@ -533,6 +539,63 @@ struct AudioEngineTapInitialStateTests {
         )
 
         #expect(!shouldRefresh)
+    }
+
+    @Test("Removing a browser helper rebuilds a tap that is still rendering")
+    func removedBrowserHelperRebuildsTap() async throws {
+        let fix = makeFixture(
+            processObjectIDs: [100, 200],
+            isHelperBacked: true
+        )
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let firstTap = try #require(fix.lastTap())
+        firstTap.hasRecentAudioCallbackResult = true
+
+        let updatedApp = AudioApp(
+            id: fix.app.id,
+            processObjectIDs: [100],
+            name: fix.app.name,
+            icon: fix.app.icon,
+            bundleID: fix.app.bundleID,
+            isHelperBacked: true
+        )
+        fix.processMonitor.activeApps = [updatedApp]
+        fix.processMonitor.onAppsChanged?([updatedApp])
+
+        for _ in 0..<100 {
+            if let current = fix.lastTap(), current !== firstTap {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let rebuiltTap = try #require(fix.lastTap())
+        #expect(rebuiltTap !== firstTap)
+        #expect(rebuiltTap.app.processObjectIDs == [100])
+        #expect(firstTap.events.contains(.invalidate))
+    }
+
+    @Test("Closing the last browser helper invalidates its stale tap")
+    func disappearingBrowserHelperInvalidatesTap() async throws {
+        let fix = makeFixture(
+            processObjectIDs: [200],
+            isHelperBacked: true
+        )
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+        tap.hasRecentAudioCallbackResult = true
+
+        fix.processMonitor.activeApps = []
+        fix.processMonitor.onAppsChanged?([])
+
+        for _ in 0..<100 {
+            if tap.events.contains(.invalidate) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(tap.events.contains(.invalidate))
     }
 
     @Test("A newly active helper requests a tap refresh")
