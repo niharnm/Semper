@@ -14,6 +14,8 @@ struct AudioStatusStrip: View {
                     .font(DesignTokens.Typography.caption)
                     .foregroundStyle(DesignTokens.Colors.textSecondary)
                     .lineLimit(1)
+                    .help(activity.presentation.message)
+                    .accessibilityIdentifier("audio-status-message")
 
                 Spacer(minLength: DesignTokens.Spacing.xs)
 
@@ -24,6 +26,16 @@ struct AudioStatusStrip: View {
                     .buttonStyle(.plain)
                     .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(DesignTokens.Colors.systemBlue)
+                    .keyboardShortcut("z", modifiers: .command)
+                    .accessibilityLabel(
+                        actionTitle == "Undo" ? "Undo last audio change" : actionTitle
+                    )
+                    .accessibilityHint(
+                        actionTitle == "Undo"
+                            ? "Restores the previous audio setting. Available for 30 seconds."
+                            : "Performs the audio status action."
+                    )
+                    .accessibilityIdentifier("audio-undo-button")
                 }
 
                 Button {
@@ -34,7 +46,17 @@ struct AudioStatusStrip: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .accessibilityLabel("Dismiss audio status")
+                .accessibilityLabel(
+                    activity.presentation.actionTitle == "Undo"
+                        ? "Dismiss undo"
+                        : "Dismiss audio status"
+                )
+                .accessibilityHint(
+                    activity.presentation.actionTitle == "Undo"
+                        ? "Discards the visible undo action."
+                        : "Hides this audio status."
+                )
+                .accessibilityIdentifier("audio-status-dismiss")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
@@ -45,6 +67,7 @@ struct AudioStatusStrip: View {
                     .frame(height: 1)
             }
             .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("audio-status-strip")
         }
     }
 }
