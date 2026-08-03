@@ -96,6 +96,6 @@ private struct IconOption: View {
     }
     .padding()
     .frame(width: 300)
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }
