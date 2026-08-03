@@ -131,6 +131,8 @@ struct InputDeviceRow: View {
                 }
             }
             .scrollWheelStep($sliderValue, in: 0.0...1.0)
+            .accessibilityLabel("Input volume for \(device.name)")
+            .accessibilityValue("\(displayedPercentage) percent")
 
             // Editable volume percentage
             EditablePercentage(
@@ -139,7 +141,8 @@ struct InputDeviceRow: View {
                     set: { sliderValue = Double($0) / 100.0 }
                 ),
                 range: 0...100,
-                isRowFocused: isFocused
+                isRowFocused: isFocused,
+                accessibilityName: "Input volume percentage for \(device.name)"
             )
         }
         .frame(height: DesignTokens.Dimensions.rowContentHeight)
