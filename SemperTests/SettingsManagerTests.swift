@@ -91,6 +91,7 @@ struct SettingsJSONTests {
         original.deviceIconOverrides = ["uid-a": "airpodsmax", "uid-b": "gamecontroller.fill"]
         original.outputMasterGains = ["uid-a": 2.5]
         original.outputBalances = ["uid-a": -0.4]
+        original.outputVolumeLimits = ["uid-a": 0.75]
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
@@ -109,6 +110,7 @@ struct SettingsJSONTests {
         #expect(decoded.deviceIconOverrides == original.deviceIconOverrides)
         #expect(decoded.outputMasterGains == original.outputMasterGains)
         #expect(decoded.outputBalances == original.outputBalances)
+        #expect(decoded.outputVolumeLimits == original.outputVolumeLimits)
     }
 
     @Test("Decoding empty JSON produces valid defaults")
@@ -126,6 +128,7 @@ struct SettingsJSONTests {
         #expect(decoded.deviceIconOverrides.isEmpty)
         #expect(decoded.outputMasterGains.isEmpty)
         #expect(decoded.outputBalances.isEmpty)
+        #expect(decoded.outputVolumeLimits.isEmpty)
     }
 
     @Test("Decoding with extra unknown keys is tolerated")
@@ -186,6 +189,112 @@ struct SettingsJSONTests {
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
         #expect(decoded.appSettings.defaultNewAppVolume == 1.0,
                 "Negative defaultNewAppVolume should be reset to 1.0")
+    }
+}
+
+@Suite("SettingsManager output volume limits")
+@MainActor
+struct OutputVolumeLimitPersistenceTests {
+
+    private func makeDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperVolumeLimitTests-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    @Test("Default settings use schema 13")
+    func schemaVersion() {
+        #expect(SettingsManager.Settings().version == 13)
+    }
+
+    @Test("Loading an older file advances its schema on the next write")
+    func olderSchemaAdvancesOnWrite() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("settings.json")
+        try Data(#"{"version":12}"#.utf8).write(to: url, options: .atomic)
+
+        let manager = SettingsManager(directory: directory)
+        manager.flushSync()
+
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        #expect(object?["version"] as? Int == 13)
+    }
+
+    @Test("Limits clamp, persist by UID, and clear with nil")
+    func setPersistAndClear() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let manager = SettingsManager(directory: directory)
+        manager.setOutputVolumeLimit(for: "uid-low", to: 0.05)
+        manager.setOutputVolumeLimit(for: "uid-high", to: 1.4)
+        manager.setOutputVolumeLimit(for: "uid-normal", to: 0.65)
+        manager.flushSync()
+
+        var reloaded = SettingsManager(directory: directory)
+        #expect(reloaded.outputVolumeLimit(for: "uid-low") == 0.1)
+        #expect(reloaded.outputVolumeLimit(for: "uid-high") == 1.0)
+        #expect(reloaded.outputVolumeLimit(for: "uid-normal") == 0.65)
+
+        reloaded.setOutputVolumeLimit(for: "uid-normal", to: nil)
+        reloaded.flushSync()
+        reloaded = SettingsManager(directory: directory)
+        #expect(reloaded.outputVolumeLimit(for: "uid-normal") == nil)
+    }
+
+    @Test("Invalid values and blank UIDs are not stored")
+    func invalidInputs() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = SettingsManager(directory: directory)
+
+        manager.setOutputVolumeLimit(for: "uid-a", to: 0.7)
+        manager.setOutputVolumeLimit(for: "uid-a", to: .infinity)
+        manager.setOutputVolumeLimit(for: "   ", to: 0.5)
+
+        #expect(manager.outputVolumeLimit(for: "uid-a") == nil)
+        #expect(manager.outputVolumeLimit(for: "   ") == nil)
+    }
+
+    @Test("Decode normalizes limits and filters invalid entries")
+    func decodeNormalization() throws {
+        let json = """
+        {
+          "outputVolumeLimits": {
+            "uid-low": 0.05,
+            "uid-high": 1.4,
+            "uid-normal": 0.65,
+            "uid-invalid": 0,
+            " ": 0.5
+          }
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(
+            SettingsManager.Settings.self,
+            from: Data(json.utf8)
+        )
+
+        #expect(decoded.outputVolumeLimits == [
+            "uid-low": 0.1,
+            "uid-high": 1.0,
+            "uid-normal": 0.65
+        ])
+    }
+
+    @Test("Reset clears every output limit")
+    func resetClearsLimits() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = SettingsManager(directory: directory)
+        manager.setOutputVolumeLimit(for: "uid-a", to: 0.4)
+        manager.setOutputVolumeLimit(for: "uid-b", to: 0.8)
+
+        manager.resetAllSettings()
+
+        #expect(manager.outputVolumeLimit(for: "uid-a") == nil)
+        #expect(manager.outputVolumeLimit(for: "uid-b") == nil)
     }
 }
 

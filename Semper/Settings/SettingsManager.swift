@@ -151,7 +151,9 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        var version: Int = 12
+        static let currentVersion = 13
+
+        var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
         var appDeviceRouting: [String: String] = [:]  // bundleID → deviceUID
         var appMutes: [String: Bool] = [:]  // bundleID → isMuted
@@ -179,6 +181,7 @@ final class SettingsManager {
         var softwareDeviceSavedVolumes: [String: Float] = [:] // device UID → volume before mute
         var outputMasterGains: [String: Float] = [:]           // device UID → boosted gain (1.0-3.0)
         var outputBalances: [String: Float] = [:]              // device UID → L/R balance (-1.0...1.0)
+        var outputVolumeLimits: [String: Float] = [:]          // device UID → maximum volume (0.1...1.0)
 
         // Per-device volume control tier override (overrides auto-detection).
         // nil/missing → auto-detect (hardware/ddc/software). Populated only by
@@ -245,6 +248,13 @@ final class SettingsManager {
             outputBalances = (try c.decodeIfPresent([String: Float].self, forKey: .outputBalances) ?? [:])
                 .filter { $0.value.isFinite }
                 .mapValues { max(-1, min(1, $0)) }
+            outputVolumeLimits = (try c.decodeIfPresent([String: Float].self, forKey: .outputVolumeLimits) ?? [:])
+                .filter {
+                    !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && $0.value.isFinite
+                        && $0.value > 0
+                }
+                .mapValues { max(0.1, min(1.0, $0)) }
             deviceVolumeTierOverride = try c.decodeIfPresent([String: VolumeControlTier].self, forKey: .deviceVolumeTierOverride) ?? [:]
             deviceIconOverrides = try c.decodeIfPresent([String: String].self, forKey: .deviceIconOverrides) ?? [:]
             outputDevicePriority = try c.decodeIfPresent([String].self, forKey: .outputDevicePriority) ?? []
@@ -539,6 +549,23 @@ final class SettingsManager {
             settings.outputBalances[deviceUID] = max(-1, min(1, balance))
         } else {
             settings.outputBalances.removeValue(forKey: deviceUID)
+        }
+        scheduleSave()
+    }
+
+    // MARK: - Per-Device Volume Limit
+
+    func outputVolumeLimit(for deviceUID: String) -> Float? {
+        settings.outputVolumeLimits[deviceUID]
+    }
+
+    func setOutputVolumeLimit(for deviceUID: String, to limit: Float?) {
+        guard !deviceUID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        if let limit, limit.isFinite, limit > 0 {
+            settings.outputVolumeLimits[deviceUID] = max(0.1, min(1.0, limit))
+        } else {
+            settings.outputVolumeLimits.removeValue(forKey: deviceUID)
         }
         scheduleSave()
     }
@@ -969,6 +996,7 @@ final class SettingsManager {
         settings.softwareDeviceSavedVolumes.removeAll()
         settings.outputMasterGains.removeAll()
         settings.outputBalances.removeAll()
+        settings.outputVolumeLimits.removeAll()
         settings.deviceVolumeTierOverride.removeAll()
         settings.deviceIconOverrides.removeAll()
         settings.outputDevicePriority.removeAll()
@@ -995,7 +1023,9 @@ final class SettingsManager {
 
         do {
             let data = try Data(contentsOf: settingsURL)
-            settings = try JSONDecoder().decode(Settings.self, from: data)
+            var decoded = try JSONDecoder().decode(Settings.self, from: data)
+            decoded.version = max(decoded.version, Settings.currentVersion)
+            settings = decoded
             logger.debug("Loaded settings with \(self.settings.appVolumes.count) volumes, \(self.settings.appDeviceRouting.count) device routings, \(self.settings.appMutes.count) mutes, \(self.settings.appEQSettings.count) EQ settings")
         } catch {
             logger.error("Failed to load settings: \(error.localizedDescription)")

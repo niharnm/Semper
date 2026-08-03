@@ -173,6 +173,11 @@ final class DDCController {
         cachedVolumes[deviceID]
     }
 
+    /// Returns the last volume confirmed by a completed DDC write or probe.
+    func getConfirmedVolume(for deviceID: AudioDeviceID) -> Int? {
+        writeLedger.confirmedVolumes[deviceID]
+    }
+
     /// Sets the DDC volume for a device (0-100). Debounced to avoid I2C bus spam.
     func setVolume(for deviceID: AudioDeviceID, to volume: Int) {
         let clamped = max(0, min(100, volume))
@@ -306,13 +311,18 @@ final class DDCController {
     }
 
     /// Software unmute: restores saved volume.
-    func unmute(for deviceID: AudioDeviceID) {
+    func unmute(for deviceID: AudioDeviceID, maximumVolume: Int? = nil) {
         guard let uid = deviceUIDs[deviceID] else { return }
         pendingMuteRestores[deviceID] = pendingMuteRestores[deviceID]
             ?? settingsManager.getDDCMuteState(for: uid)
         let savedVolume = settingsManager.getDDCSavedVolume(for: uid) ?? 50
+        let restoredVolume = Self.restoredVolume(savedVolume, maximumVolume: maximumVolume)
         settingsManager.setDDCMuteState(for: uid, to: false)
-        setVolume(for: deviceID, to: savedVolume)
+        setVolume(for: deviceID, to: restoredVolume)
+    }
+
+    nonisolated static func restoredVolume(_ savedVolume: Int, maximumVolume: Int?) -> Int {
+        max(0, min(100, min(savedVolume, maximumVolume ?? savedVolume)))
     }
 
     /// Returns software mute state.

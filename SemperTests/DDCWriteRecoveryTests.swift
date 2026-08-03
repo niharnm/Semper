@@ -9,6 +9,13 @@ import AudioToolbox
 struct DDCWriteLedgerTests {
     private let deviceID: AudioDeviceID = 42
 
+    @Test("A saved DDC volume is clamped before unmute")
+    func unmuteClamp() {
+        #expect(DDCController.restoredVolume(85, maximumVolume: 40) == 40)
+        #expect(DDCController.restoredVolume(35, maximumVolume: 40) == 35)
+        #expect(DDCController.restoredVolume(85, maximumVolume: nil) == 85)
+    }
+
     @Test("Superseded debounce restores the last physical value")
     func supersededDebounceRestoresConfirmedVolume() {
         var ledger = DDCWriteLedger()

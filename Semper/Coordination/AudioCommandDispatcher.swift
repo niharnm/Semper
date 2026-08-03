@@ -169,10 +169,15 @@ enum AudioBackendApplyResult: Equatable {
 protocol AudioCommandBackend: AnyObject {
     func read(_ key: AudioControlKey) -> AudioControlValue?
     func apply(_ command: AudioCommand) -> AudioBackendApplyResult
+    func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue
     func recoveryAliasKeys(for command: AudioCommand) -> Set<AudioControlKey>
 }
 
 extension AudioCommandBackend {
+    func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue {
+        command.requestedValue
+    }
+
     func recoveryAliasKeys(for command: AudioCommand) -> Set<AudioControlKey> {
         []
     }
@@ -208,7 +213,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         guard Self.isValid(command) else { return .rejected(.invalidValue) }
 
         let key = command.controlKey
-        let requested = command.requestedValue
+        let requested = backend.effectiveRequestedValue(for: command)
         let previous = backend.read(key)
         let recoveryAliasKeys = backend.recoveryAliasKeys(for: command)
         let timestamp = Date()
@@ -509,6 +514,17 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
         ]).subtracting([command.controlKey])
     }
 
+    func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue {
+        switch command {
+        case .setOutputVolume(let uid, let volume),
+             .setOutputMasterGain(let uid, let volume):
+            let limit = engine.settingsManager.outputVolumeLimit(for: uid) ?? volume
+            return .scalar(min(volume, limit))
+        default:
+            return command.requestedValue
+        }
+    }
+
     func apply(_ command: AudioCommand) -> AudioBackendApplyResult {
         switch command {
         case .setAppVolume(let target, let volume):
@@ -596,9 +612,10 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
                 return .rejected(.deviceUnavailable(uid))
             }
             engine.supersedePendingMasterOutputWrite(for: uid)
+            let safeVolume = min(volume, engine.settingsManager.outputVolumeLimit(for: uid) ?? volume)
             let tier = engine.deviceVolumeMonitor.outputVolumeBackend(for: device.id)
-            let expected = DeviceVolumeMonitor.storedVolume(volume, tier: tier)
-            engine.deviceVolumeMonitor.setVolume(for: device.id, to: volume)
+            let expected = DeviceVolumeMonitor.storedVolume(safeVolume, tier: tier)
+            engine.deviceVolumeMonitor.setVolume(for: device.id, to: safeVolume)
             guard engine.deviceVolumeMonitor.volumes[device.id] == expected else {
                 return .rejected(.writeFailed)
             }
@@ -616,7 +633,8 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
             guard let device = engine.deviceMonitor.device(for: uid) else {
                 return .rejected(.deviceUnavailable(uid))
             }
-            switch engine.setMasterOutputVolume(for: device, to: gain) {
+            let safeGain = min(gain, engine.settingsManager.outputVolumeLimit(for: uid) ?? gain)
+            switch engine.setMasterOutputVolume(for: device, to: safeGain) {
             case .applied(let observed):
                 return .applied(.scalar(observed))
             case .accepted:
@@ -659,11 +677,17 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
             guard let device = engine.deviceMonitor.device(for: uid) else {
                 return .rejected(.deviceUnavailable(uid))
             }
-            guard engine.setDefaultOutputDevice(device.id),
-                  (try? AudioDeviceID.readDefaultOutputDevice()) == device.id else {
+            switch engine.requestDefaultOutputDeviceSwitch(device.id) {
+            case .applied:
+                guard (try? AudioDeviceID.readDefaultOutputDevice()) == device.id else {
+                    return .rejected(.writeFailed)
+                }
+                return .applied(.identifier(uid))
+            case .accepted:
+                return .accepted
+            case .rejected:
                 return .rejected(.writeFailed)
             }
-            return .applied(.identifier(uid))
 
         case .setInputVolume(let uid, let volume):
             guard let device = engine.deviceMonitor.inputDevice(for: uid) else {

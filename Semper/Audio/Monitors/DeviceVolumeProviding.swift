@@ -42,6 +42,7 @@ protocol DeviceVolumeProviding: AnyObject {
     func setInputMute(for deviceID: AudioDeviceID, to muted: Bool)
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier
+    func confirmedOutputVolume(for deviceID: AudioDeviceID) -> Float?
 
     /// Returns the tier that auto-detection would pick, ignoring any saved override.
     /// Used by the device detail sheet to display the "Auto: <tier>" badge.
@@ -63,6 +64,10 @@ protocol DeviceVolumeProviding: AnyObject {
 }
 
 extension DeviceVolumeProviding {
+    func confirmedOutputVolume(for deviceID: AudioDeviceID) -> Float? {
+        volumes[deviceID]
+    }
+
     func outputProcessingGain(for deviceID: AudioDeviceID) -> Float {
         1.0
     }
