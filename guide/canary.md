@@ -30,6 +30,10 @@ project. The workflow first runs release-script checks, website checks, the
 macOS test suite, and an unsigned Release build. No release credentials are
 available to that job.
 
+Canary identifiers stay in release tags, release names, and artifact labels.
+The app bundle keeps the three-integer base version as its
+`MARKETING_VERSION`, as required by Apple.
+
 After the checks pass, the `production-release` GitHub environment gates the
 credentialed packaging job. Configure required reviewers on that environment
 before enabling the workflow.
@@ -66,11 +70,8 @@ Define these secrets on the protected `production-release` environment:
 
 `APPLE_ID_PASSWORD` must be an app-specific password. `CERT_IDENTITY` must
 exactly match the imported Developer ID Application identity. The Sparkle
-private key must match the public key embedded by
+private key must match the literal public key embedded by
 [automatic-updates PR #32](https://github.com/niharnm/Semper/pull/32).
-Until that dependency lands, the workflow also accepts
-`SPARKLE_PUBLIC_ED_KEY` for builds whose Info.plist still contains the build
-setting placeholder.
 
 ## Review and publication
 

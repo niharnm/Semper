@@ -28,6 +28,10 @@ class ReleaseContractTests(unittest.TestCase):
 
         required_fragments = (
             "environment: production-release",
+            "base_version: ${{ steps.metadata.outputs.base_version }}",
+            'echo "base_version=$BASE_VERSION"',
+            "BASE_VERSION: ${{ needs.verify.outputs.base_version }}",
+            '"MARKETING_VERSION=$BASE_VERSION"',
             "draft: true",
             "scripts/notarize-and-log.sh",
             "xcrun stapler staple build/export/Semper.app",
@@ -43,6 +47,22 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertNotIn("Publish update feed", workflow)
         self.assertNotIn("--method PUT", workflow)
         self.assertNotIn('-f branch="update-feed"', workflow)
+        self.assertNotIn('"MARKETING_VERSION=$VERSION"', workflow)
+        self.assertNotIn("required+=(SPARKLE_PUBLIC_ED_KEY)", workflow)
+
+        branch_lookup = '"repos/$GITHUB_REPOSITORY/git/ref/heads/update-feed"'
+        feed_lookup = '"repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=update-feed"'
+        template_fallback = "cp appcast.xml build/feed/appcast.xml"
+        self.assertIn('(HTTP 404)', workflow)
+        self.assertLess(workflow.index(branch_lookup), workflow.index(feed_lookup))
+        self.assertLess(workflow.index(feed_lookup), workflow.index(template_fallback))
+
+    def test_canary_guide_matches_current_release_contract(self) -> None:
+        guide = (ROOT / "guide/canary.md").read_text()
+
+        self.assertIn("three-integer base version", guide)
+        self.assertNotIn("Until that dependency lands", guide)
+        self.assertNotIn("SPARKLE_PUBLIC_ED_KEY", guide)
 
 
 class DmgScriptTests(unittest.TestCase):

@@ -26,6 +26,7 @@ jobs:
     outputs:
       appcast_name: ${{ steps.metadata.outputs.appcast_name }}
       artifact_stem: ${{ steps.metadata.outputs.artifact_stem }}
+      base_version: ${{ steps.metadata.outputs.base_version }}
       build_number: ${{ steps.metadata.outputs.build_number }}
       checksum_name: ${{ steps.metadata.outputs.checksum_name }}
       default_update_channel: ${{ steps.metadata.outputs.default_update_channel }}
@@ -115,6 +116,7 @@ jobs:
           {
             echo "appcast_name=$APPCAST_NAME"
             echo "artifact_stem=$ARTIFACT_STEM"
+            echo "base_version=$BASE_VERSION"
             echo "build_number=$BUILD_NUMBER"
             echo "checksum_name=$CHECKSUM_NAME"
             echo "default_update_channel=$DEFAULT_UPDATE_CHANNEL"
@@ -185,6 +187,7 @@ jobs:
     env:
       APPCAST_NAME: ${{ needs.verify.outputs.appcast_name }}
       ARTIFACT_STEM: ${{ needs.verify.outputs.artifact_stem }}
+      BASE_VERSION: ${{ needs.verify.outputs.base_version }}
       BUILD_NUMBER: ${{ needs.verify.outputs.build_number }}
       CHECKSUM_NAME: ${{ needs.verify.outputs.checksum_name }}
       DEFAULT_UPDATE_CHANNEL: ${{ needs.verify.outputs.default_update_channel }}
@@ -231,9 +234,6 @@ jobs:
             KEYCHAIN_PASSWORD
             SPARKLE_PRIVATE_ED_KEY
           )
-          if grep -Fq '$(SPARKLE_PUBLIC_ED_KEY)' Semper/Info.plist; then
-            required+=(SPARKLE_PUBLIC_ED_KEY)
-          fi
           for variable_name in "${required[@]}"; do
             if [[ -z "${!variable_name:-}" ]]; then
               echo "Missing required production-release secret: $variable_name"
@@ -307,7 +307,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$CERT_IDENTITY" \
             "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
-            "MARKETING_VERSION=$VERSION" \
+            "MARKETING_VERSION=$BASE_VERSION" \
             "SEMPER_DEFAULT_UPDATE_CHANNEL=$DEFAULT_UPDATE_CHANNEL"
 
           scripts/verify-release-signature.sh \
@@ -413,14 +413,21 @@ jobs:
           set -euo pipefail
           mkdir -p build/feed
 
+          BRANCH_ERROR="$RUNNER_TEMP/update-feed-branch-error.txt"
           if gh api \
-            -H "Accept: application/vnd.github.raw+json" \
-            "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=update-feed" \
-            > build/feed/appcast.xml; then
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/update-feed" \
+            > /dev/null 2> "$BRANCH_ERROR"; then
+            gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=update-feed" \
+              > build/feed/appcast.xml
             echo "Loaded the current private appcast base from update-feed."
-          else
-            echo "No update-feed appcast exists; using the repository template."
+          elif grep -Fq "(HTTP 404)" "$BRANCH_ERROR"; then
+            echo "The update-feed branch is absent; using the repository template."
             cp appcast.xml build/feed/appcast.xml
+          else
+            cat "$BRANCH_ERROR" >&2
+            exit 1
           fi
           cp "build/release/$DMG_NAME" "build/feed/$DMG_NAME"
 
