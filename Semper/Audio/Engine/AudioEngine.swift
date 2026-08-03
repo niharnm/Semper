@@ -1548,6 +1548,7 @@ final class AudioEngine {
             applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: tap.currentDeviceUIDs)
             tap.updateEQSettings(.flat)
             tap.updateAutoEQProfile(nil)
+            tap.updateMonoAudio(false)
             tap.updateLoudnessCompensation(volume: effectiveLoudnessVolume(for: tap), enabled: false)
         }
 
@@ -1763,6 +1764,12 @@ final class AudioEngine {
         }
     }
 
+    func setMonoAudioEnabled(_ enabled: Bool) {
+        for tap in taps.values {
+            tap.updateMonoAudio(enabled)
+        }
+    }
+
     /// Apply AutoEQ profile to all taps currently routed to the given device.
     private func applyAutoEQToTaps(for deviceUID: String) {
         for tap in taps.values {
@@ -1785,6 +1792,7 @@ final class AudioEngine {
             eqSettings: settingsManager.getEQSettings(for: app.persistenceIdentifier),
             autoEQProfile: autoEQProfileForActivation(deviceUID: primaryDeviceUID),
             autoEQPreampEnabled: settingsManager.autoEQPreampEnabled,
+            monoAudioEnabled: settingsManager.appSettings.monoAudioEnabled,
             loudnessVolume: deviceVolume * volumeState.getVolume(for: app.id),
             loudnessCompensationEnabled: settingsManager.appSettings.loudnessCompensationEnabled,
             loudnessEqualizerSettings: loudnessEqSettings

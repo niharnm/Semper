@@ -93,6 +93,7 @@ private func fill(_ abl: TestABL, bufferIndex: Int, value: Float) {
 
 /// Calls ProcessTapController.processMappedBuffers with sensible defaults.
 /// `rampCoefficient: 1.0` = instant ramp (currentVol snaps to targetVol on first frame).
+@discardableResult
 private func processWithDefaults(
     input: TestABL,
     output: TestABL,
@@ -103,13 +104,16 @@ private func processWithDefaults(
     preferredStereoLeft: Int = 0,
     preferredStereoRight: Int = 1,
     currentVol: inout Float,
+    targetMonoMix: Float = 0,
+    initialMonoMix: Float = 0,
     targetBalance: Float = 0,
     initialBalance: Float = 0,
     eqProc: EQProcessor? = nil,
     autoEQProc: AutoEQProcessor? = nil,
     loudnessEqualizerProc: LoudnessEqualizer? = nil,
     loudnessCompensatorProc: LoudnessCompensator? = nil
-) {
+) -> Float {
+    var currentMonoMix = initialMonoMix
     var currentBalance = initialBalance
     ProcessTapController.processMappedBuffers(
         inputBuffers: input.bufferList,
@@ -121,6 +125,8 @@ private func processWithDefaults(
         preferredStereoLeft: preferredStereoLeft,
         preferredStereoRight: preferredStereoRight,
         currentVol: &currentVol,
+        targetMonoMix: targetMonoMix,
+        currentMonoMix: &currentMonoMix,
         targetBalance: targetBalance,
         currentBalance: &currentBalance,
         eqProc: eqProc,
@@ -128,6 +134,122 @@ private func processWithDefaults(
         loudnessEqualizerProc: loudnessEqualizerProc,
         loudnessCompensatorProc: loudnessCompensatorProc
     )
+    return currentMonoMix
+}
+
+@Suite("ProcessTapController Mono Audio")
+struct MonoAudioTests {
+    @Test("Full mono blends left and right before output")
+    func fullMonoBlend() {
+        let input = TestABL(buffers: [(channels: 2, frames: 8)])
+        let output = TestABL(buffers: [(channels: 2, frames: 8)])
+        let inputSamples = input.data(at: 0)
+        for frame in 0..<8 {
+            inputSamples[frame * 2] = 0.8
+            inputSamples[frame * 2 + 1] = 0.2
+        }
+
+        var volume: Float = 1
+        processWithDefaults(
+            input: input,
+            output: output,
+            currentVol: &volume,
+            targetMonoMix: 1,
+            initialMonoMix: 1
+        )
+
+        let samples = output.data(at: 0)
+        for frame in 0..<8 {
+            #expect(abs(samples[frame * 2] - 0.5) < 0.0001)
+            #expect(abs(samples[frame * 2 + 1] - 0.5) < 0.0001)
+        }
+    }
+
+    @Test("Mono transitions progressively instead of switching in one sample")
+    func monoRamp() {
+        let input = TestABL(buffers: [(channels: 2, frames: 4)])
+        let output = TestABL(buffers: [(channels: 2, frames: 4)])
+        let inputSamples = input.data(at: 0)
+        for frame in 0..<4 {
+            inputSamples[frame * 2] = 0.8
+            inputSamples[frame * 2 + 1] = 0.2
+        }
+
+        var volume: Float = 1
+        let finalMix = processWithDefaults(
+            input: input,
+            output: output,
+            rampCoefficient: 0.25,
+            currentVol: &volume,
+            targetMonoMix: 1
+        )
+
+        let samples = output.data(at: 0)
+        #expect(abs(samples[0] - 0.725) < 0.0001)
+        #expect(abs(samples[1] - 0.275) < 0.0001)
+        #expect(samples[6] < samples[4])
+        #expect(samples[7] > samples[5])
+        #expect(finalMix > 0.68 && finalMix < 0.69)
+    }
+
+    @Test("Balance still attenuates the selected side after mono blending")
+    func monoPreservesBalanceBehavior() {
+        let input = TestABL(buffers: [(channels: 2, frames: 8)])
+        let output = TestABL(buffers: [(channels: 2, frames: 8)])
+        let inputSamples = input.data(at: 0)
+        for frame in 0..<8 {
+            inputSamples[frame * 2] = 0.8
+            inputSamples[frame * 2 + 1] = 0.2
+        }
+
+        var volume: Float = 1
+        processWithDefaults(
+            input: input,
+            output: output,
+            currentVol: &volume,
+            targetMonoMix: 1,
+            initialMonoMix: 1,
+            targetBalance: -1
+        )
+
+        let samples = output.data(at: 0)
+        for frame in 0..<8 {
+            #expect(abs(samples[frame * 2] - 0.5) < 0.0001)
+            #expect(samples[frame * 2 + 1] == 0)
+        }
+    }
+
+    @Test("Multichannel output blends only the preferred stereo pair")
+    func multichannelPreferredPair() {
+        let input = TestABL(buffers: [(channels: 4, frames: 4)])
+        let output = TestABL(buffers: [(channels: 4, frames: 4)])
+        let inputSamples = input.data(at: 0)
+        for frame in 0..<4 {
+            inputSamples[frame * 4] = 0.1
+            inputSamples[frame * 4 + 1] = 0.8
+            inputSamples[frame * 4 + 2] = 0.2
+            inputSamples[frame * 4 + 3] = 0.3
+        }
+
+        var volume: Float = 1
+        processWithDefaults(
+            input: input,
+            output: output,
+            preferredStereoLeft: 1,
+            preferredStereoRight: 2,
+            currentVol: &volume,
+            targetMonoMix: 1,
+            initialMonoMix: 1
+        )
+
+        let samples = output.data(at: 0)
+        for frame in 0..<4 {
+            #expect(abs(samples[frame * 4] - 0.1) < 0.0001)
+            #expect(abs(samples[frame * 4 + 1] - 0.5) < 0.0001)
+            #expect(abs(samples[frame * 4 + 2] - 0.5) < 0.0001)
+            #expect(abs(samples[frame * 4 + 3] - 0.3) < 0.0001)
+        }
+    }
 }
 
 @Suite("ProcessTapController — Stereo Balance")

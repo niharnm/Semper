@@ -56,6 +56,10 @@ final class ProcessTapController: ProcessTapControlling {
     private nonisolated(unsafe) var _balance: Float = 0
     private nonisolated(unsafe) var _primaryCurrentBalance: Float = 0
     private nonisolated(unsafe) var _secondaryCurrentBalance: Float = 0
+    /// Target stereo-to-mono blend. The render thread ramps between 0 and 1.
+    private nonisolated(unsafe) var _monoMix: Float = 0
+    private nonisolated(unsafe) var _primaryCurrentMonoMix: Float = 0
+    private nonisolated(unsafe) var _secondaryCurrentMonoMix: Float = 0
     /// Emergency silence flag - zeroes output immediately (used during destructive device switch)
     /// Unlike _isMuted, this bypasses all processing including VU metering
     private nonisolated(unsafe) var _forceSilence: Bool = false
@@ -315,6 +319,10 @@ final class ProcessTapController: ProcessTapControlling {
 
     func updateBalance(_ balance: Float) {
         _balance = max(-1, min(1, balance))
+    }
+
+    func updateMonoAudio(_ enabled: Bool) {
+        _monoMix = enabled ? 1 : 0
     }
 
     // MARK: - Multi-Device Aggregate Configuration
@@ -684,6 +692,7 @@ final class ProcessTapController: ProcessTapControlling {
             loudnessCompensator?.updateForVolume(initial.loudnessVolume)
         }
         _lastLoudnessVolume = initial.loudnessVolume
+        _monoMix = initial.monoAudioEnabled ? 1 : 0
 
         // Create IO proc with gain processing
         nextCallbackID += 1
@@ -711,6 +720,7 @@ final class ProcessTapController: ProcessTapControlling {
         // ramps from userVolume→userVolume (no-op) instead of 1.0→userVolume.
         _primaryCurrentVolume = _volume
         _primaryCurrentBalance = _balance
+        _primaryCurrentMonoMix = _monoMix
 
         // Reset output gate to armed and size the ramp from the device sample rate.
         _outputGateRawPhase = 0
@@ -1079,6 +1089,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         _secondaryCurrentVolume = _primaryCurrentVolume
         _secondaryCurrentBalance = _primaryCurrentBalance
+        _secondaryCurrentMonoMix = _primaryCurrentMonoMix
         _secondaryLeftPeakLevel = 0
         _secondaryRightPeakLevel = 0
 
@@ -1198,6 +1209,8 @@ final class ProcessTapController: ProcessTapControlling {
         _secondaryCurrentVolume = 0
         _primaryCurrentBalance = _secondaryCurrentBalance
         _secondaryCurrentBalance = 0
+        _primaryCurrentMonoMix = _secondaryCurrentMonoMix
+        _secondaryCurrentMonoMix = 0
         _primaryLeftPeakLevel = _secondaryLeftPeakLevel
         _primaryRightPeakLevel = _secondaryRightPeakLevel
         _secondaryLeftPeakLevel = 0
@@ -1400,6 +1413,8 @@ final class ProcessTapController: ProcessTapControlling {
         preferredStereoLeft: Int,
         preferredStereoRight: Int,
         currentVol: inout Float,
+        targetMonoMix: Float,
+        currentMonoMix: inout Float,
         targetBalance: Float,
         currentBalance: inout Float,
         eqProc: EQProcessor?,
@@ -1544,12 +1559,20 @@ final class ProcessTapController: ProcessTapControlling {
             }
 
             if outputChannels > 1, safeLeft != safeRight {
+                let clampedTargetMonoMix = max(0, min(1, targetMonoMix))
                 let clampedTargetBalance = max(-1, min(1, targetBalance))
                 for frame in 0..<frameCount {
+                    currentMonoMix += (clampedTargetMonoMix - currentMonoMix) * rampCoefficient
+                    let base = frame * outputChannels
+                    let left = outputSamples[base + safeLeft]
+                    let right = outputSamples[base + safeRight]
+                    let mono = (left + right) * 0.5
+                    outputSamples[base + safeLeft] = left + ((mono - left) * currentMonoMix)
+                    outputSamples[base + safeRight] = right + ((mono - right) * currentMonoMix)
+
                     currentBalance += (clampedTargetBalance - currentBalance) * rampCoefficient
                     let leftGain = currentBalance > 0 ? 1 - currentBalance : 1
                     let rightGain = currentBalance < 0 ? 1 + currentBalance : 1
-                    let base = frame * outputChannels
                     outputSamples[base + safeLeft] *= leftGain
                     outputSamples[base + safeRight] *= rightGain
                 }
@@ -1733,8 +1756,10 @@ final class ProcessTapController: ProcessTapControlling {
         }
 
         let targetVol = _volume
+        let targetMonoMix = _monoMix
         let targetBalance = _balance
         var currentVol: Float
+        var currentMonoMix: Float
         var currentBalance: Float
         let crossfadeMultiplier: Float
         let rampCoeff: Float
@@ -1747,6 +1772,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         if isPrimary {
             currentVol = _primaryCurrentVolume
+            currentMonoMix = _primaryCurrentMonoMix
             currentBalance = _primaryCurrentBalance
             // Equal-power crossfade: primary uses cosine curve (1→0).
             // CrossfadeState.primaryMultiplier handles all phase logic including the
@@ -1761,6 +1787,7 @@ final class ProcessTapController: ProcessTapControlling {
             loudnessCompensatorProc = loudnessCompensator
         } else {
             currentVol = _secondaryCurrentVolume
+            currentMonoMix = _secondaryCurrentMonoMix
             currentBalance = _secondaryCurrentBalance
             // Secondary uses sine curve (0→1).
             // .warmingUp → 0.0 (muted), .crossfading → sin(progress*π/2), .idle → 1.0
@@ -1784,6 +1811,8 @@ final class ProcessTapController: ProcessTapControlling {
             preferredStereoLeft: stereoLeft,
             preferredStereoRight: stereoRight,
             currentVol: &currentVol,
+            targetMonoMix: targetMonoMix,
+            currentMonoMix: &currentMonoMix,
             targetBalance: targetBalance,
             currentBalance: &currentBalance,
             eqProc: eqProc,
@@ -1800,11 +1829,13 @@ final class ProcessTapController: ProcessTapControlling {
 
         if isPrimary {
             _primaryCurrentVolume = currentVol
+            _primaryCurrentMonoMix = currentMonoMix
             _primaryCurrentBalance = currentBalance
             _primaryLeftPeakLevel += levelSmoothingFactor * (measuredLevel.left - _primaryLeftPeakLevel)
             _primaryRightPeakLevel += levelSmoothingFactor * (measuredLevel.right - _primaryRightPeakLevel)
         } else {
             _secondaryCurrentVolume = currentVol
+            _secondaryCurrentMonoMix = currentMonoMix
             _secondaryCurrentBalance = currentBalance
             _secondaryLeftPeakLevel += levelSmoothingFactor * (measuredLevel.left - _secondaryLeftPeakLevel)
             _secondaryRightPeakLevel += levelSmoothingFactor * (measuredLevel.right - _secondaryRightPeakLevel)

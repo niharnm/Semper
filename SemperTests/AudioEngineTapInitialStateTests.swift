@@ -20,6 +20,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         case updateEQSettings(EQSettings)
         case updateAutoEQProfile(profileID: String?)
         case setAutoEQPreampEnabled(Bool)
+        case updateMonoAudio(Bool)
         case updateLoudnessCompensation(volume: Float, enabled: Bool)
         case updateLoudnessEqualization(LoudnessEqualizerSettings)
         case invalidate
@@ -31,6 +32,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         var eqSettings: EQSettings
         var autoEQProfileID: String?
         var autoEQPreampEnabled: Bool
+        var monoAudioEnabled: Bool
         var loudnessVolume: Float
         var loudnessCompensationEnabled: Bool
         var loudnessEqualizerSettings: LoudnessEqualizerSettings
@@ -40,6 +42,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
             self.eqSettings = s.eqSettings
             self.autoEQProfileID = s.autoEQProfile?.id
             self.autoEQPreampEnabled = s.autoEQPreampEnabled
+            self.monoAudioEnabled = s.monoAudioEnabled
             self.loudnessVolume = s.loudnessVolume
             self.loudnessCompensationEnabled = s.loudnessCompensationEnabled
             self.loudnessEqualizerSettings = s.loudnessEqualizerSettings
@@ -55,6 +58,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var currentDeviceVolume: Float = 1.0
     var isDeviceMuted: Bool = false
     var balance: Float = 0
+    var monoAudioEnabled = false
     var audioLevel: Float = 0.0
     private(set) var currentDeviceUIDs: [String]
     var currentDeviceUID: String? { currentDeviceUIDs.first }
@@ -112,6 +116,11 @@ final class RecordingProcessTapController: ProcessTapControlling {
 
     func updateBalance(_ balance: Float) {
         self.balance = balance
+    }
+
+    func updateMonoAudio(_ enabled: Bool) {
+        monoAudioEnabled = enabled
+        events.append(.updateMonoAudio(enabled))
     }
 
     func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
@@ -428,6 +437,32 @@ struct AudioEngineTapInitialStateTests {
 
         let snap = try #require(capturedInitial(fix))
         #expect(snap.loudnessEqualizerSettings.enabled == value)
+    }
+
+    @Test("monoAudioEnabled mirrors appSettings.monoAudioEnabled",
+          arguments: [true, false])
+    func monoAudioFlagMirrored(value: Bool) throws {
+        let fix = makeFixture()
+        var settings = fix.settings.appSettings
+        settings.monoAudioEnabled = value
+        fix.settings.updateAppSettings(settings)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let snapshot = try #require(capturedInitial(fix))
+        #expect(snapshot.monoAudioEnabled == value)
+    }
+
+    @Test("Changing mono audio updates active taps")
+    func monoAudioUpdatesActiveTap() throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+
+        fix.engine.setMonoAudioEnabled(true)
+
+        #expect(tap.monoAudioEnabled)
+        #expect(tap.events.contains(.updateMonoAudio(true)))
     }
 
     @Test("loudnessVolume = currentDeviceVolume × per-app volume")
@@ -1270,7 +1305,7 @@ struct AudioEngineTapInitialStateTests {
         for event in tap.events.prefix(activateIndex) {
             switch event {
             case .updateEQSettings, .updateAutoEQProfile, .setAutoEQPreampEnabled,
-                 .updateLoudnessCompensation, .updateLoudnessEqualization:
+                 .updateMonoAudio, .updateLoudnessCompensation, .updateLoudnessEqualization:
                 Issue.record("Pre-activate mutation breaks the apply-initial-state contract: \(event)")
             case .activate, .invalidate:
                 break
@@ -1388,6 +1423,7 @@ struct RecordingProcessTapControllerContractTests {
             #expect(snap.loudnessCompensationEnabled == false)
             #expect(snap.loudnessEqualizerSettings.enabled == false)
             #expect(snap.autoEQPreampEnabled == false)
+            #expect(snap.monoAudioEnabled == false)
             #expect(snap.eqSettings == EQSettings.flat)
             #expect(snap.loudnessVolume == 1.0)
         } else {

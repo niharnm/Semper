@@ -44,6 +44,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     var bluetoothHDGuardEnabled: Bool = true
 
     // Audio Processing
+    var monoAudioEnabled: Bool = false              // Blend stereo channels for managed apps
     var loudnessCompensationEnabled: Bool = false  // ISO 226:2023 equal-loudness contour compensation
     var loudnessEqualizationEnabled: Bool = false  // Real-time loudness equalization
 
@@ -83,6 +84,7 @@ nonisolated struct AppSettings: Codable, Equatable {
             Bool.self,
             forKey: .bluetoothHDGuardEnabled
         ) ?? true
+        monoAudioEnabled = try c.decodeIfPresent(Bool.self, forKey: .monoAudioEnabled) ?? false
         loudnessCompensationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessCompensationEnabled) ?? false
         loudnessEqualizationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessEqualizationEnabled) ?? false
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
@@ -150,7 +152,7 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        static let currentVersion = 16
+        static let currentVersion = 17
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
