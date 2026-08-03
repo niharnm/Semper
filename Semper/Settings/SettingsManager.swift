@@ -133,11 +133,11 @@ final class SettingsManager {
     private var saveTask: Task<Void, Never>?
     private let managesLaunchAtLogin: Bool
     private let settingsURL: URL
-    private let persistenceWriter = SettingsPersistenceWriter()
+    private let persistenceWriter: SettingsPersistenceWriter
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        static let currentVersion = 13
+        static let currentVersion = 14
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
@@ -168,6 +168,7 @@ final class SettingsManager {
         var outputMasterGains: [String: Float] = [:]           // device UID → boosted gain (1.0-3.0)
         var outputBalances: [String: Float] = [:]              // device UID → L/R balance (-1.0...1.0)
         var outputVolumeLimits: [String: Float] = [:]          // device UID → maximum volume (0.1...1.0)
+        var audioProcessingMode: AudioProcessingMode = .active
 
         // Per-device volume control tier override (overrides auto-detection).
         // nil/missing → auto-detect (hardware/ddc/software). Populated only by
@@ -241,6 +242,10 @@ final class SettingsManager {
                         && $0.value > 0
                 }
                 .mapValues { max(0.1, min(1.0, $0)) }
+            audioProcessingMode = (try? c.decode(
+                AudioProcessingMode.self,
+                forKey: .audioProcessingMode
+            )) ?? .active
             deviceVolumeTierOverride = try c.decodeIfPresent([String: VolumeControlTier].self, forKey: .deviceVolumeTierOverride) ?? [:]
             deviceIconOverrides = try c.decodeIfPresent([String: String].self, forKey: .deviceIconOverrides) ?? [:]
             outputDevicePriority = try c.decodeIfPresent([String].self, forKey: .outputDevicePriority) ?? []
@@ -254,9 +259,14 @@ final class SettingsManager {
         }
     }
 
-    init(directory: URL? = nil, managesLaunchAtLogin: Bool = false) {
+    init(
+        directory: URL? = nil,
+        managesLaunchAtLogin: Bool = false,
+        persistenceWriter: SettingsPersistenceWriter = SettingsPersistenceWriter()
+    ) {
         let baseDir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Semper")
         self.managesLaunchAtLogin = managesLaunchAtLogin
+        self.persistenceWriter = persistenceWriter
         self.settingsURL = baseDir.appendingPathComponent("settings.json")
         self.settings = Settings()
         let isFirstLaunch = !FileManager.default.fileExists(atPath: settingsURL.path)
@@ -553,6 +563,18 @@ final class SettingsManager {
         } else {
             settings.outputVolumeLimits.removeValue(forKey: deviceUID)
         }
+        scheduleSave()
+    }
+
+    // MARK: - Audio Processing Recovery
+
+    var audioProcessingMode: AudioProcessingMode {
+        settings.audioProcessingMode
+    }
+
+    func setAudioProcessingMode(_ mode: AudioProcessingMode) {
+        guard settings.audioProcessingMode != mode else { return }
+        settings.audioProcessingMode = mode
         scheduleSave()
     }
 
@@ -1047,20 +1069,23 @@ final class SettingsManager {
 
     /// Immediately writes pending changes to disk.
     /// Call this on app termination to prevent data loss.
-    func flushSync() {
+    @discardableResult
+    func flushSync() -> Bool {
         saveTask?.cancel()
         saveTask = nil
-        writeToDisk()
+        return writeToDisk()
     }
 
-    private func writeToDisk() {
+    private func writeToDisk() -> Bool {
         do {
             let data = try JSONEncoder().encode(settings)
             try persistenceWriter.writeSynchronously(data, to: settingsURL)
 
             logger.debug("Saved settings")
+            return true
         } catch {
             logger.error("Failed to save settings: \(error.localizedDescription)")
+            return false
         }
     }
 

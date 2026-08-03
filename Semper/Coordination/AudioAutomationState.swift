@@ -72,6 +72,7 @@ enum AudioControlKey: Hashable, Sendable {
     case inputVolume(String)
     case inputMute(String)
     case defaultInput
+    case audioProcessingMode
 }
 
 enum AudioControlValue: Equatable, Sendable {

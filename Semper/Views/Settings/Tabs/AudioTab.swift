@@ -1,14 +1,17 @@
 // Semper/Views/Settings/Tabs/AudioTab.swift
+import AppKit
 import SwiftUI
 
 @MainActor
 struct AudioTab: View {
     @Bindable var settings: SettingsManager
     @Bindable var audioEngine: AudioEngine
+    let audioCommands: any AudioCommandDispatching
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
 
     /// Memoized sorted output devices for the system-sounds picker.
     @State private var sortedOutputDevices: [AudioDevice] = []
+    @State private var reportCopied = false
 
     private var unifiedLoudnessToggleBinding: Binding<Bool> {
         Binding(
@@ -27,6 +30,7 @@ struct AudioTab: View {
             VStack(alignment: .leading, spacing: 24) {
                 volumeSection
                 devicesSection
+                audioRecoverySection
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 20)
@@ -131,6 +135,103 @@ struct AudioTab: View {
                 }
             }
         }
+    }
+
+    // MARK: - Audio Recovery
+
+    private var audioRecoverySection: some View {
+        SettingsSection("Audio Recovery") {
+            SettingsRow(
+                "Audio Processing",
+                description: audioProcessingDescription
+            ) {
+                audioProcessingAction
+            }
+            SettingsRowDivider()
+            SettingsRow(
+                "Diagnostics",
+                description: "Copy a privacy-filtered audio report"
+            ) {
+                Button(reportCopied ? "Copied" : "Copy Report") {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    pasteboard.setString(audioEngine.audioRecoveryReport, forType: .string)
+                    reportCopied = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2))
+                        reportCopied = false
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel("Copy audio recovery report")
+            }
+        }
+    }
+
+    private var audioProcessingDescription: String {
+        switch audioEngine.audioProcessingState {
+        case .active: "Per-app volume and routing are active"
+        case .bypassing: "Releasing audio processing resources"
+        case .bypassed: "Apps use their normal system audio path"
+        case .waitingForPermission: "Audio recording access is required to resume"
+        case .resuming: "Restoring saved app audio settings"
+        case .failed: "Audio resources could not be fully recovered"
+        }
+    }
+
+    @ViewBuilder
+    private var audioProcessingAction: some View {
+        switch audioEngine.audioProcessingState {
+        case .active:
+            recoveryButton("Bypass", accessibilityLabel: "Bypass audio processing") {
+                dispatchAudioProcessing(.bypassed)
+            }
+        case .bypassed:
+            recoveryButton("Resume", accessibilityLabel: "Resume audio processing") {
+                dispatchAudioProcessing(.active)
+            }
+        case .waitingForPermission:
+            if audioEngine.permission.status == .denied {
+                recoveryButton("Open System Settings", accessibilityLabel: "Open audio recording settings") {
+                    audioEngine.permission.openSystemSettings()
+                }
+            } else {
+                recoveryButton("Grant Access", accessibilityLabel: "Grant audio recording access") {
+                    audioEngine.permission.request()
+                }
+            }
+        case .failed:
+            recoveryButton("Try Again", accessibilityLabel: "Retry audio recovery") {
+                audioEngine.retryAudioProcessingRecovery()
+            }
+        case .bypassing, .resuming:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel(audioEngine.audioProcessingState.accessibilityValue)
+        }
+    }
+
+    private func recoveryButton(
+        _ title: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityValue(audioEngine.audioProcessingState.accessibilityValue)
+    }
+
+    private func dispatchAudioProcessing(_ mode: AudioProcessingMode) {
+        audioCommands.dispatch(
+            .setAudioProcessingMode(mode),
+            context: AudioCommandContext(
+                source: .popup,
+                reason: .bypass
+            )
+        )
     }
 
     private func updateSortedDevices() {

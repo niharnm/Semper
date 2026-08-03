@@ -16,6 +16,12 @@ enum DefaultOutputSwitchResult: Equatable {
     case rejected
 }
 
+enum AudioProcessingModeRequestResult: Equatable {
+    case applied(AudioProcessingMode)
+    case accepted
+    case rejected
+}
+
 @Observable
 @MainActor
 final class AudioEngine {
@@ -31,6 +37,8 @@ final class AudioEngine {
     let modeOverlayStore: AudioModeOverlayStore
     var onCommandValueObserved: ((AudioControlKey, AudioControlValue) -> Void)?
     var onCommandWriteRejected: ((AudioControlKey) -> Void)?
+    private(set) var audioProcessingState: AudioProcessingState = .active
+    private(set) var audioRecoveryDiagnostics = AudioRecoveryDiagnostics()
 
     #if !APP_STORE
     let ddcController: DDCController
@@ -108,9 +116,15 @@ final class AudioEngine {
     private var lastAutoSwitchOverrideTime: Date?
     private var pendingCleanup: [pid_t: Task<Void, Never>] = [:]  // Grace period for stale tap cleanup
     private var tapMembershipRefreshTasks: [pid_t: Task<Void, Never>] = [:]
+    private var tapMaintenanceTasks: [UUID: Task<Void, Never>] = [:]
     private var staleCleanupTask: Task<Void, Never>?  // Debounced cleanup scheduling
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
+    private var audioProcessingTransitionTask: Task<Void, Never>?
+    private var audioProcessingTransitionGeneration: UInt64 = 0
+    private var permissionPersistenceFailurePending = false
+    private var isEngineStopped = false
+    private let orphanedTapCleanup: @MainActor () -> OrphanedTapCleanupResult
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "AudioEngine")
 
     // MARK: - Priority State Machine
@@ -516,6 +530,10 @@ final class AudioEngine {
         modeOverlayStore: AudioModeOverlayStore? = nil,
         tapFactory: (@MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling)? = nil,
         isAlive: ((AudioDeviceID) -> Bool)? = nil,
+        initialCleanupResult: OrphanedTapCleanupResult = .empty,
+        orphanedTapCleanup: @escaping @MainActor () -> OrphanedTapCleanupResult = {
+            OrphanedTapCleanup.destroyOrphanedDevices()
+        },
         startMonitorsAutomatically: Bool = true
     ) {
         self.permission = permission
@@ -526,6 +544,15 @@ final class AudioEngine {
         self.volumeState = VolumeState(settingsManager: manager)
         self.modeOverlayStore = modeOverlayStore ?? AudioModeOverlayStore()
         self.isAliveCheck = isAlive ?? { $0.isDeviceAlive() }
+        self.orphanedTapCleanup = orphanedTapCleanup
+        self.audioRecoveryDiagnostics = AudioRecoveryDiagnostics(
+            startupCleanup: initialCleanupResult
+        )
+        self.audioProcessingState = Self.initialAudioProcessingState(
+            mode: manager.audioProcessingMode,
+            permission: permission.status,
+            startupCleanupFailed: initialCleanupResult.failedCount > 0
+        )
 
         // If a custom deviceProvider is given, use it directly.
         // Otherwise create a real AudioDeviceMonitor (needed by DeviceVolumeMonitor and default tap factory).
@@ -602,7 +629,9 @@ final class AudioEngine {
 
         if startMonitorsAutomatically {
             Task { @MainActor [self] in
-                if self.permission.status == .authorized {
+                if self.permission.status == .authorized,
+                   manager.audioProcessingMode == .active,
+                   self.audioProcessingState == .active {
                     self.processMonitor.start()
                 }
                 self.deviceMonitor.start()
@@ -619,7 +648,13 @@ final class AudioEngine {
                 // Start device volume monitor AFTER deviceMonitor.start() populates devices
                 self.deviceVolumeMonitor.start()
 
-                self.applyPersistedSettings()
+                if manager.audioProcessingMode == .active,
+                   self.audioProcessingState == .active {
+                    self.applyPersistedSettings()
+                    self.startHealthMonitor()
+                } else if manager.audioProcessingMode == .resumeRequested {
+                    self.startAudioProcessingTransitionIfNeeded()
+                }
                 self.registerNewDevicesInPriority()
                 // Seed the confirmed default from whatever macOS has at startup
                 self.lastConfirmedDefaultUID = self.deviceVolumeMonitor.defaultDeviceUID
@@ -629,27 +664,43 @@ final class AudioEngine {
             }
         }
 
-        // Start process monitor when permission is granted
-        if startMonitorsAutomatically && permission.status != .authorized {
-            observePermissionGranted()
+        if startMonitorsAutomatically {
+            observePermissionChanges()
         }
     }
 
-    private func observePermissionGranted() {
+    private func observePermissionChanges() {
         withObservationTracking {
             _ = self.permission.status
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if self.permission.status == .authorized {
-                    self.processMonitor.start()
-                    self.applyPersistedSettings()
-                    self.startHealthMonitor()
-                    self.logger.info("Audio capture authorized — process monitor started")
-                } else {
-                    self.observePermissionGranted()
-                }
+                self.handleAudioPermissionChange()
+                self.observePermissionChanges()
             }
+        }
+    }
+
+    func handleAudioPermissionChange() {
+        if permission.status == .authorized {
+            if settingsManager.audioProcessingMode == .resumeRequested {
+                startAudioProcessingTransitionIfNeeded()
+            } else if settingsManager.audioProcessingMode == .active,
+                      audioProcessingState != .active {
+                startAudioProcessingTransitionIfNeeded()
+            }
+            return
+        }
+
+        if settingsManager.audioProcessingMode == .active {
+            if !persistAudioProcessingMode(.resumeRequested) {
+                permissionPersistenceFailurePending = true
+                startAudioProcessingTransitionIfNeeded()
+                return
+            }
+        }
+        if settingsManager.audioProcessingMode == .resumeRequested {
+            startAudioProcessingTransitionIfNeeded()
         }
     }
 
@@ -830,6 +881,7 @@ final class AudioEngine {
     }
 
     private func handleAppsChanged(_ updatedApps: [AudioApp]) {
+        guard canCreateProcessTaps else { return }
         applyPersistedSettings()
         scheduleStaleCleanup()
 
@@ -1090,14 +1142,20 @@ final class AudioEngine {
     }
 
     func start() {
+        isEngineStopped = false
         // Monitors have internal guards against double-starting
-        if permission.status == .authorized {
+        if permission.status == .authorized,
+           settingsManager.audioProcessingMode == .active,
+           audioProcessingState == .active {
             processMonitor.start()
         }
         deviceMonitor.start()
-        applyPersistedSettings()
-        if permission.status == .authorized {
+        if settingsManager.audioProcessingMode == .active,
+           audioProcessingState == .active {
+            applyPersistedSettings()
             startHealthMonitor()
+        } else if settingsManager.audioProcessingMode == .resumeRequested {
+            startAudioProcessingTransitionIfNeeded()
         }
 
         // Restore locked input device if feature is enabled
@@ -1109,6 +1167,10 @@ final class AudioEngine {
     }
 
     func stop() {
+        isEngineStopped = true
+        audioProcessingTransitionGeneration &+= 1
+        audioProcessingTransitionTask?.cancel()
+        audioProcessingTransitionTask = nil
         stopHealthMonitor()
         cancelPendingSafeOutputSwitch(reportFailure: true)
         cancelPendingDefaultOutputConfirmation(reportFailure: true)
@@ -1130,6 +1192,7 @@ final class AudioEngine {
             tap.invalidate()
         }
         taps.removeAll()
+        appliedPIDs.removeAll()
         logger.info("AudioEngine stopped")
     }
 
@@ -1140,6 +1203,291 @@ final class AudioEngine {
         stop()
         deviceVolumeMonitor.stop()
         logger.info("AudioEngine shutdown complete")
+    }
+
+    // MARK: - Audio Processing Recovery
+
+    var audioProcessingMode: AudioProcessingMode {
+        settingsManager.audioProcessingMode
+    }
+
+    var activeProcessingTapCount: Int {
+        taps.count
+    }
+
+    var audioRecoveryReport: String {
+        audioRecoveryDiagnostics.report(
+            state: audioProcessingState,
+            permission: permission.status,
+            activeTapCount: taps.count
+        )
+    }
+
+    @discardableResult
+    func requestAudioProcessingMode(
+        _ requestedMode: AudioProcessingMode
+    ) -> AudioProcessingModeRequestResult {
+        switch requestedMode {
+        case .bypassed:
+            guard audioProcessingState != .bypassed || !taps.isEmpty else {
+                return .applied(.bypassed)
+            }
+            guard persistAudioProcessingMode(.bypassed) else { return .rejected }
+            startAudioProcessingTransitionIfNeeded()
+            return .accepted
+
+        case .active, .resumeRequested:
+            if audioProcessingState == .active,
+               settingsManager.audioProcessingMode == .active {
+                return .applied(.active)
+            }
+
+            guard permission.status == .authorized else {
+                guard persistAudioProcessingMode(.resumeRequested) else { return .rejected }
+                if permission.status == .unknown {
+                    permission.request()
+                }
+                if taps.isEmpty {
+                    audioProcessingState = .waitingForPermission
+                    return .applied(.resumeRequested)
+                }
+                startAudioProcessingTransitionIfNeeded()
+                return .accepted
+            }
+
+            guard persistAudioProcessingMode(.resumeRequested) else { return .rejected }
+            startAudioProcessingTransitionIfNeeded()
+            return .accepted
+        }
+    }
+
+    private func persistAudioProcessingMode(_ mode: AudioProcessingMode) -> Bool {
+        let previousMode = settingsManager.audioProcessingMode
+        settingsManager.setAudioProcessingMode(mode)
+        guard settingsManager.flushSync() else {
+            settingsManager.setAudioProcessingMode(previousMode)
+            audioRecoveryDiagnostics.recordFailure(.settingsPersistence)
+            onCommandWriteRejected?(.audioProcessingMode)
+            return false
+        }
+        permissionPersistenceFailurePending = false
+        return true
+    }
+
+    func retryAudioProcessingRecovery() {
+        startAudioProcessingTransitionIfNeeded()
+    }
+
+    func waitForAudioProcessingTransition() async {
+        await audioProcessingTransitionTask?.value
+    }
+
+    private static func initialAudioProcessingState(
+        mode: AudioProcessingMode,
+        permission: AudioCapturePermissionStatus,
+        startupCleanupFailed: Bool
+    ) -> AudioProcessingState {
+        if startupCleanupFailed { return .failed(.aggregateCleanup) }
+        switch mode {
+        case .active:
+            return permission == .authorized ? .active : .waitingForPermission
+        case .bypassed:
+            return .bypassed
+        case .resumeRequested:
+            return permission == .authorized ? .resuming : .waitingForPermission
+        }
+    }
+
+    private var canCreateProcessTaps: Bool {
+        guard !isEngineStopped, permission.status == .authorized else { return false }
+        switch audioProcessingState {
+        case .active:
+            return settingsManager.audioProcessingMode == .active
+        case .resuming:
+            return settingsManager.audioProcessingMode == .resumeRequested
+        default:
+            return false
+        }
+    }
+
+    private func startAudioProcessingTransitionIfNeeded() {
+        guard !isEngineStopped, audioProcessingTransitionTask == nil else { return }
+        audioProcessingTransitionGeneration &+= 1
+        let generation = audioProcessingTransitionGeneration
+        audioProcessingTransitionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.reconcileAudioProcessing(generation: generation)
+            if self.audioProcessingTransitionGeneration == generation {
+                self.audioProcessingTransitionTask = nil
+            }
+        }
+    }
+
+    private func reconcileAudioProcessing(generation: UInt64) async {
+        while !isEngineStopped,
+              audioProcessingTransitionGeneration == generation {
+            switch settingsManager.audioProcessingMode {
+            case .bypassed:
+                if audioProcessingState != .bypassed || !taps.isEmpty {
+                    guard await tearDownAudioProcessing(explicitBypass: true) else { return }
+                }
+                guard settingsManager.audioProcessingMode == .bypassed else { continue }
+                audioProcessingState = .bypassed
+                onCommandValueObserved?(
+                    .audioProcessingMode,
+                    .mode(AudioProcessingMode.bypassed.rawValue)
+                )
+                return
+
+            case .active, .resumeRequested:
+                guard permission.status == .authorized else {
+                    if !taps.isEmpty || audioProcessingState == .active {
+                        guard await tearDownAudioProcessing(explicitBypass: false) else { return }
+                    }
+                    if permissionPersistenceFailurePending {
+                        audioProcessingState = .failed(.settingsPersistence)
+                        onCommandWriteRejected?(.audioProcessingMode)
+                        return
+                    }
+                    audioProcessingState = .waitingForPermission
+                    onCommandValueObserved?(
+                        .audioProcessingMode,
+                        .mode(AudioProcessingMode.resumeRequested.rawValue)
+                    )
+                    return
+                }
+
+                if audioProcessingState == .active,
+                   settingsManager.audioProcessingMode == .active {
+                    return
+                }
+                guard await resumeAudioProcessing() else { return }
+                if settingsManager.audioProcessingMode == .bypassed {
+                    continue
+                }
+                return
+            }
+        }
+    }
+
+    private func tearDownAudioProcessing(explicitBypass: Bool) async -> Bool {
+        audioProcessingState = .bypassing
+        let healthTask = healthMonitorTask
+        stopHealthMonitor()
+        processMonitor.stop()
+
+        let staleTask = staleCleanupTask
+        staleCleanupTask?.cancel()
+        staleCleanupTask = nil
+        let cleanupTasks = Array(pendingCleanup.values)
+        for task in cleanupTasks { task.cancel() }
+        pendingCleanup.removeAll()
+        let membershipTasks = Array(tapMembershipRefreshTasks.values)
+        for task in membershipTasks { task.cancel() }
+        tapMembershipRefreshTasks.removeAll()
+
+        let maintenanceTasks = Array(tapMaintenanceTasks.values)
+        for task in maintenanceTasks { task.cancel() }
+        tapMaintenanceTasks.removeAll()
+
+        let routeTasks = pendingAppRouteOperations.values.map(\.task)
+        for pending in pendingAppRouteOperations.values {
+            pending.task.cancel()
+            onCommandWriteRejected?(pending.key)
+        }
+        pendingAppRouteOperations.removeAll()
+        appRouteOperationGenerations.removeAll()
+        for task in routeTasks {
+            await task.value
+        }
+        for task in maintenanceTasks {
+            await task.value
+        }
+        await staleTask?.value
+        for task in cleanupTasks {
+            await task.value
+        }
+        for task in membershipTasks {
+            await task.value
+        }
+        await healthTask?.value
+
+        let ownedTaps = Array(taps.values)
+        taps.removeAll()
+        appliedPIDs.removeAll()
+        tapRecoveryCooldownUntil.removeAll()
+        appRouteLifecycles.removeAll()
+
+        var resourceCleanup = TapResourceCleanupResult.empty
+        for tap in ownedTaps {
+            resourceCleanup.merge(await tap.invalidateAsync())
+        }
+
+        let cleanup = orphanedTapCleanup()
+        if explicitBypass {
+            audioRecoveryDiagnostics.recordBypass(
+                cleanup: cleanup,
+                resources: resourceCleanup
+            )
+        }
+        if resourceCleanup.failureCount > 0 {
+            audioRecoveryDiagnostics.recordFailure(.resourceCleanup)
+            audioProcessingState = .failed(.resourceCleanup)
+            onCommandWriteRejected?(.audioProcessingMode)
+            return false
+        }
+        if cleanup.failedCount > 0 {
+            audioRecoveryDiagnostics.recordFailure(.aggregateCleanup)
+            audioProcessingState = .failed(.aggregateCleanup)
+            onCommandWriteRejected?(.audioProcessingMode)
+            return false
+        }
+        return true
+    }
+
+    private func startTapMaintenanceTask(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        guard canCreateProcessTaps else { return }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.tapMaintenanceTasks.removeValue(forKey: id) }
+            guard !Task.isCancelled, self.canCreateProcessTaps else { return }
+            await operation()
+        }
+        tapMaintenanceTasks[id] = task
+    }
+
+    private func resumeAudioProcessing() async -> Bool {
+        audioProcessingState = .resuming
+        let cleanup = orphanedTapCleanup()
+        audioRecoveryDiagnostics.recordResume(cleanup: cleanup)
+        guard cleanup.failedCount == 0 else {
+            audioProcessingState = .failed(.aggregateCleanup)
+            onCommandWriteRejected?(.audioProcessingMode)
+            return false
+        }
+        guard settingsManager.audioProcessingMode != .bypassed,
+              permission.status == .authorized,
+              !isEngineStopped else {
+            return true
+        }
+
+        processMonitor.start()
+        applyPersistedSettings()
+        startHealthMonitor()
+        guard persistAudioProcessingMode(.active) else {
+            _ = await tearDownAudioProcessing(explicitBypass: false)
+            audioProcessingState = .failed(.settingsPersistence)
+            return false
+        }
+        audioProcessingState = .active
+        onCommandValueObserved?(
+            .audioProcessingMode,
+            .mode(AudioProcessingMode.active.rawValue)
+        )
+        return true
     }
 
     // MARK: - Settings Reset
@@ -2070,9 +2418,11 @@ final class AudioEngine {
             appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
             return true
         }
-        guard permission.status == .authorized else {
+        guard canCreateProcessTaps else {
             appRouteLifecycles[app.id] = .unavailable(
-                message: "Allow System Audio Recording to route this app"
+                message: audioProcessingState == .waitingForPermission
+                    ? "Allow System Audio Recording to route this app"
+                    : "Resume audio processing to route this app"
             )
             return false
         }
@@ -2110,7 +2460,7 @@ final class AudioEngine {
     }
 
     func applyPersistedSettings() {
-        guard permission.status == .authorized else { return }
+        guard canCreateProcessTaps else { return }
 
         // Warm the AutoEQ cache for every (app, device) selection so that subsequent
         // tap activations can apply correction synchronously inside activate(initial:)
@@ -2208,9 +2558,11 @@ final class AudioEngine {
             // after the default changed while it was absent), switch it.
             if let existingTap = taps[app.id], existingTap.currentDeviceUIDs != [deviceUID] {
                 let preferredSource = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: followsDefault.contains(app.id))
-                Task {
+                startTapMaintenanceTask { [weak self] in
+                    guard let self else { return }
                     do {
                         try await existingTap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredSource)
+                        guard self.canCreateProcessTaps else { return }
                         self.applyTapOutputState(to: existingTap, for: app.id, deviceUIDs: [deviceUID])
                         self.applyAutoEQToTap(existingTap)
                     } catch {
@@ -2249,9 +2601,11 @@ final class AudioEngine {
             appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
             return true
         }
-        guard permission.status == .authorized else {
+        guard canCreateProcessTaps else {
             appRouteLifecycles[app.id] = .unavailable(
-                message: "Allow System Audio Recording to route this app"
+                message: audioProcessingState == .waitingForPermission
+                    ? "Allow System Audio Recording to route this app"
+                    : "Resume audio processing to route this app"
             )
             return false
         }
@@ -2375,11 +2729,14 @@ final class AudioEngine {
         }
         guard !tapsToSwitch.isEmpty else { return }
 
-        Task {
+        startTapMaintenanceTask { [weak self] in
+            guard let self else { return }
             for (app, tap) in tapsToSwitch {
+                guard self.canCreateProcessTaps else { return }
                 do {
                     let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [targetUID], isFollowsDefault: true)
                     try await tap.switchDevice(to: targetUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
+                    guard self.canCreateProcessTaps else { return }
                     self.applyTapOutputState(to: tap, for: app.id, deviceUIDs: [targetUID])
                     self.applyAutoEQToTap(tap)
                 } catch {
@@ -2461,12 +2818,15 @@ final class AudioEngine {
 
         // Execute device switches
         if !singleModeTapsToSwitch.isEmpty || !multiModeTapsToUpdate.isEmpty {
-            Task {
+            startTapMaintenanceTask { [weak self] in
+                guard let self else { return }
                 // Handle single-mode switches — source device is dead, skip crossfade
                 for (tap, fallbackUID) in singleModeTapsToSwitch {
+                    guard self.canCreateProcessTaps else { return }
                     do {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [fallbackUID], isFollowsDefault: true)
                         try await tap.switchDevice(to: fallbackUID, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
+                        guard self.canCreateProcessTaps else { return }
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [fallbackUID])
                         self.applyAutoEQToTap(tap)
                     } catch {
@@ -2477,9 +2837,11 @@ final class AudioEngine {
                 // Handle multi-mode updates (remove disconnected device from aggregate)
                 // Source device is dead, skip crossfade
                 for (tap, remainingUIDs) in multiModeTapsToUpdate {
+                    guard self.canCreateProcessTaps else { return }
                     do {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: remainingUIDs, isFollowsDefault: self.followsDefault.contains(tap.app.id))
                         try await tap.updateDevices(to: remainingUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
+                        guard self.canCreateProcessTaps else { return }
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: remainingUIDs)
                         self.logger.debug("Removed \(deviceName) from \(tap.app.name) multi-device output")
                     } catch {
@@ -2534,11 +2896,14 @@ final class AudioEngine {
         }
 
         if !tapsToSwitch.isEmpty {
-            Task {
+            startTapMaintenanceTask { [weak self] in
+                guard let self else { return }
                 for tap in tapsToSwitch {
+                    guard self.canCreateProcessTaps else { return }
                     do {
                         let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: false)
                         try await tap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredTapSourceUID)
+                        guard self.canCreateProcessTaps else { return }
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [deviceUID])
                         self.applyAutoEQToTap(tap)
                     } catch {
@@ -2566,8 +2931,10 @@ final class AudioEngine {
         }
 
         if !multiModeTapsToUpdate.isEmpty {
-            Task {
+            startTapMaintenanceTask { [weak self] in
+                guard let self else { return }
                 for tap in multiModeTapsToUpdate {
+                    guard self.canCreateProcessTaps else { return }
                     await self.updateTapForCurrentMode(for: tap.app)
                 }
             }
@@ -2959,7 +3326,7 @@ final class AudioEngine {
     /// Starts a periodic health check that recreates unresponsive taps.
     /// Checks every 2 seconds; after 3 consecutive misses (~6s), the tap is presumed dead.
     private func startHealthMonitor() {
-        guard healthMonitorTask == nil else { return }
+        guard canCreateProcessTaps, healthMonitorTask == nil else { return }
         healthMonitorTask = Task { @MainActor [weak self] in
             var consecutiveMisses: [pid_t: Int] = [:]
             while !Task.isCancelled {
@@ -3020,15 +3387,17 @@ final class AudioEngine {
     /// Async: awaits full CoreAudio resource teardown before creating the replacement tap
     /// to prevent orphaned IO procs from accumulating (issue #176).
     private func recreateTap(for pid: pid_t) async {
+        guard canCreateProcessTaps else { return }
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
         let deviceUIDs = oldTap.currentDeviceUIDs
-        await oldTap.invalidateAsync()
+        _ = await oldTap.invalidateAsync()
 
         // Set cooldown to prevent thrashing
         tapRecoveryCooldownUntil[pid] = Date().addingTimeInterval(20)
 
         // Find the current AudioApp entry for this PID
-        guard let app = apps.first(where: { $0.id == pid }) else {
+        guard canCreateProcessTaps,
+              let app = apps.first(where: { $0.id == pid }) else {
             logger.debug("No active app for PID \(pid), skipping tap recreation")
             appliedPIDs.remove(pid)
             return
@@ -3062,6 +3431,7 @@ final class AudioEngine {
     /// sample rate (A2DP↔SCO), so each tap's IOProc re-rates to match. Falls back to a full tap
     /// recreate if the in-controller recreation throws.
     private func handleBTDeviceSampleRateChanged(uid: String, newRate: Double) async {
+        guard canCreateProcessTaps else { return }
         logger.info("[RATE] BT output \(uid, privacy: .public) → \(newRate, format: .fixed(precision: 0)) Hz — recreating affected taps (clean dip)")
         let affected = taps.filter { $0.value.currentDeviceUIDs.contains(uid) }
         for (pid, tap) in affected {
