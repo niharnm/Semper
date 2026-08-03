@@ -103,16 +103,16 @@ struct AutoEQParserTests {
     @MainActor
     func parsesCatalogIndex() {
         let entries = AutoEQFetcher.parseIndexMarkdown("""
-            - [Zeta](./crinacle/over-ear/Zeta) by crinacle
-            - [alpha (m15 Apex module)](./crinacle/over-ear/Alpha%20(m15%20Apex%20module)) by crinacle
-            - [Alpha (m15 Apex module)](./oratory1990/over-ear/Alpha%20(m15%20Apex%20module)) by oratory1990
+            - [zeta](./crinacle/over-ear/Zeta) by crinacle
+            - [ALPHA (m15 Apex module)](./crinacle/over-ear/Alpha%20(m15%20Apex%20module)) by crinacle
+            - [alpha (m15 Apex module)](./oratory1990/over-ear/Alpha%20(m15%20Apex%20module)) by oratory1990
             - [Beta](./Rtings/over-ear/Beta) by Rtings on Rig A
             """)
 
         #expect(entries.count == 3)
-        #expect(entries.map(\.name) == ["Alpha (m15 Apex module)", "Beta", "Zeta"])
+        #expect(entries.map(\.name) == ["alpha (m15 Apex module)", "Beta", "zeta"])
 
-        let alpha = entries.first { $0.name == "Alpha (m15 Apex module)" }
+        let alpha = entries.first { $0.name == "alpha (m15 Apex module)" }
         #expect(alpha?.measuredBy == "oratory1990")
         #expect(alpha?.relativePath == "oratory1990/over-ear/Alpha (m15 Apex module)")
 
