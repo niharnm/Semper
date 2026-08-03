@@ -104,7 +104,7 @@ struct AutoEQParserTests {
     func parsesCatalogIndex() {
         let entries = AutoEQFetcher.parseIndexMarkdown("""
             - [Zeta](./crinacle/over-ear/Zeta) by crinacle
-            - [Alpha (m15 Apex module)](./crinacle/over-ear/Alpha%20(m15%20Apex%20module)) by crinacle
+            - [alpha (m15 Apex module)](./crinacle/over-ear/Alpha%20(m15%20Apex%20module)) by crinacle
             - [Alpha (m15 Apex module)](./oratory1990/over-ear/Alpha%20(m15%20Apex%20module)) by oratory1990
             - [Beta](./Rtings/over-ear/Beta) by Rtings on Rig A
             """)
