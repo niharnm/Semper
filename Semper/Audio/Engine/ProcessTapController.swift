@@ -771,8 +771,9 @@ final class ProcessTapController: ProcessTapControlling {
         // All devices in the aggregate will be included
         let primaryDeviceUID = newDeviceUIDs[0]
 
+        let sourceHasRecentAudio = hasRecentAudioCallback(within: 0.5)
         let useCrossfade = Self.shouldUseCrossfade(
-            sourceHasRecentAudio: hasRecentAudioCallback(within: 0.5),
+            sourceHasRecentAudio: sourceHasRecentAudio,
             requiresExclusiveOutput: requiresExclusiveOutput
         )
 
@@ -794,7 +795,7 @@ final class ProcessTapController: ProcessTapControlling {
             try await performDestructiveDeviceSwitch(
                 to: primaryDeviceUID,
                 allDeviceUIDs: newDeviceUIDs,
-                skipTimedTransition: requiresExclusiveOutput
+                skipTimedTransition: requiresExclusiveOutput || !sourceHasRecentAudio
             )
         } else {
             crossfadeTask?.cancel()
