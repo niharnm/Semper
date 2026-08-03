@@ -30,7 +30,7 @@ struct SettingsRootView: View {
 
         var subtitle: String {
             switch self {
-            case .general: "Startup, appearance, and menu bar"
+            case .general: "Choose how Semper starts, looks, and lives in your menu bar"
             case .audio: "Volume, processing, and device behavior"
             case .shortcuts: "Media keys, HUD, and global hotkeys"
             case .updates: "Version and automatic update settings"
@@ -63,66 +63,56 @@ struct SettingsRootView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
+        VStack(spacing: 0) {
+            navigationBar
+
+            Divider()
+
             detail
         }
-        .navigationSplitViewStyle(.balanced)
         .toolbarVisibility(.hidden)
-        .frame(width: 780, height: 560)
+        .frame(width: 860, height: 610)
         .tint(DesignTokens.Colors.accentPrimary)
         .preferredColorScheme(settings.appSettings.appearance.swiftUIColorScheme)
+        .popupGlassBackground()
         .background(WindowAppearanceBridge(appearance: settings.appSettings.appearance.nsAppearance))
-        .background(WindowTitleBridge(title: "Semper Settings"))
+        .background(WindowTitleBridge(title: "\(selection.title) · Semper"))
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
+    private var navigationBar: some View {
+        HStack(spacing: DesignTokens.Spacing.lg) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 Image(nsImage: NSApp.applicationIconImage ?? NSImage())
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 30, height: 30)
 
-                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text("Semper")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(DesignTokens.Colors.textPrimary)
-                    Text("Settings")
-                        .font(DesignTokens.Typography.rowDescription)
+                    Text("SETTINGS")
+                        .font(.system(size: 8, weight: .bold))
+                        .tracking(1.1)
                         .foregroundStyle(DesignTokens.Colors.textTertiary)
                 }
-
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, DesignTokens.Spacing.lg)
-            .padding(.top, DesignTokens.Spacing.md)
-            .padding(.bottom, DesignTokens.Spacing.sm)
 
-            Divider()
+            Spacer(minLength: DesignTokens.Spacing.md)
 
-            List(selection: selectionBinding) {
+            HStack(spacing: DesignTokens.Spacing.xs) {
                 ForEach(Section.allCases) { section in
-                    Label {
-                        Text(section.title)
-                    } icon: {
-                        Image(systemName: section.systemImage)
-                            .symbolRenderingMode(.hierarchical)
-                            .frame(width: 18)
-                    }
-                    .font(DesignTokens.Typography.rowName)
-                    .padding(.vertical, DesignTokens.Spacing.xs)
-                    .tag(section)
+                    SettingsNavigationButton(
+                        section: section,
+                        isSelected: selection == section,
+                        onSelect: { selectionBinding.wrappedValue = section }
+                    )
                 }
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
         }
-        .background {
-            VisualEffectBackground(material: .sidebar, blendingMode: .behindWindow)
-        }
-        .navigationSplitViewColumnWidth(min: 178, ideal: 190, max: 210)
+        .padding(.horizontal, DesignTokens.Spacing.xl)
+        .frame(height: 66)
+        .background(DesignTokens.Colors.nextMasterBackground)
     }
 
     private var detail: some View {
@@ -131,40 +121,48 @@ struct SettingsRootView: View {
             Divider()
             selectedPane
         }
-        .popupGlassBackground()
     }
 
     private var paneHeader: some View {
-        HStack(spacing: DesignTokens.Spacing.md) {
+        HStack(spacing: DesignTokens.Spacing.lg) {
             ZStack {
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.rowRadius, style: .continuous)
-                    .fill(DesignTokens.Colors.accentPrimary.opacity(0.14))
+                Circle()
+                    .fill(DesignTokens.Colors.accentPrimary.opacity(0.12))
 
                 Image(systemName: selection.systemImage)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(DesignTokens.Colors.accentPrimary)
             }
-            .frame(width: 38, height: 38)
+            .frame(width: 44, height: 44)
             .overlay {
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.rowRadius, style: .continuous)
+                Circle()
                     .strokeBorder(DesignTokens.Colors.accentPrimary.opacity(0.2), lineWidth: 0.5)
             }
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {
                 Text(selection.title)
-                    .font(.title2.weight(.semibold))
+                    .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(DesignTokens.Colors.textPrimary)
                 Text(selection.subtitle)
-                    .font(DesignTokens.Typography.rowDescription)
+                    .font(.system(size: 12))
                     .foregroundStyle(DesignTokens.Colors.textTertiary)
             }
 
             Spacer(minLength: 0)
+
+            Text(panePosition)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
         }
-        .padding(.horizontal, DesignTokens.Spacing.xl)
-        .padding(.vertical, DesignTokens.Spacing.md)
-        .background(DesignTokens.Colors.nextMasterBackground)
+        .padding(.horizontal, DesignTokens.Spacing.xxl)
+        .padding(.top, DesignTokens.Spacing.lg)
+        .padding(.bottom, DesignTokens.Spacing.md)
+    }
+
+    private var panePosition: String {
+        let index = (Section.allCases.firstIndex(of: selection) ?? 0) + 1
+        return String(format: "%02d / %02d", index, Section.allCases.count)
     }
 
     @ViewBuilder
@@ -197,5 +195,60 @@ struct SettingsRootView: View {
         case .about:
             AboutTab()
         }
+    }
+}
+
+private struct SettingsNavigationButton: View {
+    let section: SettingsRootView.Section
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 6) {
+                Image(systemName: section.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+
+                Text(section.title)
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(
+                isSelected
+                    ? DesignTokens.Colors.accentPrimary
+                    : DesignTokens.Colors.textSecondary
+            )
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.13)
+                            : isHovered ? DesignTokens.Colors.nextControlHover : Color.clear
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(
+                        isSelected
+                            ? DesignTokens.Colors.accentPrimary.opacity(0.3)
+                            : Color.clear,
+                        lineWidth: 0.5
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(reduceMotion ? nil : DesignTokens.Animation.hover) {
+                isHovered = hovering
+            }
+        }
+        .accessibilityLabel(section.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
