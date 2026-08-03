@@ -51,6 +51,6 @@ struct VolumeSlider: View {
     }
     .padding()
     .frame(width: 400)
-    .darkGlassBackground()
+    .popupGlassBackground()
     .environment(\.colorScheme, .dark)
 }

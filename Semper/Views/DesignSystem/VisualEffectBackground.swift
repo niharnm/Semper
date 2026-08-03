@@ -42,8 +42,7 @@ extension View {
     /// Applies the popup's translucent glass background. Adapts to light and
     /// dark via DesignTokens; the underlying NSVisualEffectView uses the
     /// `.popover` material so it tracks system appearance natively.
-    /// Name kept for source compatibility; rename pending a follow-up sweep.
-    func darkGlassBackground() -> some View {
+    func popupGlassBackground() -> some View {
         self
             .background(Color.popupBackgroundOverlay)
             .background(VisualEffectBackground(material: .popover, blendingMode: .behindWindow))
@@ -91,18 +90,31 @@ struct LiftedCardBackgroundModifier: ViewModifier {
 
 // MARK: - Previews
 
-#Preview("Dark Glass Popup Background") {
-    VStack(spacing: 16) {
-        Text("OUTPUT DEVICES")
-            .sectionHeaderStyle()
-        Text("Dark frosted glass background")
-            .foregroundStyle(.primary)
+#Preview("Popup Glass Background - Light") {
+    PopupGlassBackgroundPreview()
+        .environment(\.colorScheme, .light)
+}
+
+#Preview("Popup Glass Background - Dark") {
+    PopupGlassBackgroundPreview()
+        .environment(\.colorScheme, .dark)
+}
+
+/// Shared body for the light and dark popup glass previews so both
+/// appearances render the identical surface.
+private struct PopupGlassBackgroundPreview: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("OUTPUT DEVICES")
+                .sectionHeaderStyle()
+            Text("Frosted glass popup surface")
+                .foregroundStyle(.primary)
+        }
+        .padding(DesignTokens.Spacing.lg)
+        .frame(width: 300)
+        .popupGlassBackground()
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius))
     }
-    .padding(DesignTokens.Spacing.lg)
-    .frame(width: 300)
-    .darkGlassBackground()
-    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius))
-    .environment(\.colorScheme, .dark)
 }
 
 #Preview("EQ Card - Lifted") {
@@ -120,5 +132,5 @@ struct LiftedCardBackgroundModifier: ViewModifier {
     .padding()
     .eqCardBackground()
     .padding()
-    .darkGlassBackground()
+    .popupGlassBackground()
 }

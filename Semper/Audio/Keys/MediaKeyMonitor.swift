@@ -265,7 +265,7 @@ final class MediaKeyMonitor {
         playFeedback: (Float) -> Void = { _ in }
     ) {
         let shouldShowHUD = !popupVisibility.isVisible
-        let sliderDelta = settingsManager.appSettings.volumeHotkeyStep.sliderDelta
+        let sliderDelta = settingsManager.appSettings.volumeHotkeySliderDelta
         let currentSlider = VolumeMapping.sliderFraction(forSystemGain: currentVolume, tier: tier)
 
         switch event {
