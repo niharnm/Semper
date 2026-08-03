@@ -17,7 +17,7 @@ Native, per-application audio mixing and DSP engine for macOS. Semper resides in
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/niharm)
 
-Semper is an open-source project founded and led by **Nihar Manchikakapudi**.
+Semper is an open-source project founded and led by [**Nihar Manchikakapudi**](https://www.niharm.me/).
 
 > [!IMPORTANT]
 > **Contributors wanted.** Semper is looking for help with Swift, SwiftUI,
