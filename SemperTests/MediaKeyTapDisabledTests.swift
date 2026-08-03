@@ -42,6 +42,7 @@ struct MediaKeyTapDisabledTests {
         let monitor = MediaKeyMonitor(
             decoder: StubMediaKeyDecoder(),
             audioEngine: engine,
+            audioCommands: RecordingAudioCommandSink(),
             settingsManager: settings,
             accessibility: accessibility,
             hudController: hud,

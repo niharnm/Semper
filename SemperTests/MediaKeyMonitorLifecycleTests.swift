@@ -44,6 +44,7 @@ struct MediaKeyMonitorLifecycleTests {
         let monitor = MediaKeyMonitor(
             decoder: StubMediaKeyDecoder(),
             audioEngine: engine,
+            audioCommands: RecordingAudioCommandSink(),
             settingsManager: settings,
             accessibility: MockAccessibilityTrustProviding(isTrusted: true),
             hudController: hud,

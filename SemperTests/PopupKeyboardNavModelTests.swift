@@ -11,6 +11,21 @@ private func makeDevice(uid: String, id: AudioDeviceID = 1) -> AudioDevice {
 
 @Suite("PopupKeyboardNavModel") @MainActor
 struct PopupKeyboardNavModelTests {
+    @Test("Active app rows with one stable identifier keep distinct process targets")
+    func duplicateIdentifierRowsRemainDistinct() {
+        let model = PopupKeyboardNavModel()
+        let first = AudioAppCommandTarget(identifier: "com.test.app", processID: 101)
+        let second = AudioAppCommandTarget(identifier: "com.test.app", processID: 202)
+
+        model.syncOrder(
+            activeDevices: [],
+            appTargets: [first, second],
+            isEditingPriority: false
+        )
+
+        #expect(model.orderedRowIDs == [.app(target: first), .app(target: second)])
+    }
+
     @Test func syncOrderProducesDevicesThenApps() {
         let model = PopupKeyboardNavModel()
         let dev1 = makeDevice(uid: "dev1", id: 1)

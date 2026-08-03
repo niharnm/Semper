@@ -8,6 +8,96 @@ import AudioToolbox
 import IOKit
 import os
 
+enum DDCWriteResult: Sendable {
+    case applied(Int)
+    case failed(restoredVolume: Int?, restoredMute: Bool?)
+}
+
+struct DDCWriteLedger {
+    enum Resolution: Equatable {
+        case applied(Int)
+        case failed(restoredVolume: Int?)
+    }
+
+    private(set) var confirmedVolumes: [AudioDeviceID: Int] = [:]
+    private var currentGenerations: [AudioDeviceID: UInt64] = [:]
+    private var nextGeneration: UInt64 = 0
+    private var minimumConfirmationGeneration: UInt64 = 0
+
+    mutating func replaceConfirmedVolumes(_ volumes: [AudioDeviceID: Int]) {
+        confirmedVolumes = volumes
+        minimumConfirmationGeneration = nextGeneration &+ 1
+    }
+
+    mutating func beginWrite(for deviceID: AudioDeviceID) -> UInt64 {
+        nextGeneration &+= 1
+        currentGenerations[deviceID] = nextGeneration
+        return nextGeneration
+    }
+
+    mutating func finishWrite(
+        for deviceID: AudioDeviceID,
+        generation: UInt64,
+        requestedVolume: Int,
+        succeeded: Bool
+    ) -> Resolution? {
+        if succeeded, generation >= minimumConfirmationGeneration {
+            confirmedVolumes[deviceID] = requestedVolume
+        }
+
+        guard currentGenerations[deviceID] == generation else { return nil }
+        currentGenerations.removeValue(forKey: deviceID)
+        if succeeded {
+            return .applied(requestedVolume)
+        }
+        return .failed(restoredVolume: confirmedVolumes[deviceID])
+    }
+
+    mutating func cancelWrite(for deviceID: AudioDeviceID, generation: UInt64) -> Resolution? {
+        guard currentGenerations[deviceID] == generation else { return nil }
+        currentGenerations.removeValue(forKey: deviceID)
+        return .failed(restoredVolume: confirmedVolumes[deviceID])
+    }
+}
+
+struct DDCProbeLifecycle {
+    private(set) var generation: UInt64 = 0
+    private(set) var isRunning = false
+
+    mutating func start() {
+        generation &+= 1
+        isRunning = true
+    }
+
+    mutating func beginProbe() -> UInt64? {
+        guard isRunning else { return nil }
+        generation &+= 1
+        return generation
+    }
+
+    mutating func stop() {
+        generation &+= 1
+        isRunning = false
+    }
+
+    func permitsPublication(for candidate: UInt64) -> Bool {
+        isRunning && candidate == generation
+    }
+}
+
+private final class DDCWriteCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelledStorage = false
+
+    var isCancelled: Bool {
+        lock.withLock { isCancelledStorage }
+    }
+
+    func cancel() {
+        lock.withLock { isCancelledStorage = true }
+    }
+}
+
 @Observable
 @MainActor
 final class DDCController {
@@ -19,7 +109,16 @@ final class DDCController {
 
     private var services: [AudioDeviceID: DDCService] = [:]
     private var deviceUIDs: [AudioDeviceID: String] = [:]  // For persistence keying
-    private var debounceTimers: [AudioDeviceID: DispatchWorkItem] = [:]
+    private struct PendingWrite {
+        let generation: UInt64
+        let cancellation: DDCWriteCancellation
+        let workItem: DispatchWorkItem
+    }
+    private var pendingWrites: [AudioDeviceID: PendingWrite] = [:]
+    private var pendingMuteRestores: [AudioDeviceID: Bool] = [:]
+    private var writeLedger = DDCWriteLedger()
+    private var probeLifecycle = DDCProbeLifecycle()
+    private var serviceWritesCancellation = DDCWriteCancellation()
     private var probeWorkItem: DispatchWorkItem?
     private var displayChangeObserver: NSObjectProtocol?
 
@@ -29,6 +128,7 @@ final class DDCController {
 
     /// Callback when DDC probe completes (triggers device list refresh)
     var onProbeCompleted: (() -> Void)?
+    var onWriteResult: ((AudioDeviceID, DDCWriteResult) -> Void)?
 
     /// EDID identifiers read directly from a monitor over I2C.
     private struct DisplayEDID: Sendable {
@@ -44,19 +144,21 @@ final class DDCController {
     // MARK: - Lifecycle
 
     func start() {
+        probeLifecycle.start()
         probe()
         setupDisplayChangeObserver()
     }
 
     func stop() {
+        probeLifecycle.stop()
         if let obs = displayChangeObserver {
             NotificationCenter.default.removeObserver(obs)
             displayChangeObserver = nil
         }
         probeWorkItem?.cancel()
         probeWorkItem = nil
-        for (_, item) in debounceTimers { item.cancel() }
-        debounceTimers.removeAll()
+        serviceWritesCancellation.cancel()
+        cancelPendingWrites()
     }
 
     // MARK: - Public API
@@ -83,23 +185,116 @@ final class DDCController {
 
         // Keep the work item @Sendable and avoid `self`; otherwise it inherits
         // @MainActor isolation here and traps when run on `ddcQueue`.
-        debounceTimers[deviceID]?.cancel()
+        pendingWrites[deviceID]?.cancellation.cancel()
+        pendingWrites[deviceID]?.workItem.cancel()
+        let generation = writeLedger.beginWrite(for: deviceID)
+        let cancellation = DDCWriteCancellation()
+        let serviceWritesCancellation = self.serviceWritesCancellation
         let service = services[deviceID]
         let logger = self.logger
-        let item = DispatchWorkItem { @Sendable in
+        let item = DispatchWorkItem { @Sendable [weak self] in
+            guard !cancellation.isCancelled, !serviceWritesCancellation.isCancelled else { return }
+            let succeeded: Bool
             do {
-                try service?.setAudioVolume(clamped)
+                guard let service else { throw DDCWriteError.missingService }
+                try service.setAudioVolume(clamped)
+                succeeded = true
             } catch {
                 logger.error("DDC write failed for device \(deviceID): \(error)")
+                succeeded = false
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.handleWriteCompletion(
+                    for: deviceID,
+                    generation: generation,
+                    requestedVolume: clamped,
+                    succeeded: succeeded
+                )
             }
         }
-        debounceTimers[deviceID] = item
+        pendingWrites[deviceID] = PendingWrite(
+            generation: generation,
+            cancellation: cancellation,
+            workItem: item
+        )
         ddcQueue.asyncAfter(deadline: .now() + .milliseconds(100), execute: item)
+    }
+
+    private func handleWriteCompletion(
+        for deviceID: AudioDeviceID,
+        generation: UInt64,
+        requestedVolume: Int,
+        succeeded: Bool
+    ) {
+        let resolution = writeLedger.finishWrite(
+            for: deviceID,
+            generation: generation,
+            requestedVolume: requestedVolume,
+            succeeded: succeeded
+        )
+        guard let resolution else { return }
+        if pendingWrites[deviceID]?.generation == generation {
+            pendingWrites.removeValue(forKey: deviceID)
+        }
+
+        switch resolution {
+        case .applied(let volume):
+            cachedVolumes[deviceID] = volume
+            if let uid = deviceUIDs[deviceID] {
+                settingsManager.setDDCVolume(for: uid, to: volume)
+            }
+            pendingMuteRestores.removeValue(forKey: deviceID)
+            onWriteResult?(deviceID, .applied(volume))
+        case .failed(let restoredVolume):
+            publishFailedWrite(for: deviceID, restoredVolume: restoredVolume)
+        }
+    }
+
+    private func cancelPendingWrites() {
+        let writes = pendingWrites
+        pendingWrites.removeAll()
+        for (deviceID, pending) in writes {
+            pending.cancellation.cancel()
+            pending.workItem.cancel()
+            guard case .failed(let restoredVolume) = writeLedger.cancelWrite(
+                for: deviceID,
+                generation: pending.generation
+            ) else {
+                continue
+            }
+            publishFailedWrite(for: deviceID, restoredVolume: restoredVolume)
+        }
+    }
+
+    private func publishFailedWrite(for deviceID: AudioDeviceID, restoredVolume: Int?) {
+        if let restoredVolume {
+            cachedVolumes[deviceID] = restoredVolume
+            if let uid = deviceUIDs[deviceID] {
+                settingsManager.setDDCVolume(for: uid, to: restoredVolume)
+            }
+        } else {
+            cachedVolumes.removeValue(forKey: deviceID)
+        }
+
+        let restoredMute = pendingMuteRestores.removeValue(forKey: deviceID)
+        if let restoredMute, let uid = deviceUIDs[deviceID] {
+            settingsManager.setDDCMuteState(for: uid, to: restoredMute)
+        }
+        onWriteResult?(
+            deviceID,
+            .failed(restoredVolume: restoredVolume, restoredMute: restoredMute)
+        )
+    }
+
+    private enum DDCWriteError: Error {
+        case missingService
     }
 
     /// Software mute: saves current volume, sets to 0.
     func mute(for deviceID: AudioDeviceID) {
         guard let uid = deviceUIDs[deviceID] else { return }
+        pendingMuteRestores[deviceID] = pendingMuteRestores[deviceID]
+            ?? settingsManager.getDDCMuteState(for: uid)
         let currentVolume = cachedVolumes[deviceID] ?? 50
         if currentVolume > 0 {
             settingsManager.setDDCSavedVolume(for: uid, to: currentVolume)
@@ -113,6 +308,8 @@ final class DDCController {
     /// Software unmute: restores saved volume.
     func unmute(for deviceID: AudioDeviceID) {
         guard let uid = deviceUIDs[deviceID] else { return }
+        pendingMuteRestores[deviceID] = pendingMuteRestores[deviceID]
+            ?? settingsManager.getDDCMuteState(for: uid)
         let savedVolume = settingsManager.getDDCSavedVolume(for: uid) ?? 50
         settingsManager.setDDCMuteState(for: uid, to: false)
         setVolume(for: deviceID, to: savedVolume)
@@ -128,9 +325,11 @@ final class DDCController {
 
     /// Probes for DDC-capable displays on a background queue, then matches to CoreAudio devices.
     private func probe() {
-        // Cancel pending debounced DDC writes — services will be replaced by re-probe
-        for (_, item) in debounceTimers { item.cancel() }
-        debounceTimers.removeAll()
+        guard let probeGeneration = probeLifecycle.beginProbe() else { return }
+        // Services are about to be replaced, so pending writes must reject first.
+        serviceWritesCancellation.cancel()
+        cancelPendingWrites()
+        guard probeLifecycle.permitsPublication(for: probeGeneration) else { return }
 
         // TODO(Swift 6): This closure captures @MainActor self and runs on ddcQueue.
         // Currently safe because accessed properties are nonisolated or dispatched
@@ -144,9 +343,7 @@ final class DDCController {
             logger.info("DDC probe: found \(discovered.count) DCPAVServiceProxy entries")
             guard !discovered.isEmpty else {
                 Task { @MainActor [weak self] in
-                    self?.ddcBackedDevices = []
-                    self?.services = [:]
-                    self?.onProbeCompleted?()
+                    self?.publishEmptyProbe(generation: probeGeneration)
                 }
                 return
             }
@@ -183,9 +380,7 @@ final class DDCController {
                 logger.info("DDC probe: no audio-capable displays found")
                 // Entries that failed supportsAudioVolume() were already released above
                 Task { @MainActor [weak self] in
-                    self?.ddcBackedDevices = []
-                    self?.services = [:]
-                    self?.onProbeCompleted?()
+                    self?.publishEmptyProbe(generation: probeGeneration)
                 }
                 return
             }
@@ -277,29 +472,67 @@ final class DDCController {
             let matchedUIDsSnapshot = matchedUIDs
             let volumesSnapshot = volumes
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.services = matchedSnapshot
-                self.deviceUIDs = matchedUIDsSnapshot
-                self.ddcBackedDevices = Set(matchedSnapshot.keys)
-
-                // Use persisted volumes if available, otherwise use read values
-                for (deviceID, uid) in matchedUIDsSnapshot {
-                    if let savedVolume = self.settingsManager.getDDCVolume(for: uid) {
-                        self.cachedVolumes[deviceID] = savedVolume
-                        // Restore saved volume to the display
-                        let service = matchedSnapshot[deviceID]
-                        self.ddcQueue.async {
-                            try? service?.setAudioVolume(savedVolume)
-                        }
-                    } else if let readVolume = volumesSnapshot[deviceID] {
-                        self.cachedVolumes[deviceID] = readVolume
-                    }
-                }
-
-                self.logger.info("DDC probe complete: \(matchedSnapshot.count) display(s) matched")
-                self.onProbeCompleted?()
+                self?.publishProbe(
+                    generation: probeGeneration,
+                    services: matchedSnapshot,
+                    deviceUIDs: matchedUIDsSnapshot,
+                    volumes: volumesSnapshot
+                )
             }
         }
+    }
+
+    private func publishEmptyProbe(generation: UInt64) {
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        cancelPendingWrites()
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        ddcBackedDevices = []
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        services = [:]
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        deviceUIDs = [:]
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        cachedVolumes = [:]
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        writeLedger.replaceConfirmedVolumes([:])
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        serviceWritesCancellation = DDCWriteCancellation()
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        onProbeCompleted?()
+    }
+
+    private func publishProbe(
+        generation: UInt64,
+        services discoveredServices: [AudioDeviceID: DDCService],
+        deviceUIDs discoveredDeviceUIDs: [AudioDeviceID: String],
+        volumes discoveredVolumes: [AudioDeviceID: Int]
+    ) {
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        cancelPendingWrites()
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        services = discoveredServices
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        deviceUIDs = discoveredDeviceUIDs
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        ddcBackedDevices = Set(discoveredServices.keys)
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        cachedVolumes = discoveredVolumes
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        writeLedger.replaceConfirmedVolumes(discoveredVolumes)
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        serviceWritesCancellation = DDCWriteCancellation()
+
+        // Use persisted volumes if available, otherwise use read values
+        for (deviceID, uid) in discoveredDeviceUIDs {
+            guard probeLifecycle.permitsPublication(for: generation) else { return }
+            if let savedVolume = settingsManager.getDDCVolume(for: uid) {
+                setVolume(for: deviceID, to: savedVolume)
+            }
+        }
+
+        guard probeLifecycle.permitsPublication(for: generation) else { return }
+        logger.info("DDC probe complete: \(discoveredServices.count) display(s) matched")
+        onProbeCompleted?()
     }
 
     // MARK: - CoreAudio Device Discovery

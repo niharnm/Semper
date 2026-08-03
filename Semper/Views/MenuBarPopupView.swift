@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 struct MenuBarPopupView: View {
     @Bindable var audioEngine: AudioEngine
+    let audioCommands: any AudioCommandDispatching
+    @Bindable var audioActivityStore: AudioActivityStore
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @ObservedObject var updateManager: UpdateManager
 
@@ -109,6 +111,7 @@ struct MenuBarPopupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             popupHeader
+            AudioStatusStrip(store: audioActivityStore)
             ScrollViewReader { proxy in
                 ScrollView {
                     mainContent(scrollProxy: proxy)
@@ -265,7 +268,7 @@ struct MenuBarPopupView: View {
         Menu {
             ForEach(sortedDevices) { device in
                 Button {
-                    audioEngine.setDefaultOutputDevice(device.id)
+                    dispatchPopup(.setDefaultOutput(deviceUID: device.uid))
                 } label: {
                     if device.id == deviceVolumeMonitor.defaultDeviceID {
                         Label(device.name, systemImage: "checkmark")
@@ -296,7 +299,9 @@ struct MenuBarPopupView: View {
         Menu {
             ForEach(sortedInputDevices) { device in
                 Button {
-                    audioEngine.setLockedInputDevice(device)
+                    dispatchPopup(
+                        .setDefaultInput(deviceUID: device.uid, intent: .userPreference)
+                    )
                 } label: {
                     if device.id == deviceVolumeMonitor.defaultInputDeviceID {
                         Label(device.name, systemImage: "checkmark")
@@ -440,6 +445,17 @@ struct MenuBarPopupView: View {
         NSApp.keyWindow?.resignKey()
         NSApp.activate(ignoringOtherApps: true)
         openSettings()
+    }
+
+    private func dispatchPopup(
+        _ command: AudioCommand,
+        source: AudioCommandSource = .popup,
+        transactionID: UUID = UUID()
+    ) {
+        audioCommands.dispatch(
+            command,
+            context: AudioCommandContext(source: source, transactionID: transactionID)
+        )
     }
 
     // MARK: - Main Content
@@ -703,14 +719,16 @@ struct MenuBarPopupView: View {
                         volume: deviceVolumeMonitor.inputVolumes[device.id] ?? 1.0,
                         isMuted: deviceVolumeMonitor.inputMuteStates[device.id] ?? false,
                         onSetDefault: {
-                            audioEngine.setLockedInputDevice(device)
+                            dispatchPopup(
+                                .setDefaultInput(deviceUID: device.uid, intent: .userPreference)
+                            )
                         },
                         onVolumeChange: { volume in
-                            deviceVolumeMonitor.setInputVolume(for: device.id, to: volume)
+                            dispatchPopup(.setInputVolume(deviceUID: device.uid, volume: volume))
                         },
                         onMuteToggle: {
                             let currentMute = deviceVolumeMonitor.inputMuteStates[device.id] ?? false
-                            deviceVolumeMonitor.setInputMute(for: device.id, to: !currentMute)
+                            dispatchPopup(.setInputMute(deviceUID: device.uid, muted: !currentMute))
                         },
                         isFocused: hasKeyboardEngaged && selectedRow == .device(uid: device.uid),
                         iconOverrideSymbol: audioEngine.settingsManager.getDeviceIconOverride(for: device.uid)
@@ -734,18 +752,18 @@ struct MenuBarPopupView: View {
                         volumeBackend: audioEngine.outputVolumeBackend(for: device.id),
                         capabilities: audioEngine.outputCapabilities(for: device),
                         onSetDefault: {
-                            audioEngine.setDefaultOutputDevice(device.id)
+                            dispatchPopup(.setDefaultOutput(deviceUID: device.uid))
                         },
                         onVolumeChange: { volume in
-                            audioEngine.setMasterOutputVolume(for: device, to: volume)
+                            dispatchPopup(.setOutputMasterGain(deviceUID: device.uid, gain: volume))
                         },
                         onMuteToggle: {
                             let currentMute = deviceVolumeMonitor.muteStates[device.id] ?? false
-                            deviceVolumeMonitor.setMute(for: device.id, to: !currentMute)
+                            dispatchPopup(.setOutputMute(deviceUID: device.uid, muted: !currentMute))
                         },
                         balance: audioEngine.outputBalance(for: device.uid),
                         onBalanceChange: { balance in
-                            audioEngine.setOutputBalance(for: device.uid, to: balance)
+                            dispatchPopup(.setOutputBalance(deviceUID: device.uid, balance: balance))
                         },
                         getStereoAudioLevel: {
                             audioEngine.outputStereoAudioLevel(for: device.uid)
@@ -1082,7 +1100,7 @@ struct MenuBarPopupView: View {
                 routeLifecycle: audioEngine.routeLifecycle(for: app),
                 boost: audioEngine.getBoost(for: app),
                 onBoostChange: { boost in
-                    audioEngine.setBoost(for: app, to: boost)
+                    dispatchPopup(.setAppBoost(target: .active(app), boost: boost))
                 },
                 getAudioLevel: { audioEngine.getAudioLevel(for: app) },
                 isPopupVisible: isPopupVisible,
@@ -1091,22 +1109,32 @@ struct MenuBarPopupView: View {
                         "first_app_volume_changed",
                         for: .popupEmptyStateGuidance
                     )
-                    audioEngine.setVolume(for: app, to: volume)
+                    dispatchPopup(
+                        .setAppVolume(target: .active(app), volume: volume)
+                    )
                 },
                 onMuteChange: { muted in
-                    audioEngine.setMute(for: app, to: muted)
+                    dispatchPopup(.setAppMute(target: .active(app), muted: muted))
                 },
                 onDeviceSelected: { newDeviceUID in
-                    audioEngine.setDevice(for: app, deviceUID: newDeviceUID)
+                    dispatchPopup(
+                        .setAppDevice(target: .active(app), deviceUID: newDeviceUID)
+                    )
                 },
                 onDevicesSelected: { uids in
-                    audioEngine.setSelectedDeviceUIDs(for: app, to: uids)
+                    dispatchPopup(
+                        .setAppDevices(target: .active(app), deviceUIDs: uids)
+                    )
                 },
                 onDeviceModeChange: { mode in
-                    audioEngine.setDeviceSelectionMode(for: app, to: mode)
+                    dispatchPopup(
+                        .setAppDeviceMode(target: .active(app), mode: mode)
+                    )
                 },
                 onSelectFollowDefault: {
-                    audioEngine.setDevice(for: app, deviceUID: nil)
+                    dispatchPopup(
+                        .setAppDevice(target: .active(app), deviceUID: nil)
+                    )
                 },
                 onAppActivate: {
                     activateApp(pid: app.id, bundleID: app.bundleID)
@@ -1133,11 +1161,15 @@ struct MenuBarPopupView: View {
                 },
                 isEQExpanded: expandedRowID == displayableApp.id,
                 onEQToggle: {
-                    toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
+                    toggleEQ(
+                        for: displayableApp.id,
+                        target: .active(app),
+                        scrollProxy: scrollProxy
+                    )
                 },
-                isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id)
+                isFocused: hasKeyboardEngaged && selectedRow == .app(target: .active(app))
             )
-            .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
+            .id(PopupKeyboardNavModel.RowID.app(target: .active(app)))
     }
 
     /// Row for a pinned inactive app (not currently producing audio)
@@ -1159,25 +1191,25 @@ struct MenuBarPopupView: View {
             isMuted: audioEngine.getMuteForInactive(identifier: identifier),
             boost: audioEngine.getBoostForInactive(identifier: identifier),
             onBoostChange: { boost in
-                audioEngine.setBoostForInactive(identifier: identifier, to: boost)
+                dispatchPopup(.setAppBoost(target: .persisted(identifier), boost: boost))
             },
             onVolumeChange: { volume in
-                audioEngine.setVolumeForInactive(identifier: identifier, to: volume)
+                dispatchPopup(.setAppVolume(target: .persisted(identifier), volume: volume))
             },
             onMuteChange: { muted in
-                audioEngine.setMuteForInactive(identifier: identifier, to: muted)
+                dispatchPopup(.setAppMute(target: .persisted(identifier), muted: muted))
             },
             onDeviceSelected: { newDeviceUID in
-                audioEngine.setDeviceRoutingForInactive(identifier: identifier, deviceUID: newDeviceUID)
+                dispatchPopup(.setAppDevice(target: .persisted(identifier), deviceUID: newDeviceUID))
             },
             onDevicesSelected: { uids in
-                audioEngine.setSelectedDeviceUIDsForInactive(identifier: identifier, to: uids)
+                dispatchPopup(.setAppDevices(target: .persisted(identifier), deviceUIDs: uids))
             },
             onDeviceModeChange: { mode in
-                audioEngine.setDeviceSelectionModeForInactive(identifier: identifier, to: mode)
+                dispatchPopup(.setAppDeviceMode(target: .persisted(identifier), mode: mode))
             },
             onSelectFollowDefault: {
-                audioEngine.setDeviceRoutingForInactive(identifier: identifier, deviceUID: nil)
+                dispatchPopup(.setAppDevice(target: .persisted(identifier), deviceUID: nil))
             },
             onAppActivate: {
                 activateApp(pid: nil, bundleID: info.bundleID)
@@ -1204,15 +1236,23 @@ struct MenuBarPopupView: View {
             },
             isEQExpanded: expandedRowID == displayableApp.id,
             onEQToggle: {
-                toggleEQ(for: displayableApp.id, scrollProxy: scrollProxy)
+                toggleEQ(
+                    for: displayableApp.id,
+                    target: .persisted(identifier),
+                    scrollProxy: scrollProxy
+                )
             },
-            isFocused: hasKeyboardEngaged && selectedRow == .app(persistenceID: displayableApp.id)
+            isFocused: hasKeyboardEngaged && selectedRow == .app(target: .persisted(identifier))
         )
-        .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
+        .id(PopupKeyboardNavModel.RowID.app(target: .persisted(identifier)))
     }
 
     /// Toggle EQ panel for an app (shared between active and inactive rows)
-    private func toggleEQ(for appID: String, scrollProxy: ScrollViewProxy) {
+    private func toggleEQ(
+        for appID: String,
+        target: AudioAppCommandTarget,
+        scrollProxy: ScrollViewProxy
+    ) {
         guard !isEQAnimating else { return }
         isEQAnimating = true
 
@@ -1224,7 +1264,7 @@ struct MenuBarPopupView: View {
                 expandedRowID = appID
             }
             if isExpanding {
-                scrollProxy.scrollTo(PopupKeyboardNavModel.RowID.app(persistenceID: appID), anchor: .top)
+                scrollProxy.scrollTo(PopupKeyboardNavModel.RowID.app(target: target), anchor: .top)
             }
         }
 
@@ -1411,7 +1451,7 @@ struct MenuBarPopupView: View {
         let activeDevices = showingInputDevices ? sortedInputDevices : sortedDevices
         navModel.syncOrder(
             activeDevices: activeDevices,
-            appPersistenceIDs: audioEngine.displayableApps.map(\.id),
+            appTargets: audioEngine.displayableApps.map(\.commandTarget),
             isEditingPriority: isEditingDevicePriority
         )
     }
@@ -1530,25 +1570,53 @@ struct MenuBarPopupView: View {
         let step = shift ? baseStep * 2.0 : baseStep
         let delta = step * Double(direction)
         switch target {
-        case .app(let persistenceID):
-            if let app = audioEngine.apps.first(where: { $0.persistenceIdentifier == persistenceID }) {
+        case .app(let appTarget):
+            let transactionID = UUID()
+            if let processID = appTarget.processID,
+               let app = audioEngine.apps.first(where: {
+                   $0.id == processID && $0.persistenceIdentifier == appTarget.identifier
+               }) {
                 applyAppVolumeStep(
                     currentGain: audioEngine.currentVolume(for: app),
                     currentMute: audioEngine.isMuted(for: app),
                     direction: direction,
                     delta: delta,
-                    setGain: { audioEngine.setVolume(for: app, to: $0) },
-                    setMute: { audioEngine.setMute(for: app, to: $0) }
+                    setGain: {
+                        dispatchPopup(
+                            .setAppVolume(target: appTarget, volume: $0),
+                            source: .popupKeyboard,
+                            transactionID: transactionID
+                        )
+                    },
+                    setMute: {
+                        dispatchPopup(
+                            .setAppMute(target: appTarget, muted: $0),
+                            source: .popupKeyboard,
+                            transactionID: transactionID
+                        )
+                    }
                 )
                 return .handled
             }
             applyAppVolumeStep(
-                currentGain: audioEngine.getVolumeForInactive(identifier: persistenceID),
-                currentMute: audioEngine.getMuteForInactive(identifier: persistenceID),
+                currentGain: audioEngine.getVolumeForInactive(identifier: appTarget.identifier),
+                currentMute: audioEngine.getMuteForInactive(identifier: appTarget.identifier),
                 direction: direction,
                 delta: delta,
-                setGain: { audioEngine.setVolumeForInactive(identifier: persistenceID, to: $0) },
-                setMute: { audioEngine.setMuteForInactive(identifier: persistenceID, to: $0) }
+                setGain: {
+                    dispatchPopup(
+                        .setAppVolume(target: appTarget, volume: $0),
+                        source: .popupKeyboard,
+                        transactionID: transactionID
+                    )
+                },
+                setMute: {
+                    dispatchPopup(
+                        .setAppMute(target: appTarget, muted: $0),
+                        source: .popupKeyboard,
+                        transactionID: transactionID
+                    )
+                }
             )
             return .handled
         case .device(let uid):
@@ -1558,14 +1626,20 @@ struct MenuBarPopupView: View {
                 }
                 let current = Double(deviceVolumeMonitor.inputVolumes[device.id] ?? 1.0)
                 let next = Float(max(0.0, min(1.0, current + delta)))
-                deviceVolumeMonitor.setInputVolume(for: device.id, to: next)
+                dispatchPopup(
+                    .setInputVolume(deviceUID: uid, volume: next),
+                    source: .popupKeyboard
+                )
             } else {
                 guard let device = sortedDevices.first(where: { $0.uid == uid }) else {
                     return .ignored
                 }
                 let current = Double(deviceVolumeMonitor.volumes[device.id] ?? 1.0)
                 let next = Float(max(0.0, min(1.0, current + delta)))
-                deviceVolumeMonitor.setVolume(for: device.id, to: next)
+                dispatchPopup(
+                    .setOutputVolume(deviceUID: uid, volume: next),
+                    source: .popupKeyboard
+                )
             }
             return .handled
         }
@@ -1598,13 +1672,22 @@ struct MenuBarPopupView: View {
     private func toggleMute(for target: PopupKeyboardNavModel.RowID?) -> KeyPress.Result {
         guard let target else { return .ignored }
         switch target {
-        case .app(let persistenceID):
-            if let app = audioEngine.apps.first(where: { $0.persistenceIdentifier == persistenceID }) {
-                audioEngine.toggleMute(for: app)
+        case .app(let appTarget):
+            if let processID = appTarget.processID,
+               let app = audioEngine.apps.first(where: {
+                   $0.id == processID && $0.persistenceIdentifier == appTarget.identifier
+               }) {
+                dispatchPopup(
+                    .setAppMute(target: appTarget, muted: !audioEngine.isMuted(for: app)),
+                    source: .popupKeyboard
+                )
                 return .handled
             }
-            let current = audioEngine.getMuteForInactive(identifier: persistenceID)
-            audioEngine.setMuteForInactive(identifier: persistenceID, to: !current)
+            let current = audioEngine.getMuteForInactive(identifier: appTarget.identifier)
+            dispatchPopup(
+                .setAppMute(target: appTarget, muted: !current),
+                source: .popupKeyboard
+            )
             return .handled
         case .device(let uid):
             if showingInputDevices {
@@ -1612,13 +1695,19 @@ struct MenuBarPopupView: View {
                     return .ignored
                 }
                 let current = deviceVolumeMonitor.inputMuteStates[device.id] ?? false
-                deviceVolumeMonitor.setInputMute(for: device.id, to: !current)
+                dispatchPopup(
+                    .setInputMute(deviceUID: uid, muted: !current),
+                    source: .popupKeyboard
+                )
             } else {
                 guard let device = sortedDevices.first(where: { $0.uid == uid }) else {
                     return .ignored
                 }
                 let current = deviceVolumeMonitor.muteStates[device.id] ?? false
-                deviceVolumeMonitor.setMute(for: device.id, to: !current)
+                dispatchPopup(
+                    .setOutputMute(deviceUID: uid, muted: !current),
+                    source: .popupKeyboard
+                )
             }
             return .handled
         }
@@ -1629,21 +1718,27 @@ struct MenuBarPopupView: View {
         switch target {
         case .device(let uid):
             if showingInputDevices {
-                guard let device = sortedInputDevices.first(where: { $0.uid == uid }) else {
+                guard sortedInputDevices.contains(where: { $0.uid == uid }) else {
                     return .ignored
                 }
-                audioEngine.setLockedInputDevice(device)
+                dispatchPopup(
+                    .setDefaultInput(deviceUID: uid, intent: .userPreference),
+                    source: .popupKeyboard
+                )
             } else {
-                guard let device = sortedDevices.first(where: { $0.uid == uid }) else {
+                guard sortedDevices.contains(where: { $0.uid == uid }) else {
                     return .ignored
                 }
-                audioEngine.setDefaultOutputDevice(device.id)
+                dispatchPopup(.setDefaultOutput(deviceUID: uid), source: .popupKeyboard)
             }
             NSApp.keyWindow?.resignKey()
             return .handled
-        case .app(let persistenceID):
+        case .app(let appTarget):
+            let appID = audioEngine.displayableApps.first {
+                $0.commandTarget == appTarget
+            }?.id ?? appTarget.identifier
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                expandedRowID = (expandedRowID == persistenceID) ? nil : persistenceID
+                expandedRowID = (expandedRowID == appID) ? nil : appID
             }
             return .handled
         }
