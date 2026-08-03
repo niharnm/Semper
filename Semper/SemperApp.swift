@@ -48,6 +48,7 @@ struct SemperApp: App {
     @State private var audioEngine: AudioEngine
     @State private var audioCommands: AudioCommandDispatcher
     @State private var audioActivityStore: AudioActivityStore
+    @State private var callMode: CallModeCoordinator
     @State private var accessibility: AccessibilityPermissionService
     @State private var mediaKeyStatus: MediaKeyStatus
     @State private var popupVisibility: PopupVisibilityService
@@ -75,6 +76,7 @@ struct SemperApp: App {
                 settings: audioEngine.settingsManager,
                 audioEngine: audioEngine,
                 audioCommands: audioCommands,
+                callMode: callMode,
                 deviceVolumeMonitor: audioEngine.deviceVolumeMonitor as! DeviceVolumeMonitor,
                 accessibility: accessibility,
                 mediaKeyStatus: mediaKeyStatus,
@@ -97,6 +99,7 @@ struct SemperApp: App {
             audioEngine: audioEngine,
             audioCommands: audioCommands,
             audioActivityStore: audioActivityStore,
+            callMode: callMode,
             deviceVolumeMonitor: audioEngine.deviceVolumeMonitor as! DeviceVolumeMonitor,
             updateManager: updateManager,
             permission: audioEngine.permission,
@@ -145,6 +148,33 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
+        let callMode = CallModeCoordinator(
+            settings: settings,
+            overlayStore: engine.modeOverlayStore,
+            activityStore: activityStore,
+            currentInputDeviceUID: { [weak engine] in
+                engine?.deviceVolumeMonitor.defaultInputDeviceUID
+            },
+            claimInputDevice: { [weak engine] deviceUID in
+                engine?.setInputPolicyRequest(deviceUID: deviceUID, owner: .callMode) ?? false
+            },
+            releaseInputDevice: { [weak engine] in
+                engine?.removeInputPolicyRequest(owner: .callMode)
+            },
+            readAlertVolume: { [weak engine] in
+                engine?.deviceVolumeMonitor.alertVolume ?? 1
+            },
+            writeAlertVolume: { [weak engine] volume in
+                engine?.deviceVolumeMonitor.setAlertVolume(volume)
+            }
+        )
+        engine.onCallModeActivitiesChanged = { [weak callMode] activities in
+            callMode?.handleActivities(activities)
+        }
+        engine.onAudioProcessingWillStop = { [weak callMode] in
+            callMode?.shutdown()
+        }
+        _callMode = State(initialValue: callMode)
 
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.
@@ -311,12 +341,13 @@ struct SemperApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, engine, monitor, accessibilityService, hud, coordinator] _ in
+        ) { [settings, engine, callMode, monitor, accessibilityService, hud, coordinator] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
                 accessibilityService.stop()
                 hud.shutdown()
+                callMode.shutdown()
                 engine.shutdown()
                 settings.flushSync()
             }

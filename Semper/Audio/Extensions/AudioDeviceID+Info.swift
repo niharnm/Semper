@@ -42,6 +42,10 @@ nonisolated extension AudioObjectID {
         (try? readBool(kAudioProcessPropertyIsRunning)) ?? false
     }
 
+    func readProcessIsRunningInput() -> Bool {
+        (try? readBool(kAudioProcessPropertyIsRunningInput)) ?? false
+    }
+
     func readProcessBundleID() -> String? {
         try? readString(kAudioProcessPropertyBundleID)
     }
