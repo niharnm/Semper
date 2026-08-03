@@ -9,13 +9,21 @@ enum VolumeControlTier: String, Codable, Equatable {
 @MainActor
 protocol DeviceVolumeProviding: AnyObject {
     var defaultDeviceID: AudioDeviceID { get }
+    var defaultInputDeviceID: AudioDeviceID { get }
     var defaultDeviceUID: String? { get }
     var defaultInputDeviceUID: String? { get }
     var volumes: [AudioDeviceID: Float] { get }
     var muteStates: [AudioDeviceID: Bool] { get }
+    var inputVolumes: [AudioDeviceID: Float] { get }
+    var inputMuteStates: [AudioDeviceID: Bool] { get }
 
     var onVolumeChanged: ((AudioDeviceID, Float) -> Void)? { get set }
     var onMuteChanged: ((AudioDeviceID, Bool) -> Void)? { get set }
+    var onInputVolumeChanged: ((AudioDeviceID, Float) -> Void)? { get set }
+    var onInputMuteChanged: ((AudioDeviceID, Bool) -> Void)? { get set }
+    var onOutputWriteFailed: ((AudioDeviceID) -> Void)? { get set }
+    /// Called after a delayed DDC write publishes its applied or restored state.
+    var onOutputWriteCompleted: ((AudioDeviceID, Bool) -> Void)? { get set }
     var onDefaultDeviceChanged: ((String) -> Void)? { get set }
     var onDefaultInputDeviceChanged: ((String) -> Void)? { get set }
 
@@ -29,6 +37,9 @@ protocol DeviceVolumeProviding: AnyObject {
 
     /// Writes a mute state through whichever backend this device uses.
     func setMute(for deviceID: AudioDeviceID, to muted: Bool)
+
+    func setInputVolume(for deviceID: AudioDeviceID, to volume: Float)
+    func setInputMute(for deviceID: AudioDeviceID, to muted: Bool)
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier
 

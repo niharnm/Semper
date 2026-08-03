@@ -58,6 +58,7 @@ final class ShortcutsRegistry {
     private let popupController: any MenuBarPopupControlling
     private let resolver: any TargetAppResolving
     private let audioEngine: any AudioEngineDispatching
+    private let audioCommands: any AudioCommandDispatching
     private let hud: any PerAppHUDPresenting
     private var didStart = false
     private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
@@ -74,12 +75,14 @@ final class ShortcutsRegistry {
         popupController: any MenuBarPopupControlling,
         resolver: any TargetAppResolving,
         audioEngine: any AudioEngineDispatching,
+        audioCommands: any AudioCommandDispatching,
         hud: any PerAppHUDPresenting
     ) {
         self.settings = settings
         self.popupController = popupController
         self.resolver = resolver
         self.audioEngine = audioEngine
+        self.audioCommands = audioCommands
         self.hud = hud
     }
 
@@ -148,25 +151,46 @@ final class ShortcutsRegistry {
 
         let currentMute = audioEngine.isMuted(for: app)
         let willBeSilent = nextSlider <= 0.001
+        let transactionID = UUID()
+        let context = AudioCommandContext(
+            source: .globalShortcut,
+            reason: .shortcut,
+            transactionID: transactionID
+        )
 
         if direction > 0 {
             if currentMute {
-                audioEngine.setMute(for: app, to: false)
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: false),
+                    context: context
+                )
             }
         } else {
             if currentMute && !willBeSilent {
-                audioEngine.setMute(for: app, to: false)
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: false),
+                    context: context
+                )
             } else if !currentMute && willBeSilent {
-                audioEngine.setMute(for: app, to: true)
+                audioCommands.dispatch(
+                    .setAppMute(target: .active(app), muted: true),
+                    context: context
+                )
             }
         }
-        audioEngine.setVolume(for: app, to: nextGain)
+        audioCommands.dispatch(
+            .setAppVolume(target: .active(app), volume: nextGain),
+            context: context
+        )
         hud.showPerAppVolumeHUD(app: app, sliderFraction: nextSlider)
     }
 
     private func toggleTargetMute() {
         guard let app = resolveTargetAudioApp() else { return }
-        audioEngine.toggleMute(for: app)
+        audioCommands.dispatch(
+            .setAppMute(target: .active(app), muted: !audioEngine.isMuted(for: app)),
+            context: AudioCommandContext(source: .globalShortcut, reason: .shortcut)
+        )
         hud.showPerAppMuteHUD(app: app, isMuted: audioEngine.isMuted(for: app))
     }
 

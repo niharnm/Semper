@@ -11,9 +11,18 @@ enum DisplayableApp: Identifiable {
     var id: String {
         switch self {
         case .active(let app):
-            return app.persistenceIdentifier
+            return "active:\(app.id):\(app.persistenceIdentifier)"
         case .pinnedInactive(let info):
-            return info.persistenceIdentifier
+            return "pinned:\(info.persistenceIdentifier)"
+        }
+    }
+
+    var commandTarget: AudioAppCommandTarget {
+        switch self {
+        case .active(let app):
+            return .active(app)
+        case .pinnedInactive(let info):
+            return .persisted(info.persistenceIdentifier)
         }
     }
 
