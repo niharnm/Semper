@@ -7,6 +7,7 @@ struct SettingsRootView: View {
     @Bindable var settings: SettingsManager
     @Bindable var audioEngine: AudioEngine
     let audioCommands: any AudioCommandDispatching
+    @Bindable var callMode: CallModeCoordinator
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
@@ -175,6 +176,7 @@ struct SettingsRootView: View {
             GeneralTab(
                 settings: settings,
                 onResetAll: {
+                    callMode.shutdown()
                     audioEngine.handleSettingsReset()
                     deviceVolumeMonitor.setSystemFollowDefault()
                 }
@@ -184,6 +186,7 @@ struct SettingsRootView: View {
                 settings: settings,
                 audioEngine: audioEngine,
                 audioCommands: audioCommands,
+                callMode: callMode,
                 deviceVolumeMonitor: deviceVolumeMonitor
             )
         case .shortcuts:

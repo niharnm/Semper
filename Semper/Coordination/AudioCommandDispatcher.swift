@@ -901,8 +901,10 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
                 let previousPreferredUID = engine.settingsManager.preferredInputDeviceUID
                 guard engine.setLockedInputDevice(device),
                       readDefaultInputDevice() == device.id else {
-                    engine.settingsManager.setLockedInputDeviceUID(previousLockedUID)
-                    engine.settingsManager.setPreferredInputDeviceUID(previousPreferredUID)
+                    engine.restoreInputDevicePolicy(
+                        lockedUID: previousLockedUID,
+                        preferredUID: previousPreferredUID
+                    )
                     return .rejected(.writeFailed)
                 }
             case .temporary:

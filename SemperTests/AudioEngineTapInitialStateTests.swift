@@ -866,6 +866,39 @@ struct AudioEngineTapInitialStateTests {
         #expect(fix.settings.preferredInputDeviceUID == "input-preferred")
     }
 
+    @Test("An input choice during Call Mode remains selected after the mode ends")
+    func preferredInputOverridesCallMode() {
+        let fix = makeFixture()
+        let callInput = AudioDevice(
+            id: AudioDeviceID(703),
+            uid: "input-call",
+            name: "Call Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(704),
+            uid: "input-user",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(callInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = callInput.id
+        fix.deviceVolume.defaultInputDeviceUID = callInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(deviceUID: callInput.uid, owner: .callMode))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+
+        fix.engine.removeInputPolicyRequest(owner: .callMode)
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.lockedInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
     @Test("A newly discovered helper process rebuilds the app tap")
     func helperMembershipChangeRebuildsTap() async throws {
         let fix = makeFixture()

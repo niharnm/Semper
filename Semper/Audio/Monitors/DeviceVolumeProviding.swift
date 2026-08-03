@@ -16,6 +16,7 @@ protocol DeviceVolumeProviding: AnyObject {
     var muteStates: [AudioDeviceID: Bool] { get }
     var inputVolumes: [AudioDeviceID: Float] { get }
     var inputMuteStates: [AudioDeviceID: Bool] { get }
+    var alertVolume: Float { get }
 
     var onVolumeChanged: ((AudioDeviceID, Float) -> Void)? { get set }
     var onMuteChanged: ((AudioDeviceID, Bool) -> Void)? { get set }
@@ -40,6 +41,7 @@ protocol DeviceVolumeProviding: AnyObject {
 
     func setInputVolume(for deviceID: AudioDeviceID, to volume: Float)
     func setInputMute(for deviceID: AudioDeviceID, to muted: Bool)
+    func setAlertVolume(_ volume: Float)
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier
     func confirmedOutputVolume(for deviceID: AudioDeviceID) -> Float?
@@ -64,6 +66,10 @@ protocol DeviceVolumeProviding: AnyObject {
 }
 
 extension DeviceVolumeProviding {
+    var alertVolume: Float { 1 }
+
+    func setAlertVolume(_ volume: Float) {}
+
     func confirmedOutputVolume(for deviceID: AudioDeviceID) -> Float? {
         volumes[deviceID]
     }

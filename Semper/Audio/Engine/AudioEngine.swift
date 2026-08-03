@@ -37,6 +37,8 @@ final class AudioEngine {
     let modeOverlayStore: AudioModeOverlayStore
     var onCommandValueObserved: ((AudioControlKey, AudioControlValue) -> Void)?
     var onCommandWriteRejected: ((AudioControlKey) -> Void)?
+    var onCallModeActivitiesChanged: (([CallModeAppActivity]) -> Void)?
+    var onAudioProcessingWillStop: (() -> Void)?
     private(set) var audioProcessingState: AudioProcessingState = .active
     private(set) var audioRecoveryDiagnostics = AudioRecoveryDiagnostics()
 
@@ -61,6 +63,8 @@ final class AudioEngine {
     private var pendingOutputVolumeLimitChanges: [String: PendingOutputVolumeLimitChange] = [:]
     private var pendingDDCOutputCommands: [AudioDeviceID: PendingDDCOutputCommand] = [:]
     private var outputBalances: [String: Float] = [:]
+    private var inputPolicyCoordinator = InputPolicyCoordinator()
+    private var explicitInputOverrideOwner: InputPolicyOwner?
     private var appRouteLifecycles: [pid_t: AppRouteLifecycle] = [:]
     private struct PendingAppRouteOperation {
         let generation: UInt64
@@ -617,8 +621,7 @@ final class AudioEngine {
             self?.restoreConfirmedDefault()
         }
         inputEchoTracker.onTimeout = { [weak self] _ in
-            guard let self, self.settingsManager.appSettings.lockInputDevice else { return }
-            self.restoreLockedInputDevice()
+            self?.applyResolvedInputPolicy()
         }
 
         // Wire callbacks — needed for both test and production mode
@@ -660,6 +663,9 @@ final class AudioEngine {
                 self.lastConfirmedDefaultUID = self.deviceVolumeMonitor.defaultDeviceUID
                 if manager.appSettings.lockInputDevice {
                     self.restoreLockedInputDevice()
+                } else {
+                    self.synchronizeInputLockPolicy()
+                    self.applyResolvedInputPolicy()
                 }
             }
         }
@@ -881,6 +887,15 @@ final class AudioEngine {
     }
 
     private func handleAppsChanged(_ updatedApps: [AudioApp]) {
+        onCallModeActivitiesChanged?(updatedApps.map {
+            CallModeAppActivity(
+                identifier: $0.persistenceIdentifier,
+                displayName: $0.name,
+                isUsingInput: $0.processObjectIDs.contains {
+                    $0.readProcessIsRunningInput()
+                }
+            )
+        })
         guard canCreateProcessTaps else { return }
         applyPersistedSettings()
         scheduleStaleCleanup()
@@ -1158,9 +1173,11 @@ final class AudioEngine {
             startAudioProcessingTransitionIfNeeded()
         }
 
-        // Restore locked input device if feature is enabled
         if settingsManager.appSettings.lockInputDevice {
             restoreLockedInputDevice()
+        } else {
+            synchronizeInputLockPolicy()
+            applyResolvedInputPolicy()
         }
 
         logger.info("AudioEngine started")
@@ -1168,6 +1185,7 @@ final class AudioEngine {
 
     func stop() {
         isEngineStopped = true
+        onAudioProcessingWillStop?()
         audioProcessingTransitionGeneration &+= 1
         audioProcessingTransitionTask?.cancel()
         audioProcessingTransitionTask = nil
@@ -1372,6 +1390,7 @@ final class AudioEngine {
 
     private func tearDownAudioProcessing(explicitBypass: Bool) async -> Bool {
         audioProcessingState = .bypassing
+        onAudioProcessingWillStop?()
         let healthTask = healthMonitorTask
         stopHealthMonitor()
         processMonitor.stop()
@@ -1475,6 +1494,7 @@ final class AudioEngine {
         }
 
         processMonitor.start()
+        handleAppsChanged(processMonitor.activeApps)
         applyPersistedSettings()
         startHealthMonitor()
         guard persistAudioProcessingMode(.active) else {
@@ -3447,17 +3467,72 @@ final class AudioEngine {
 
     // MARK: - Input Device Lock
 
+    @discardableResult
+    func setInputPolicyRequest(deviceUID: String, owner: InputPolicyOwner) -> Bool {
+        guard deviceMonitor.inputDevices.contains(where: { $0.uid == deviceUID }) else {
+            return false
+        }
+        inputPolicyCoordinator.setRequest(deviceUID: deviceUID, owner: owner)
+        guard applyResolvedInputPolicy() else {
+            inputPolicyCoordinator.removeRequest(owner: owner)
+            return false
+        }
+        return true
+    }
+
+    func removeInputPolicyRequest(owner: InputPolicyOwner) {
+        inputPolicyCoordinator.removeRequest(owner: owner)
+        if explicitInputOverrideOwner == owner {
+            inputPolicyCoordinator.removeRequest(owner: .explicitUser)
+            explicitInputOverrideOwner = nil
+        }
+        applyResolvedInputPolicy()
+    }
+
+    private func synchronizeInputLockPolicy() {
+        guard settingsManager.appSettings.lockInputDevice,
+              let lockedUID = settingsManager.lockedInputDeviceUID else {
+            inputPolicyCoordinator.removeRequest(owner: .inputLock)
+            return
+        }
+        inputPolicyCoordinator.setRequest(deviceUID: lockedUID, owner: .inputLock)
+    }
+
+    @discardableResult
+    private func applyResolvedInputPolicy() -> Bool {
+        let availableUIDs = Set(deviceMonitor.inputDevices.map(\.uid))
+        let resolution = inputPolicyCoordinator.resolve(
+            availableUIDs: availableUIDs,
+            currentUID: deviceVolumeMonitor.defaultInputDeviceUID
+        )
+        guard let targetUID = resolution.deviceUID else { return false }
+        guard targetUID != deviceVolumeMonitor.defaultInputDeviceUID else { return true }
+        guard let target = deviceMonitor.inputDevice(for: targetUID),
+              deviceVolumeMonitor.setDefaultInputDevice(target.id) else {
+            return false
+        }
+        inputEchoTracker.increment(targetUID)
+        logger.info("Applied input policy for \(target.name)")
+        return true
+    }
+
     /// Handles changes to the default input device.
     /// Uses state machine to distinguish auto-switch (from device connection) vs user action.
     private func handleDefaultInputDeviceChanged(_ newDefaultInputUID: String) {
         // State machine: if we're waiting for macOS to auto-switch after input device connect,
         // check whether this change is the expected auto-switch or user intent.
         if case .pendingAutoSwitch(let pendingUID, let timeoutTask) = inputPriorityState {
-            if newDefaultInputUID == pendingUID, settingsManager.appSettings.lockInputDevice {
+            let resolution = inputPolicyCoordinator.resolve(
+                availableUIDs: Set(deviceMonitor.inputDevices.map(\.uid)),
+                currentUID: newDefaultInputUID
+            )
+            if newDefaultInputUID == pendingUID,
+               let policyUID = resolution.deviceUID,
+               policyUID != newDefaultInputUID {
                 // Case 1: macOS auto-switched to the newly connected device — restore locked device.
                 // Re-enter PENDING_AUTOSWITCH because macOS may auto-switch multiple times.
                 timeoutTask.cancel()
-                restoreLockedInputDevice()
+                applyResolvedInputPolicy()
                 let transport = deviceMonitor.inputDevice(for: pendingUID)?.id.readTransportType()
                 let timeout = (transport == .bluetooth || transport == .bluetoothLE)
                     ? btAutoSwitchGracePeriod
@@ -3494,16 +3569,7 @@ final class AudioEngine {
             return
         }
 
-        // If lock is disabled, let system control input freely
-        guard settingsManager.appSettings.lockInputDevice else { return }
-
-        // Restore the locked device — any change outside Semper's UI is either
-        // macOS auto-switch or System Settings, and the lock should hold either way.
-        // Users change the lock via Semper's UI (setLockedInputDevice).
-        guard let lockedUID = settingsManager.lockedInputDeviceUID else { return }
-        if newDefaultInputUID != lockedUID {
-            restoreLockedInputDevice()
-        }
+        applyResolvedInputPolicy()
     }
 
     /// Restores the locked input device, or falls back to built-in mic if unavailable.
@@ -3514,14 +3580,8 @@ final class AudioEngine {
             lockToBuiltInMicrophone()
             return
         }
-
-        // Don't restore if already on the locked device
-        guard deviceVolumeMonitor.defaultInputDeviceUID != lockedUID else { return }
-
-        logger.info("Restoring locked input device: \(lockedDevice.name)")
-        if deviceVolumeMonitor.setDefaultInputDevice(lockedDevice.id) {
-            inputEchoTracker.increment(lockedDevice.uid)
-        }
+        inputPolicyCoordinator.setRequest(deviceUID: lockedDevice.uid, owner: .inputLock)
+        applyResolvedInputPolicy()
     }
 
     /// Locks the input device to the built-in microphone.
@@ -3542,9 +3602,8 @@ final class AudioEngine {
     private func applyInputDeviceLock(_ device: AudioDevice) {
         logger.info("Locking input device to: \(device.name)")
         settingsManager.setLockedInputDeviceUID(device.uid)
-        if deviceVolumeMonitor.setDefaultInputDevice(device.id) {
-            inputEchoTracker.increment(device.uid)
-        }
+        inputPolicyCoordinator.setRequest(deviceUID: device.uid, owner: .inputLock)
+        applyResolvedInputPolicy()
     }
 
     /// Called when the user toggles lockInputDevice ON in settings.
@@ -3557,6 +3616,12 @@ final class AudioEngine {
         logger.info("Input lock enabled, locking to current default: \(device.name)")
         settingsManager.setLockedInputDeviceUID(device.uid)
         settingsManager.setPreferredInputDeviceUID(device.uid)
+        inputPolicyCoordinator.setRequest(deviceUID: device.uid, owner: .inputLock)
+    }
+
+    func handleInputLockDisabled() {
+        inputPolicyCoordinator.removeRequest(owner: .inputLock)
+        applyResolvedInputPolicy()
     }
 
     /// Called when user explicitly selects an input device (via Semper UI).
@@ -3565,10 +3630,29 @@ final class AudioEngine {
     func setLockedInputDevice(_ device: AudioDevice) -> Bool {
         logger.info("User locked input device to: \(device.name)")
 
-        guard deviceVolumeMonitor.setDefaultInputDevice(device.id) else { return false }
+        let previousOwner = inputPolicyCoordinator.resolve(
+            availableUIDs: Set(deviceMonitor.inputDevices.map(\.uid)),
+            currentUID: deviceVolumeMonitor.defaultInputDeviceUID
+        ).owner
+        guard setInputPolicyRequest(deviceUID: device.uid, owner: .explicitUser) else {
+            return false
+        }
         settingsManager.setLockedInputDeviceUID(device.uid)
         settingsManager.setPreferredInputDeviceUID(device.uid)
-        inputEchoTracker.increment(device.uid)
+        if settingsManager.appSettings.lockInputDevice {
+            inputPolicyCoordinator.setRequest(deviceUID: device.uid, owner: .inputLock)
+        } else {
+            inputPolicyCoordinator.removeRequest(owner: .inputLock)
+        }
+        let automationOwner = explicitInputOverrideOwner ?? previousOwner.flatMap { owner in
+            owner == .callMode || owner == .bluetoothGuard ? owner : nil
+        }
+        if let automationOwner {
+            explicitInputOverrideOwner = automationOwner
+        } else {
+            inputPolicyCoordinator.removeRequest(owner: .explicitUser)
+            explicitInputOverrideOwner = nil
+        }
         return true
     }
 
@@ -3581,21 +3665,41 @@ final class AudioEngine {
         return success
     }
 
+    func restoreInputDevicePolicy(lockedUID: String?, preferredUID: String?) {
+        inputPolicyCoordinator.removeRequest(owner: .explicitUser)
+        explicitInputOverrideOwner = nil
+        settingsManager.setLockedInputDeviceUID(lockedUID)
+        settingsManager.setPreferredInputDeviceUID(preferredUID)
+        synchronizeInputLockPolicy()
+        applyResolvedInputPolicy()
+    }
+
     /// Called when an input device connects — restores locked/preferred device and guards against auto-switch.
     private func handleInputDeviceConnected(_ deviceUID: String, name deviceName: String) {
-        guard settingsManager.appSettings.lockInputDevice else { return }
+        let lockEnabled = settingsManager.appSettings.lockInputDevice
 
         // If the reconnected device is the user's preferred device, restore the lock to it
-        if let preferredUID = settingsManager.preferredInputDeviceUID,
+        if lockEnabled,
+           let preferredUID = settingsManager.preferredInputDeviceUID,
            deviceUID == preferredUID,
            settingsManager.lockedInputDeviceUID != preferredUID,
            let device = deviceMonitor.inputDevice(for: deviceUID) {
             logger.info("Preferred input device reconnected: \(deviceName), restoring lock")
             settingsManager.setLockedInputDeviceUID(device.uid)
+            inputPolicyCoordinator.setRequest(deviceUID: device.uid, owner: .inputLock)
         }
 
         // Restore the user's locked device (not priority-based — lock overrides priority)
-        restoreLockedInputDevice()
+        if lockEnabled {
+            restoreLockedInputDevice()
+        }
+
+        let resolution = inputPolicyCoordinator.resolve(
+            availableUIDs: Set(deviceMonitor.inputDevices.map(\.uid)),
+            currentUID: deviceVolumeMonitor.defaultInputDeviceUID
+        )
+        guard lockEnabled || resolution.owner != nil else { return }
+        applyResolvedInputPolicy()
 
         // Cancel any existing PENDING_AUTOSWITCH before entering a new one
         if case .pendingAutoSwitch(_, let oldTask) = inputPriorityState {

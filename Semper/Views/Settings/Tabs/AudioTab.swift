@@ -7,6 +7,7 @@ struct AudioTab: View {
     @Bindable var settings: SettingsManager
     @Bindable var audioEngine: AudioEngine
     let audioCommands: any AudioCommandDispatching
+    @Bindable var callMode: CallModeCoordinator
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
 
     /// Memoized sorted output devices for the system-sounds picker.
@@ -30,6 +31,7 @@ struct AudioTab: View {
             VStack(alignment: .leading, spacing: 24) {
                 volumeSection
                 devicesSection
+                callModeSection
                 audioRecoverySection
             }
             .padding(.horizontal, 20)
@@ -42,13 +44,92 @@ struct AudioTab: View {
         .onChange(of: settings.appSettings.lockInputDevice) { oldValue, newValue in
             if !oldValue && newValue {
                 audioEngine.handleInputLockEnabled()
+            } else if oldValue && !newValue {
+                audioEngine.handleInputLockDisabled()
             }
+        }
+        .onChange(of: settings.appSettings.callModeEnabled) { _, newValue in
+            callMode.setEnabled(newValue)
+        }
+        .onChange(of: settings.appSettings.callModeQuietAlerts) { _, newValue in
+            callMode.setQuietAlertsEnabled(newValue)
         }
         .onChange(of: settings.appSettings.loudnessCompensationEnabled) { _, newValue in
             audioEngine.setLoudnessCompensationEnabled(newValue)
         }
         .onChange(of: settings.appSettings.loudnessEqualizationEnabled) { _, newValue in
             audioEngine.setLoudnessEqualizationEnabled(newValue)
+        }
+    }
+
+    // MARK: - Call Mode
+
+    private var callModeSection: some View {
+        SettingsSection("Call Mode") {
+            SettingsRow(
+                "Call Detection",
+                description: "Offer to lower other apps when a verified call starts"
+            ) {
+                Toggle("", isOn: $settings.appSettings.callModeEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .accessibilityLabel("Call Mode detection")
+            }
+
+            SettingsRowDivider()
+
+            SettingsRow(
+                "Quiet Alerts",
+                description: "Limit notification sounds to 25% during Call Mode"
+            ) {
+                Toggle("", isOn: $settings.appSettings.callModeQuietAlerts)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .disabled(!settings.appSettings.callModeEnabled)
+                    .accessibilityLabel("Quiet alerts during Call Mode")
+            }
+
+            ForEach(VerifiedCallApplication.supported) { application in
+                SettingsRowDivider()
+                SettingsRow(
+                    application.displayName,
+                    description: "Choose what happens when this app uses the microphone"
+                ) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { settings.callModePreference(for: application.identifier) },
+                            set: { settings.setCallModePreference($0, for: application.identifier) }
+                        )
+                    ) {
+                        ForEach(CallModePreference.allCases) { preference in
+                            Text(preference.title).tag(preference)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(!settings.appSettings.callModeEnabled)
+                    .accessibilityLabel("\(application.displayName) Call Mode behavior")
+                    .accessibilityValue(
+                        settings.callModePreference(for: application.identifier).title
+                    )
+                }
+            }
+
+            if let session = callMode.activeSession {
+                SettingsRowDivider()
+                SettingsRow(
+                    "Active for \(session.displayName)",
+                    description: "Other apps are temporarily limited to 25%"
+                ) {
+                    Button("End") { callMode.end() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityLabel("End Call Mode for \(session.displayName)")
+                }
+            }
         }
     }
 

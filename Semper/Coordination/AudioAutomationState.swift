@@ -52,6 +52,23 @@ final class AudioModeOverlayStore {
         onChange?(Set(removed.keys))
     }
 
+    @discardableResult
+    func replaceGains(
+        _ gains: [AppIdentifier: Float],
+        for owner: AudioAutomationOwner
+    ) -> Bool {
+        guard gains.allSatisfy({
+            !$0.key.isEmpty && $0.value.isFinite && (0...1).contains($0.value)
+        }) else {
+            return false
+        }
+        let previous = gainsByOwner[owner] ?? [:]
+        guard previous != gains else { return true }
+        gainsByOwner[owner] = gains.isEmpty ? nil : gains
+        onChange?(Set(previous.keys).union(gains.keys))
+        return true
+    }
+
     func effectiveGain(for appIdentifier: AppIdentifier) -> Float {
         gainsByOwner.values.compactMap { $0[appIdentifier] }.min() ?? 1
     }

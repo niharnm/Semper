@@ -36,6 +36,10 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Notifications
     var showDeviceDisconnectAlerts: Bool = true
 
+    // Call Mode
+    var callModeEnabled: Bool = true
+    var callModeQuietAlerts: Bool = false
+
     // Audio Processing
     var loudnessCompensationEnabled: Bool = false  // ISO 226:2023 equal-loudness contour compensation
     var loudnessEqualizationEnabled: Bool = false  // Real-time loudness equalization
@@ -70,6 +74,8 @@ nonisolated struct AppSettings: Codable, Equatable {
         defaultNewAppVolume = try c.decodeIfPresent(Float.self, forKey: .defaultNewAppVolume) ?? 1.0
         lockInputDevice = try c.decodeIfPresent(Bool.self, forKey: .lockInputDevice) ?? true
         showDeviceDisconnectAlerts = try c.decodeIfPresent(Bool.self, forKey: .showDeviceDisconnectAlerts) ?? true
+        callModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .callModeEnabled) ?? true
+        callModeQuietAlerts = try c.decodeIfPresent(Bool.self, forKey: .callModeQuietAlerts) ?? false
         loudnessCompensationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessCompensationEnabled) ?? false
         loudnessEqualizationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessEqualizationEnabled) ?? false
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
@@ -137,7 +143,7 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        static let currentVersion = 14
+        static let currentVersion = 15
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
@@ -169,6 +175,7 @@ final class SettingsManager {
         var outputBalances: [String: Float] = [:]              // device UID → L/R balance (-1.0...1.0)
         var outputVolumeLimits: [String: Float] = [:]          // device UID → maximum volume (0.1...1.0)
         var audioProcessingMode: AudioProcessingMode = .active
+        var callModePreferences: [String: CallModePreference] = [:]
 
         // Per-device volume control tier override (overrides auto-detection).
         // nil/missing → auto-detect (hardware/ddc/software). Populated only by
@@ -246,6 +253,17 @@ final class SettingsManager {
                 AudioProcessingMode.self,
                 forKey: .audioProcessingMode
             )) ?? .active
+            let rawCallModePreferences = try c.decodeIfPresent(
+                [String: String].self,
+                forKey: .callModePreferences
+            ) ?? [:]
+            callModePreferences = rawCallModePreferences.reduce(into: [:]) { result, item in
+                guard !item.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let preference = CallModePreference(rawValue: item.value) else {
+                    return
+                }
+                result[item.key] = preference
+            }
             deviceVolumeTierOverride = try c.decodeIfPresent([String: VolumeControlTier].self, forKey: .deviceVolumeTierOverride) ?? [:]
             deviceIconOverrides = try c.decodeIfPresent([String: String].self, forKey: .deviceIconOverrides) ?? [:]
             outputDevicePriority = try c.decodeIfPresent([String].self, forKey: .outputDevicePriority) ?? []
@@ -575,6 +593,27 @@ final class SettingsManager {
     func setAudioProcessingMode(_ mode: AudioProcessingMode) {
         guard settings.audioProcessingMode != mode else { return }
         settings.audioProcessingMode = mode
+        scheduleSave()
+    }
+
+    // MARK: - Call Mode
+
+    func callModePreference(for applicationIdentifier: String) -> CallModePreference {
+        settings.callModePreferences[applicationIdentifier] ?? .ask
+    }
+
+    func setCallModePreference(
+        _ preference: CallModePreference,
+        for applicationIdentifier: String
+    ) {
+        guard !applicationIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        if preference == .ask {
+            settings.callModePreferences.removeValue(forKey: applicationIdentifier)
+        } else {
+            settings.callModePreferences[applicationIdentifier] = preference
+        }
         scheduleSave()
     }
 
@@ -1005,6 +1044,7 @@ final class SettingsManager {
         settings.outputMasterGains.removeAll()
         settings.outputBalances.removeAll()
         settings.outputVolumeLimits.removeAll()
+        settings.callModePreferences.removeAll()
         settings.deviceVolumeTierOverride.removeAll()
         settings.deviceIconOverrides.removeAll()
         settings.outputDevicePriority.removeAll()

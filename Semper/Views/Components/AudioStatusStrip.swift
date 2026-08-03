@@ -20,22 +20,7 @@ struct AudioStatusStrip: View {
                 Spacer(minLength: DesignTokens.Spacing.xs)
 
                 if let actionTitle = activity.presentation.actionTitle {
-                    Button(actionTitle) {
-                        store.performVisibleAction()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(DesignTokens.Colors.systemBlue)
-                    .keyboardShortcut("z", modifiers: .command)
-                    .accessibilityLabel(
-                        actionTitle == "Undo" ? "Undo last audio change" : actionTitle
-                    )
-                    .accessibilityHint(
-                        actionTitle == "Undo"
-                            ? "Restores the previous audio setting. Available for 30 seconds."
-                            : "Performs the audio status action."
-                    )
-                    .accessibilityIdentifier("audio-undo-button")
+                    actionButton(actionTitle)
                 }
 
                 Button {
@@ -68,6 +53,33 @@ struct AudioStatusStrip: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("audio-status-strip")
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(_ actionTitle: String) -> some View {
+        let button = Button(actionTitle) {
+            store.performVisibleAction()
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10.5, weight: .semibold))
+        .foregroundStyle(DesignTokens.Colors.systemBlue)
+        .accessibilityLabel(
+            actionTitle == "Undo" ? "Undo last audio change" : "End Call Mode"
+        )
+        .accessibilityHint(
+            actionTitle == "Undo"
+                ? "Restores the previous audio setting. Available for 30 seconds."
+                : "Restores the audio settings from before Call Mode."
+        )
+        .accessibilityIdentifier(
+            actionTitle == "Undo" ? "audio-undo-button" : "call-mode-end"
+        )
+
+        if actionTitle == "Undo" {
+            button.keyboardShortcut("z", modifiers: .command)
+        } else {
+            button
         }
     }
 }
