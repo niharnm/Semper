@@ -38,6 +38,8 @@ final class AudioEngine {
     var onCommandValueObserved: ((AudioControlKey, AudioControlValue) -> Void)?
     var onCommandWriteRejected: ((AudioControlKey) -> Void)?
     var onCallModeActivitiesChanged: (([CallModeAppActivity]) -> Void)?
+    var onBluetoothHDGuardSnapshotChanged: ((BluetoothHDGuardSnapshot) -> Void)?
+    var onExplicitInputDeviceSelected: ((String) -> Void)?
     var onAudioProcessingWillStop: (() -> Void)?
     private(set) var audioProcessingState: AudioProcessingState = .active
     private(set) var audioRecoveryDiagnostics = AudioRecoveryDiagnostics()
@@ -667,6 +669,7 @@ final class AudioEngine {
                     self.synchronizeInputLockPolicy()
                     self.applyResolvedInputPolicy()
                 }
+                self.publishBluetoothHDGuardSnapshot()
             }
         }
 
@@ -850,33 +853,39 @@ final class AudioEngine {
         deviceMonitor.onDeviceDisconnected = { [weak self] deviceUID, deviceName in
             self?.handleDeviceDisconnected(deviceUID, name: deviceName)
             self?.bluetoothDeviceMonitor.refresh()
+            self?.publishBluetoothHDGuardSnapshot()
         }
 
         deviceMonitor.onDeviceConnected = { [weak self] deviceUID, deviceName in
             self?.handleDeviceConnected(deviceUID, name: deviceName)
             self?.bluetoothDeviceMonitor.notifyDeviceAppearedInCoreAudio()
+            self?.publishBluetoothHDGuardSnapshot()
         }
 
         deviceMonitor.onInputDeviceDisconnected = { [weak self] deviceUID, deviceName in
             self?.logger.info("Input device disconnected: \(deviceName) (\(deviceUID))")
             self?.handleInputDeviceDisconnected(deviceUID)
+            self?.publishBluetoothHDGuardSnapshot()
         }
 
         deviceMonitor.onInputDeviceConnected = { [weak self] deviceUID, deviceName in
             self?.logger.info("Input device connected: \(deviceName) (\(deviceUID))")
             self?.settingsManager.ensureInputDeviceInPriority(deviceUID)
             self?.handleInputDeviceConnected(deviceUID, name: deviceName)
+            self?.publishBluetoothHDGuardSnapshot()
         }
 
         deviceVolumeMonitor.onDefaultDeviceChanged = { [weak self] newDefaultUID in
             self?.handleDefaultOutputConfirmation(newDefaultUID)
             self?.onCommandValueObserved?(.defaultOutput, .identifier(newDefaultUID))
             self?.handleDefaultDeviceChanged(newDefaultUID)
+            self?.publishBluetoothHDGuardSnapshot()
         }
 
         deviceVolumeMonitor.onDefaultInputDeviceChanged = { [weak self] newDefaultInputUID in
             Task { @MainActor [weak self] in
                 self?.onCommandValueObserved?(.defaultInput, .identifier(newDefaultInputUID))
+                self?.publishBluetoothHDGuardSnapshot()
                 self?.handleDefaultInputDeviceChanged(newDefaultInputUID)
             }
         }
@@ -1179,6 +1188,8 @@ final class AudioEngine {
             synchronizeInputLockPolicy()
             applyResolvedInputPolicy()
         }
+
+        publishBluetoothHDGuardSnapshot()
 
         logger.info("AudioEngine started")
     }
@@ -1495,6 +1506,7 @@ final class AudioEngine {
 
         processMonitor.start()
         handleAppsChanged(processMonitor.activeApps)
+        publishBluetoothHDGuardSnapshot()
         applyPersistedSettings()
         startHealthMonitor()
         guard persistAudioProcessingMode(.active) else {
@@ -3467,6 +3479,31 @@ final class AudioEngine {
 
     // MARK: - Input Device Lock
 
+    var bluetoothHDGuardSnapshot: BluetoothHDGuardSnapshot {
+        BluetoothHDGuardSnapshot(
+            defaultOutputUID: deviceVolumeMonitor.defaultDeviceUID,
+            defaultInputUID: deviceVolumeMonitor.defaultInputDeviceUID,
+            outputDevices: deviceMonitor.outputDevices.map(bluetoothHDGuardDevice),
+            inputDevices: deviceMonitor.inputDevices.map(bluetoothHDGuardDevice)
+        )
+    }
+
+    private func bluetoothHDGuardDevice(_ device: AudioDevice) -> BluetoothHDGuardDevice {
+        let transport = device.id.readTransportType()
+        return BluetoothHDGuardDevice(
+            uid: device.uid,
+            name: device.name,
+            isBluetooth: transport == .bluetooth || transport == .bluetoothLE,
+            isBuiltIn: transport == .builtIn,
+            isVirtual: transport == .virtual || transport == .aggregate,
+            isAlive: isAliveCheck(device.id)
+        )
+    }
+
+    private func publishBluetoothHDGuardSnapshot() {
+        onBluetoothHDGuardSnapshotChanged?(bluetoothHDGuardSnapshot)
+    }
+
     @discardableResult
     func setInputPolicyRequest(deviceUID: String, owner: InputPolicyOwner) -> Bool {
         guard deviceMonitor.inputDevices.contains(where: { $0.uid == deviceUID }) else {
@@ -3487,6 +3524,36 @@ final class AudioEngine {
             explicitInputOverrideOwner = nil
         }
         applyResolvedInputPolicy()
+    }
+
+    func releaseBluetoothHDGuard(
+        originalUID: String,
+        protectedUID: String,
+        restoreOriginal: Bool
+    ) {
+        let currentUID = deviceVolumeMonitor.defaultInputDeviceUID
+        inputPolicyCoordinator.removeRequest(owner: .bluetoothGuard)
+        if explicitInputOverrideOwner == .bluetoothGuard {
+            inputPolicyCoordinator.removeRequest(owner: .explicitUser)
+            explicitInputOverrideOwner = nil
+        }
+
+        let availableUIDs = Set(deviceMonitor.inputDevices.map(\.uid))
+        let resolution = inputPolicyCoordinator.resolve(
+            availableUIDs: availableUIDs,
+            currentUID: currentUID
+        )
+        if resolution.owner != nil {
+            applyResolvedInputPolicy()
+            return
+        }
+
+        guard restoreOriginal,
+              currentUID == protectedUID,
+              let original = deviceMonitor.inputDevice(for: originalUID) else {
+            return
+        }
+        _ = setTemporaryInputDevice(original)
     }
 
     private func synchronizeInputLockPolicy() {
@@ -3653,6 +3720,7 @@ final class AudioEngine {
             inputPolicyCoordinator.removeRequest(owner: .explicitUser)
             explicitInputOverrideOwner = nil
         }
+        onExplicitInputDeviceSelected?(device.uid)
         return true
     }
 

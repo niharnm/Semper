@@ -8,6 +8,7 @@ struct SettingsRootView: View {
     @Bindable var audioEngine: AudioEngine
     let audioCommands: any AudioCommandDispatching
     @Bindable var callMode: CallModeCoordinator
+    @Bindable var bluetoothHDGuard: BluetoothHDGuardCoordinator
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
@@ -177,6 +178,7 @@ struct SettingsRootView: View {
                 settings: settings,
                 onResetAll: {
                     callMode.shutdown()
+                    bluetoothHDGuard.shutdown()
                     audioEngine.handleSettingsReset()
                     deviceVolumeMonitor.setSystemFollowDefault()
                 }
@@ -187,6 +189,7 @@ struct SettingsRootView: View {
                 audioEngine: audioEngine,
                 audioCommands: audioCommands,
                 callMode: callMode,
+                bluetoothHDGuard: bluetoothHDGuard,
                 deviceVolumeMonitor: deviceVolumeMonitor
             )
         case .shortcuts:

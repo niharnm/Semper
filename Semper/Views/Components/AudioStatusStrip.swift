@@ -64,22 +64,41 @@ struct AudioStatusStrip: View {
         .buttonStyle(.plain)
         .font(.system(size: 10.5, weight: .semibold))
         .foregroundStyle(DesignTokens.Colors.systemBlue)
-        .accessibilityLabel(
-            actionTitle == "Undo" ? "Undo last audio change" : "End Call Mode"
-        )
-        .accessibilityHint(
-            actionTitle == "Undo"
-                ? "Restores the previous audio setting. Available for 30 seconds."
-                : "Restores the audio settings from before Call Mode."
-        )
-        .accessibilityIdentifier(
-            actionTitle == "Undo" ? "audio-undo-button" : "call-mode-end"
-        )
+        .accessibilityLabel(actionAccessibilityLabel(actionTitle))
+        .accessibilityHint(actionAccessibilityHint(actionTitle))
+        .accessibilityIdentifier(actionAccessibilityIdentifier(actionTitle))
 
         if actionTitle == "Undo" {
             button.keyboardShortcut("z", modifiers: .command)
         } else {
             button
+        }
+    }
+
+    private func actionAccessibilityLabel(_ actionTitle: String) -> String {
+        switch actionTitle {
+        case "Undo": "Undo last audio change"
+        case "End": "End Call Mode"
+        case "Use Headset Mic": "Stop HD Guard and use the headset microphone"
+        default: actionTitle
+        }
+    }
+
+    private func actionAccessibilityHint(_ actionTitle: String) -> String {
+        switch actionTitle {
+        case "Undo": "Restores the previous audio setting. Available for 30 seconds."
+        case "End": "Restores the audio settings from before Call Mode."
+        case "Use Headset Mic": "Restores the headset microphone if HD Guard still owns the input."
+        default: "Performs the audio status action."
+        }
+    }
+
+    private func actionAccessibilityIdentifier(_ actionTitle: String) -> String {
+        switch actionTitle {
+        case "Undo": "audio-undo-button"
+        case "End": "call-mode-end"
+        case "Use Headset Mic": "bluetooth-hd-guard-stop"
+        default: "audio-status-action"
         }
     }
 }
