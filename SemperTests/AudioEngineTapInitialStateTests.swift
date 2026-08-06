@@ -66,6 +66,9 @@ final class RecordingProcessTapController: ProcessTapControlling {
     private(set) var switchDeviceStarts: [String] = []
     var updateDevicesDelays: [Set<String>: Duration] = [:]
     private(set) var updateDevicesStarts: [[String]] = []
+    var invalidationDelay: Duration?
+    var invalidationResult = TapResourceCleanupResult.empty
+    var onInvalidate: (() -> Void)?
 
     init(app: AudioApp, deviceUIDs: [String]) {
         self.app = app
@@ -78,6 +81,15 @@ final class RecordingProcessTapController: ProcessTapControlling {
 
     func invalidate() {
         events.append(.invalidate)
+        onInvalidate?()
+    }
+
+    func invalidateAsync() async -> TapResourceCleanupResult {
+        if let invalidationDelay {
+            try? await Task.sleep(for: invalidationDelay)
+        }
+        invalidate()
+        return invalidationResult
     }
 
     func updateEQSettings(_ settings: EQSettings) {
@@ -154,8 +166,10 @@ final class RecordingProcessTapController: ProcessTapControlling {
 final class StubProcessMonitor: AudioProcessMonitoring {
     var activeApps: [AudioApp] = []
     var onAppsChanged: (([AudioApp]) -> Void)?
-    func start() {}
-    func stop() {}
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    func start() { startCount += 1 }
+    func stop() { stopCount += 1 }
 }
 
 // MARK: - Fixture

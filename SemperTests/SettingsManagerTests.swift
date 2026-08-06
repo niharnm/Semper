@@ -92,6 +92,7 @@ struct SettingsJSONTests {
         original.outputMasterGains = ["uid-a": 2.5]
         original.outputBalances = ["uid-a": -0.4]
         original.outputVolumeLimits = ["uid-a": 0.75]
+        original.audioProcessingMode = .bypassed
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
@@ -111,6 +112,7 @@ struct SettingsJSONTests {
         #expect(decoded.outputMasterGains == original.outputMasterGains)
         #expect(decoded.outputBalances == original.outputBalances)
         #expect(decoded.outputVolumeLimits == original.outputVolumeLimits)
+        #expect(decoded.audioProcessingMode == .bypassed)
     }
 
     @Test("Decoding empty JSON produces valid defaults")
@@ -129,6 +131,7 @@ struct SettingsJSONTests {
         #expect(decoded.outputMasterGains.isEmpty)
         #expect(decoded.outputBalances.isEmpty)
         #expect(decoded.outputVolumeLimits.isEmpty)
+        #expect(decoded.audioProcessingMode == .active)
     }
 
     @Test("Decoding with extra unknown keys is tolerated")
@@ -201,9 +204,9 @@ struct OutputVolumeLimitPersistenceTests {
             .appendingPathComponent("SemperVolumeLimitTests-\(UUID().uuidString)", isDirectory: true)
     }
 
-    @Test("Default settings use schema 13")
+    @Test("Default settings use schema 14")
     func schemaVersion() {
-        #expect(SettingsManager.Settings().version == 13)
+        #expect(SettingsManager.Settings().version == 14)
     }
 
     @Test("Loading an older file advances its schema on the next write")
@@ -212,13 +215,13 @@ struct OutputVolumeLimitPersistenceTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("settings.json")
-        try Data(#"{"version":12}"#.utf8).write(to: url, options: .atomic)
+        try Data(#"{"version":13}"#.utf8).write(to: url, options: .atomic)
 
         let manager = SettingsManager(directory: directory)
         manager.flushSync()
 
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        #expect(object?["version"] as? Int == 13)
+        #expect(object?["version"] as? Int == 14)
     }
 
     @Test("Limits clamp, persist by UID, and clear with nil")
@@ -295,6 +298,62 @@ struct OutputVolumeLimitPersistenceTests {
 
         #expect(manager.outputVolumeLimit(for: "uid-a") == nil)
         #expect(manager.outputVolumeLimit(for: "uid-b") == nil)
+    }
+}
+
+@Suite("SettingsManager audio processing recovery")
+@MainActor
+struct AudioProcessingModePersistenceTests {
+    private func makeDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    @Test("Schema 13 defaults audio processing to active")
+    func olderSchemaDefaultsActive() throws {
+        let decoded = try JSONDecoder().decode(
+            SettingsManager.Settings.self,
+            from: Data(#"{"version":13}"#.utf8)
+        )
+
+        #expect(decoded.audioProcessingMode == .active)
+    }
+
+    @Test("Unknown audio processing values fail open to active")
+    func unknownValueDefaultsActive() throws {
+        let decoded = try JSONDecoder().decode(
+            SettingsManager.Settings.self,
+            from: Data(#"{"audioProcessingMode":"future-value"}"#.utf8)
+        )
+
+        #expect(decoded.audioProcessingMode == .active)
+    }
+
+    @Test("Bypass and resume requests persist across reloads")
+    func modesPersist() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = SettingsManager(directory: directory)
+
+        manager.setAudioProcessingMode(.bypassed)
+        manager.flushSync()
+        #expect(SettingsManager(directory: directory).audioProcessingMode == .bypassed)
+
+        manager.setAudioProcessingMode(.resumeRequested)
+        manager.flushSync()
+        #expect(SettingsManager(directory: directory).audioProcessingMode == .resumeRequested)
+    }
+
+    @Test("Reset preserves a bypass request")
+    func resetPreservesMode() {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let manager = SettingsManager(directory: directory)
+        manager.setAudioProcessingMode(.bypassed)
+
+        manager.resetAllSettings()
+
+        #expect(manager.audioProcessingMode == .bypassed)
     }
 }
 

@@ -60,6 +60,7 @@ enum AudioCommand: Equatable, Sendable {
     case setInputVolume(deviceUID: String, volume: Float)
     case setInputMute(deviceUID: String, muted: Bool)
     case setDefaultInput(deviceUID: String, intent: AudioInputSelectionIntent)
+    case setAudioProcessingMode(AudioProcessingMode)
 
     var controlKey: AudioControlKey {
         switch self {
@@ -77,6 +78,7 @@ enum AudioCommand: Equatable, Sendable {
         case .setInputVolume(let uid, _): .inputVolume(uid)
         case .setInputMute(let uid, _): .inputMute(uid)
         case .setDefaultInput: .defaultInput
+        case .setAudioProcessingMode: .audioProcessingMode
         }
     }
 
@@ -102,6 +104,8 @@ enum AudioCommand: Equatable, Sendable {
             .identifiers(uids)
         case .setDefaultOutput(let uid), .setDefaultInput(let uid, _):
             .identifier(uid)
+        case .setAudioProcessingMode(let mode):
+            .mode(mode.rawValue)
         }
     }
 }
@@ -379,7 +383,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         case .bluetoothGuard:
             AudioActivityPresentation(message: "Changed to protect Bluetooth audio quality", systemImage: "wave.3.right")
         case .bypass:
-            AudioActivityPresentation(message: "Changed by audio recovery", systemImage: "lifepreserver")
+            AudioActivityPresentation(message: "Audio processing state changed", systemImage: "waveform")
         case .recovery:
             AudioActivityPresentation(message: "Restored after audio recovery", systemImage: "arrow.clockwise")
         case .undo:
@@ -407,6 +411,8 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
             !uid.isEmpty && value.isFinite && (-1...1).contains(value)
         case .setDefaultOutput(let uid), .setDefaultInput(let uid, _):
             !uid.isEmpty
+        case .setAudioProcessingMode:
+            true
         }
     }
 }
@@ -490,6 +496,8 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
             return .flag(muted)
         case .defaultInput:
             return .identifier(engine.deviceVolumeMonitor.defaultInputDeviceUID)
+        case .audioProcessingMode:
+            return .mode(engine.audioProcessingMode.rawValue)
         }
     }
 
@@ -520,6 +528,9 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
              .setOutputMasterGain(let uid, let volume):
             let limit = engine.settingsManager.outputVolumeLimit(for: uid) ?? volume
             return .scalar(min(volume, limit))
+        case .setAudioProcessingMode(let mode)
+            where mode != .bypassed && engine.permission.status != .authorized:
+            return .mode(AudioProcessingMode.resumeRequested.rawValue)
         default:
             return command.requestedValue
         }
@@ -728,6 +739,16 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
                 }
             }
             return .applied(.identifier(uid))
+
+        case .setAudioProcessingMode(let mode):
+            switch engine.requestAudioProcessingMode(mode) {
+            case .applied(let observed):
+                return .applied(.mode(observed.rawValue))
+            case .accepted:
+                return .accepted
+            case .rejected:
+                return .rejected(.writeFailed)
+            }
         }
     }
 

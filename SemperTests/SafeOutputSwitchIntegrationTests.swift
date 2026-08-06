@@ -68,6 +68,16 @@ private func makeSafeSwitchFixture() -> SafeSwitchFixture {
     )
 }
 
+@MainActor
+private func waitForSafeSwitch(
+    until condition: () -> Bool
+) async {
+    for _ in 0..<200 {
+        if condition() { return }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
 @Suite("Safe output switch integration")
 @MainActor
 struct SafeOutputSwitchIntegrationTests {
@@ -94,7 +104,9 @@ struct SafeOutputSwitchIntegrationTests {
         #expect(fixture.volumeMonitor.setVolumeCalls.last?.volume == 0.4)
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty)
 
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitForSafeSwitch {
+            !fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty
+        }
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [fixture.target.id])
     }
 
@@ -107,7 +119,7 @@ struct SafeOutputSwitchIntegrationTests {
         fixture.engine.onCommandWriteRejected = { rejectedKeys.append($0) }
 
         let result = fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id)
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitForSafeSwitch { !rejectedKeys.isEmpty }
 
         #expect(result == .accepted)
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty)
@@ -124,7 +136,7 @@ struct SafeOutputSwitchIntegrationTests {
         fixture.engine.onCommandWriteRejected = { rejectedKeys.append($0) }
 
         let result = fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id)
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitForSafeSwitch { !rejectedKeys.isEmpty }
 
         #expect(result == .accepted)
         #expect(fixture.volumeMonitor.defaultDeviceUID == fixture.current.uid)
@@ -140,7 +152,7 @@ struct SafeOutputSwitchIntegrationTests {
         fixture.engine.onCommandWriteRejected = { rejectedKeys.append($0) }
 
         let result = fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id)
-        try? await Task.sleep(for: .milliseconds(300))
+        await waitForSafeSwitch { !rejectedKeys.isEmpty }
 
         #expect(result == .accepted)
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty)
@@ -214,7 +226,7 @@ struct SafeOutputSwitchIntegrationTests {
 
         #expect(fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id) == .accepted)
         fixture.volumeMonitor.onOutputWriteCompleted?(fixture.target.id, true)
-        try? await Task.sleep(for: .milliseconds(550))
+        await waitForSafeSwitch { !rejectedKeys.isEmpty }
 
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [fixture.target.id])
         #expect(fixture.volumeMonitor.defaultDeviceUID == fixture.current.uid)

@@ -39,7 +39,7 @@ protocol ProcessTapControlling: AnyObject, Sendable {
 
     func activate(initial: TapInitialState) throws
     func invalidate()
-    func invalidateAsync() async
+    func invalidateAsync() async -> TapResourceCleanupResult
     func updateEQSettings(_ settings: EQSettings)
     func updateAutoEQProfile(_ profile: AutoEQProfile?)
     func setAutoEQPreampEnabled(_ enabled: Bool)
@@ -94,8 +94,9 @@ extension ProcessTapControlling {
         )
     }
 
-    func invalidateAsync() async {
+    func invalidateAsync() async -> TapResourceCleanupResult {
         invalidate()
+        return .empty
     }
 
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {
