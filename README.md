@@ -81,6 +81,7 @@ open "semper://update"
 ## Documentation & Guides
 
 - [URL Schemes](guide/url-schemes.md)
+- [App Shortcuts](guide/app-shortcuts.md)
 - [Experiments](guide/experiments.md)
 - [AutoEQ Integration](guide/autoeq.md)
 - [Canary Testing](guide/canary.md)
