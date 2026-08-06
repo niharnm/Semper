@@ -401,7 +401,7 @@ struct SettingsMigrationV10toV11Tests {
     @Test("Re-encode after v10 decode uses the current schema on a fresh Settings instance")
     func defaultSettingsVersionIsCurrent() {
         let fresh = SettingsManager.Settings()
-        #expect(fresh.version == 15)
+        #expect(fresh.version == 16)
         #expect(fresh.deviceVolumeTierOverride.isEmpty)
     }
 

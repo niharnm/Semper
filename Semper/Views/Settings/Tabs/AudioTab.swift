@@ -8,6 +8,7 @@ struct AudioTab: View {
     @Bindable var audioEngine: AudioEngine
     let audioCommands: any AudioCommandDispatching
     @Bindable var callMode: CallModeCoordinator
+    @Bindable var bluetoothHDGuard: BluetoothHDGuardCoordinator
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
 
     /// Memoized sorted output devices for the system-sounds picker.
@@ -31,6 +32,7 @@ struct AudioTab: View {
             VStack(alignment: .leading, spacing: 24) {
                 volumeSection
                 devicesSection
+                bluetoothHDGuardSection
                 callModeSection
                 audioRecoverySection
             }
@@ -54,12 +56,141 @@ struct AudioTab: View {
         .onChange(of: settings.appSettings.callModeQuietAlerts) { _, newValue in
             callMode.setQuietAlertsEnabled(newValue)
         }
+        .onChange(of: settings.appSettings.bluetoothHDGuardEnabled) { _, newValue in
+            bluetoothHDGuard.setEnabled(newValue)
+        }
         .onChange(of: settings.appSettings.loudnessCompensationEnabled) { _, newValue in
             audioEngine.setLoudnessCompensationEnabled(newValue)
         }
         .onChange(of: settings.appSettings.loudnessEqualizationEnabled) { _, newValue in
             audioEngine.setLoudnessEqualizationEnabled(newValue)
         }
+    }
+
+    // MARK: - Bluetooth Audio
+
+    private var bluetoothHDGuardSection: some View {
+        SettingsSection("Bluetooth Audio") {
+            SettingsRow(
+                "HD Guard",
+                description: "Offer another microphone before a headset drops to call quality"
+            ) {
+                Toggle("", isOn: $settings.appSettings.bluetoothHDGuardEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .accessibilityLabel("Bluetooth HD Guard")
+            }
+
+            if let session = bluetoothHDGuard.activeSession {
+                SettingsRowDivider()
+                SettingsRow(
+                    "Protecting \(session.headsetName)",
+                    description: "Using \(session.protectedInputName) for microphone input"
+                ) {
+                    Button("Use Headset Mic") {
+                        bluetoothHDGuard.stopProtection()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .accessibilityLabel("Stop HD Guard and use the headset microphone")
+                }
+            }
+
+            ForEach(settings.bluetoothHDGuardPreferences) { preference in
+                SettingsRowDivider()
+                SettingsRow(
+                    preference.headsetName,
+                    description: "Choose what happens when this headset microphone is selected"
+                ) {
+                    Picker(
+                        "",
+                        selection: bluetoothBehaviorBinding(for: preference)
+                    ) {
+                        ForEach(BluetoothHDGuardBehavior.allCases) { behavior in
+                            Text(behavior.title).tag(behavior)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(!settings.appSettings.bluetoothHDGuardEnabled)
+                    .accessibilityLabel("\(preference.headsetName) HD Guard behavior")
+                    .accessibilityValue(preference.behavior.title)
+                }
+
+                if preference.behavior != .never {
+                    SettingsRowDivider()
+                    SettingsRow(
+                        "Microphone for \(preference.headsetName)",
+                        description: "Non-Bluetooth input used to preserve headset audio quality"
+                    ) {
+                        Picker(
+                            "",
+                            selection: bluetoothMicrophoneBinding(for: preference)
+                        ) {
+                            if let uid = preference.microphoneUID,
+                               !bluetoothHDGuard.availableMicrophones.contains(where: {
+                                   $0.uid == uid
+                               }) {
+                                Text("\(preference.microphoneName ?? "Saved microphone") (Disconnected)")
+                                    .tag(uid)
+                            }
+                            ForEach(bluetoothHDGuard.availableMicrophones) { microphone in
+                                Text(microphone.name).tag(microphone.uid)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 180)
+                        .disabled(
+                            !settings.appSettings.bluetoothHDGuardEnabled
+                                || bluetoothHDGuard.availableMicrophones.isEmpty
+                        )
+                        .accessibilityLabel("Microphone used for \(preference.headsetName)")
+                        .accessibilityValue(
+                            preference.microphoneName ?? "Automatic"
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func bluetoothBehaviorBinding(
+        for preference: BluetoothHDGuardPreference
+    ) -> Binding<BluetoothHDGuardBehavior> {
+        Binding(
+            get: { preference.behavior },
+            set: { behavior in
+                var updated = preference
+                updated.behavior = behavior
+                settings.setBluetoothHDGuardPreference(updated)
+                bluetoothHDGuard.preferencesDidChange()
+            }
+        )
+    }
+
+    private func bluetoothMicrophoneBinding(
+        for preference: BluetoothHDGuardPreference
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                preference.microphoneUID
+                    ?? bluetoothHDGuard.availableMicrophones.first?.uid
+                    ?? ""
+            },
+            set: { microphoneUID in
+                guard let microphone = bluetoothHDGuard.availableMicrophones.first(where: {
+                    $0.uid == microphoneUID
+                }) else {
+                    return
+                }
+                var updated = preference
+                updated.microphoneUID = microphone.uid
+                updated.microphoneName = microphone.name
+                settings.setBluetoothHDGuardPreference(updated)
+                bluetoothHDGuard.preferencesDidChange()
+            }
+        )
     }
 
     // MARK: - Call Mode

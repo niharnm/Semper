@@ -942,6 +942,137 @@ struct AudioEngineTapInitialStateTests {
         #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
     }
 
+    @Test("HD Guard restores the original input only while it owns the route")
+    func bluetoothGuardRestoresOwnedInput() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(705),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(706),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == protectedInput.uid)
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == headsetInput.uid)
+    }
+
+    @Test("HD Guard preserves a later user microphone choice")
+    func bluetoothGuardPreservesUserOverride() {
+        let fix = makeFixture()
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(707),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(708),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(709),
+            uid: "user-input",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
+    @Test("HD Guard does not overwrite an unowned external input change")
+    func bluetoothGuardSkipsStaleRestoration() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(710),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(711),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let externalInput = AudioDevice(
+            id: AudioDeviceID(712),
+            uid: "external-input",
+            name: "External Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(externalInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        fix.deviceVolume.defaultInputDeviceID = externalInput.id
+        fix.deviceVolume.defaultInputDeviceUID = externalInput.uid
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == externalInput.uid)
+    }
+
     @Test("A newly discovered helper process rebuilds the app tap")
     func helperMembershipChangeRebuildsTap() async throws {
         let fix = makeFixture()
