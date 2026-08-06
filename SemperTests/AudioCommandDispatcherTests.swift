@@ -97,6 +97,22 @@ struct AudioCommandDispatcherTests {
         #expect(receipt.observedValue == nil)
     }
 
+    @Test("Accepted completion uses the backend effective value")
+    func acceptedEffectiveValue() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.8)])
+        backend.effectiveValues[key] = .scalar(0.4)
+        backend.nextResult = .accepted
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.9),
+            context: AudioCommandContext(source: .popup)
+        )
+
+        #expect(dispatcher.completeAccepted(key, observed: .scalar(0.4)))
+    }
+
     @Test("Rejected command cancels its recovery claim")
     func rejectedCancelsRecovery() {
         let owner = AudioAutomationOwner(rawValue: "guard")
@@ -398,6 +414,7 @@ private final class StubAudioCommandBackend: AudioCommandBackend {
     var state: [AudioControlKey: AudioControlValue]
     var nextResult: AudioBackendApplyResult?
     var recoveryAliases: [AudioControlKey: Set<AudioControlKey>] = [:]
+    var effectiveValues: [AudioControlKey: AudioControlValue] = [:]
     private(set) var appliedCommands: [AudioCommand] = []
 
     init(state: [AudioControlKey: AudioControlValue] = [:]) {
@@ -423,5 +440,9 @@ private final class StubAudioCommandBackend: AudioCommandBackend {
 
     func recoveryAliasKeys(for command: AudioCommand) -> Set<AudioControlKey> {
         recoveryAliases[command.controlKey] ?? []
+    }
+
+    func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue {
+        effectiveValues[command.controlKey] ?? command.requestedValue
     }
 }

@@ -32,14 +32,18 @@ struct DeviceDetailSheetToggleTests {
     private func makeSheet(
         autoDetectedTier: VolumeControlTier,
         currentOverride: VolumeControlTier?,
-        onOverrideChange: @escaping (VolumeControlTier?) -> Void = { _ in }
+        currentVolumeLimit: Float? = nil,
+        onOverrideChange: @escaping (VolumeControlTier?) -> Void = { _ in },
+        onVolumeLimitChange: @escaping (Float?) -> Void = { _ in }
     ) -> DeviceDetailSheet {
         DeviceDetailSheet(
             device: Self.testDevice,
             transportType: .builtIn,
             autoDetectedTier: autoDetectedTier,
             currentOverride: currentOverride,
+            currentVolumeLimit: currentVolumeLimit,
             onOverrideChange: onOverrideChange,
+            onVolumeLimitChange: onVolumeLimitChange,
             onDismiss: {}
         )
     }
@@ -104,6 +108,46 @@ struct DeviceDetailSheetToggleTests {
         #expect(captured.count == 1)
         // First-level optional wrapping: captured[0] is VolumeControlTier? where the value is `nil`.
         #expect(captured.first == .some(nil))
+    }
+
+    @Test("Volume limit toggle enables at 80 percent")
+    func volumeLimitToggleEnablesWithSafeDefault() {
+        var captured: [Float?] = []
+        let sheet = makeSheet(
+            autoDetectedTier: .hardware,
+            currentOverride: nil,
+            onVolumeLimitChange: { captured.append($0) }
+        )
+
+        sheet.setVolumeLimitEnabled(true)
+
+        #expect(captured == [0.8])
+    }
+
+    @Test("Volume limit toggle preserves the current value and disables with nil")
+    func volumeLimitTogglePreservesAndDisables() {
+        var captured: [Float?] = []
+        let sheet = makeSheet(
+            autoDetectedTier: .hardware,
+            currentOverride: nil,
+            currentVolumeLimit: 0.65,
+            onVolumeLimitChange: { captured.append($0) }
+        )
+
+        sheet.setVolumeLimitEnabled(true)
+        sheet.setVolumeLimitEnabled(false)
+
+        #expect(captured == [0.65, nil])
+    }
+
+    @Test("Volume limit values and accessibility text are normalized")
+    func volumeLimitNormalizationAndAccessibility() {
+        #expect(DeviceDetailSheet.normalizedVolumeLimit(0.05) == 0.1)
+        #expect(DeviceDetailSheet.normalizedVolumeLimit(1.2) == 1.0)
+        #expect(DeviceDetailSheet.volumeLimitPercentage(0.65) == "65%")
+        #expect(DeviceDetailSheet.volumeLimitAccessibilityValue(nil) == "Off")
+        #expect(DeviceDetailSheet.volumeLimitAccessibilityValue(0.65) == "On, 65 percent")
+        #expect(DeviceDetailSheet.volumeLimitAccessibilityPercentage(0.65) == "65 percent")
     }
 
 }

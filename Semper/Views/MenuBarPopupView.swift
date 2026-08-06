@@ -111,7 +111,14 @@ struct MenuBarPopupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             popupHeader
-            AudioStatusStrip(store: audioActivityStore)
+            if audioEngine.audioProcessingState == .active {
+                AudioStatusStrip(store: audioActivityStore)
+            } else {
+                AudioRecoveryStatusStrip(
+                    audioEngine: audioEngine,
+                    onResume: { dispatchAudioProcessing(.active) }
+                )
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     mainContent(scrollProxy: proxy)
@@ -257,6 +264,7 @@ struct MenuBarPopupView: View {
             }
             .frame(maxWidth: .infinity)
 
+            audioProcessingButton
             editPriorityButton
             settingsButton
         }
@@ -395,6 +403,66 @@ struct MenuBarPopupView: View {
 
     // MARK: - Settings Button
 
+    private var audioProcessingButton: some View {
+        Button {
+            switch audioEngine.audioProcessingState {
+            case .active:
+                dispatchAudioProcessing(.bypassed)
+            case .bypassed:
+                dispatchAudioProcessing(.active)
+            case .waitingForPermission:
+                if permission.status == .denied {
+                    permission.openSystemSettings()
+                } else {
+                    permission.request()
+                }
+            case .failed:
+                audioEngine.retryAudioProcessingRecovery()
+            case .bypassing, .resuming:
+                break
+            }
+        } label: {
+            Image(systemName: audioEngine.audioProcessingState == .active ? "waveform" : "waveform.slash")
+                .font(.system(size: 12))
+                .foregroundStyle(
+                    audioEngine.audioProcessingState == .active
+                        ? DesignTokens.Colors.textSecondary
+                        : DesignTokens.Colors.systemOrange
+                )
+                .frame(width: 28, height: 28)
+                .background {
+                    Circle()
+                        .fill(DesignTokens.Colors.nextControlBackground)
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(
+            audioEngine.audioProcessingState == .bypassing
+                || audioEngine.audioProcessingState == .resuming
+        )
+        .accessibilityLabel(audioProcessingButtonLabel)
+        .accessibilityValue(audioEngine.audioProcessingState.accessibilityValue)
+        .help(audioProcessingButtonLabel)
+    }
+
+    private var audioProcessingButtonLabel: String {
+        switch audioEngine.audioProcessingState {
+        case .active: "Bypass audio processing"
+        case .bypassed: "Resume audio processing"
+        case .waitingForPermission: "Grant audio recording access"
+        case .failed: "Retry audio recovery"
+        case .bypassing: "Bypassing audio processing"
+        case .resuming: "Resuming audio processing"
+        }
+    }
+
+    private func dispatchAudioProcessing(_ mode: AudioProcessingMode) {
+        _ = dispatchPopup(
+            .setAudioProcessingMode(mode),
+            reason: .bypass
+        )
+    }
+
     private var settingsButton: some View {
         Button {
             openSettingsWindow()
@@ -447,14 +515,20 @@ struct MenuBarPopupView: View {
         openSettings()
     }
 
+    @discardableResult
     private func dispatchPopup(
         _ command: AudioCommand,
         source: AudioCommandSource = .popup,
+        reason: AudioChangeReason = .directUser,
         transactionID: UUID = UUID()
-    ) {
+    ) -> AudioCommandResult {
         audioCommands.dispatch(
             command,
-            context: AudioCommandContext(source: source, transactionID: transactionID)
+            context: AudioCommandContext(
+                source: source,
+                reason: reason,
+                transactionID: transactionID
+            )
         )
     }
 
@@ -865,9 +939,37 @@ struct MenuBarPopupView: View {
                         transportType: device.id.readTransportType(),
                         autoDetectedTier: deviceVolumeMonitor.autoDetectedOutputVolumeBackend(for: device.id),
                         currentOverride: audioEngine.settingsManager.getDeviceVolumeTierOverride(for: device.uid),
+                        currentVolumeLimit: audioEngine.settingsManager.outputVolumeLimit(for: device.uid),
                         onOverrideChange: { newTier in
                             audioEngine.settingsManager.setDeviceVolumeTierOverride(for: device.uid, to: newTier)
                             deviceVolumeMonitor.applyTierOverrideChange(for: device.id)
+                        },
+                        onVolumeLimitChange: { newLimit in
+                            let currentGain = audioEngine.masterOutputVolume(for: device)
+                            if let newLimit,
+                               currentGain > newLimit + SafeOutputSwitchState.volumeTolerance
+                                || audioEngine.hasPendingOutputVolumeLimitChange(for: device.uid) {
+                                audioEngine.beginOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    to: newLimit
+                                )
+                                let result = dispatchPopup(
+                                    .setOutputMasterGain(
+                                        deviceUID: device.uid,
+                                        gain: currentGain
+                                    ),
+                                    reason: .safeCap
+                                )
+                                audioEngine.resolveOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    commandResult: result
+                                )
+                            } else {
+                                audioEngine.commitOutputVolumeLimitChange(
+                                    for: device.uid,
+                                    to: newLimit
+                                )
+                            }
                         },
                         onDismiss: {}
                     )
@@ -937,7 +1039,8 @@ struct MenuBarPopupView: View {
                 SectionHeader(title: "Applications")
                 Spacer()
 
-                if !isEditingDevicePriority {
+                if !isEditingDevicePriority,
+                   audioEngine.audioProcessingState == .active {
                     Button {
                         mediaKeyMonitor.feedbackPlayer?.playTestSound()
                     } label: {
@@ -971,7 +1074,17 @@ struct MenuBarPopupView: View {
             .padding(.bottom, 4)
 
             Group {
-                if permission.status != .authorized {
+                if audioEngine.audioProcessingState != .active {
+                    HStack {
+                        Spacer()
+                        Text("App controls are paused during audio recovery.")
+                            .font(DesignTokens.Typography.caption)
+                            .foregroundStyle(DesignTokens.Colors.textTertiary)
+                            .multilineTextAlignment(.center)
+                        Spacer()
+                    }
+                    .padding(.vertical, DesignTokens.Spacing.lg)
+                } else if permission.status != .authorized {
                     PermissionBannerView(permission: permission)
                 } else if isEditingDevicePriority {
                     appEditModeContent

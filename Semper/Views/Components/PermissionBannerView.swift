@@ -34,7 +34,7 @@ struct PermissionBannerView: View {
     private var actionButton: some View {
         if permission.status == .denied {
             Button("Open System Settings") {
-                openSystemAudioSettings()
+                permission.openSystemSettings()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -47,9 +47,4 @@ struct PermissionBannerView: View {
         }
     }
 
-    private func openSystemAudioSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
-        }
-    }
 }
