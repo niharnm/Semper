@@ -8,6 +8,7 @@ private struct AppFingerprint: Hashable {
     let pid: pid_t
     let objectIDs: [AudioObjectID]
     let runningObjectIDs: [AudioObjectID]
+    let inputObjectIDs: [AudioObjectID]
 }
 
 @Observable
@@ -88,6 +89,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
     // Property listeners
     private var processListListenerBlock: AudioObjectPropertyListenerBlock?
     private var processListenerBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    private var processInputListenerBlocks: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
     private var monitoredProcesses: Set<AudioObjectID> = []
     private var periodicRefreshTask: Task<Void, Never>?
 
@@ -295,6 +297,9 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                     objectIDs: $0.processObjectIDs,
                     runningObjectIDs: $0.processObjectIDs.filter {
                         $0.readProcessIsRunning()
+                    },
+                    inputObjectIDs: $0.processObjectIDs.filter {
+                        $0.readProcessIsRunningInput()
                     }
                 )
             })
@@ -304,6 +309,9 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                     objectIDs: $0.processObjectIDs,
                     runningObjectIDs: $0.processObjectIDs.filter {
                         $0.readProcessIsRunning()
+                    },
+                    inputObjectIDs: $0.processObjectIDs.filter {
+                        $0.readProcessIsRunningInput()
                     }
                 )
             })
@@ -358,23 +366,55 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         } else {
             logger.warning("Failed to add isRunning listener for \(objectID): \(status)")
         }
-    }
 
-    private func removeProcessListener(for objectID: AudioObjectID) {
-        guard let block = processListenerBlocks.removeValue(forKey: objectID) else { return }
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyIsRunning,
+        var inputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyIsRunningInput,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
+        guard AudioObjectHasProperty(objectID, &inputAddress) else { return }
 
-        guard AudioObjectHasProperty(objectID, &address) else { return }
+        let inputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
+            }
+        }
+        let inputStatus = AudioObjectAddPropertyListenerBlock(
+            objectID,
+            &inputAddress,
+            .main,
+            inputBlock
+        )
+        if inputStatus == noErr {
+            processInputListenerBlocks[objectID] = inputBlock
+        } else {
+            logger.warning("Failed to add input-running listener for \(objectID): \(inputStatus)")
+        }
+    }
 
-        let status = AudioObjectRemovePropertyListenerBlock(objectID, &address, .main, block)
-        // Tolerate kAudioHardwareBadObjectError (-66680): process object already destroyed
-        if status != noErr && status != OSStatus(kAudioHardwareBadObjectError) {
-            logger.warning("Failed to remove isRunning listener for \(objectID): \(status)")
+    private func removeProcessListener(for objectID: AudioObjectID) {
+        if let block = processListenerBlocks.removeValue(forKey: objectID) {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyIsRunning,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let status = AudioObjectRemovePropertyListenerBlock(objectID, &address, .main, block)
+            if status != noErr && status != OSStatus(kAudioHardwareBadObjectError) {
+                logger.warning("Failed to remove isRunning listener for \(objectID): \(status)")
+            }
+        }
+
+        if let block = processInputListenerBlocks.removeValue(forKey: objectID) {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyIsRunningInput,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let status = AudioObjectRemovePropertyListenerBlock(objectID, &address, .main, block)
+            if status != noErr && status != OSStatus(kAudioHardwareBadObjectError) {
+                logger.warning("Failed to remove input-running listener for \(objectID): \(status)")
+            }
         }
     }
 
@@ -384,6 +424,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         }
         monitoredProcesses.removeAll()
         processListenerBlocks.removeAll()
+        processInputListenerBlocks.removeAll()
     }
 
 }

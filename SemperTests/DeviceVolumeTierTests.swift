@@ -160,9 +160,11 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     private(set) var setVolumeCalls: [(deviceID: AudioDeviceID, volume: Float)] = []
     private(set) var setMuteCalls: [(deviceID: AudioDeviceID, muted: Bool)] = []
     private(set) var setDefaultDeviceCalls: [AudioDeviceID] = []
+    private(set) var setDefaultInputDeviceCalls: [AudioDeviceID] = []
     var volumeWritesSucceed = true
     var defaultDeviceWritesSucceed = true
     var defaultDeviceWritesPublishState = true
+    var defaultInputDeviceWritesSucceed = true
     var confirmedOutputVolumes: [AudioDeviceID: Float] = [:]
 
     func setVolume(for deviceID: AudioDeviceID, to volume: Float) {
@@ -231,7 +233,21 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     }
 
     @discardableResult
-    func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool { true }
+    func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDefaultInputDeviceCalls.append(deviceID)
+        guard defaultInputDeviceWritesSucceed,
+              let device = deviceMonitor.inputDevices.first(where: { $0.id == deviceID }) else {
+            return false
+        }
+        defaultInputDeviceID = deviceID
+        defaultInputDeviceUID = device.uid
+        let callback = onDefaultInputDeviceChanged
+        Task { @MainActor in
+            await Task.yield()
+            callback?(device.uid)
+        }
+        return true
+    }
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
         if let uid = deviceMonitor.device(for: deviceID)?.uid,
@@ -382,10 +398,10 @@ struct SettingsMigrationV10toV11Tests {
         #expect(decoded.softwareDeviceSavedVolumes.isEmpty)
     }
 
-    @Test("Re-encode after v10 decode bumps to v13 on a fresh Settings instance")
-    func defaultSettingsVersionIsFourteen() {
+    @Test("Re-encode after v10 decode uses the current schema on a fresh Settings instance")
+    func defaultSettingsVersionIsCurrent() {
         let fresh = SettingsManager.Settings()
-        #expect(fresh.version == 14)
+        #expect(fresh.version == 16)
         #expect(fresh.deviceVolumeTierOverride.isEmpty)
     }
 
