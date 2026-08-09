@@ -162,6 +162,7 @@ private func makeFixture(
     deviceVolume: Float = 0.75,
     outputTopology: OutputDeviceTopology = .assumedStereo,
     processObjectIDs: [AudioObjectID] = [],
+    runningProcessObjectIDs: [AudioObjectID] = [],
     isHelperBacked: Bool = false
 ) -> Fixture {
     let tempDir = FileManager.default.temporaryDirectory
@@ -185,6 +186,7 @@ private func makeFixture(
     let app = AudioApp(
         id: 12345,
         processObjectIDs: processObjectIDs,
+        runningProcessObjectIDs: runningProcessObjectIDs,
         name: "TestApp",
         icon: NSImage(),
         bundleID: "com.test.tapinitial",
@@ -610,6 +612,68 @@ struct AudioEngineTapInitialStateTests {
         #expect(rebuiltTap !== firstTap)
         #expect(rebuiltTap.app.processObjectIDs == [100])
         #expect(firstTap.events.contains(.invalidate))
+    }
+
+    @Test("A helper becoming idle rebuilds its stale tap")
+    func idleBrowserHelperInvalidatesStaleTap() async throws {
+        let fix = makeFixture(
+            processObjectIDs: [100],
+            runningProcessObjectIDs: [100],
+            isHelperBacked: true
+        )
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let firstTap = try #require(fix.lastTap())
+
+        fix.processMonitor.onAppsChanged?([fix.app])
+
+        let idleApp = AudioApp(
+            id: fix.app.id,
+            processObjectIDs: fix.app.processObjectIDs,
+            runningProcessObjectIDs: [],
+            name: fix.app.name,
+            icon: fix.app.icon,
+            bundleID: fix.app.bundleID,
+            isHelperBacked: true
+        )
+        fix.processMonitor.activeApps = [idleApp]
+        fix.processMonitor.onAppsChanged?([idleApp])
+
+        for _ in 0..<100 {
+            if let current = fix.lastTap(), current !== firstTap {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let rebuiltTap = try #require(fix.lastTap())
+        #expect(rebuiltTap !== firstTap)
+        #expect(firstTap.events.contains(.invalidate))
+        #expect(rebuiltTap.app.runningProcessObjectIDs.isEmpty)
+    }
+
+    @Test("Process monitor detects a helper becoming idle")
+    func processMonitorDetectsRunningSnapshotChange() {
+        let playingApp = AudioApp(
+            id: 123,
+            processObjectIDs: [100],
+            runningProcessObjectIDs: [100],
+            name: "Safari",
+            icon: NSImage(),
+            bundleID: "com.apple.Safari",
+            isHelperBacked: true
+        )
+        let idleApp = AudioApp(
+            id: playingApp.id,
+            processObjectIDs: playingApp.processObjectIDs,
+            runningProcessObjectIDs: [],
+            name: playingApp.name,
+            icon: playingApp.icon,
+            bundleID: playingApp.bundleID,
+            isHelperBacked: true
+        )
+
+        #expect(!AudioProcessMonitor.hasMeaningfulChange(from: [playingApp], to: [playingApp]))
+        #expect(AudioProcessMonitor.hasMeaningfulChange(from: [playingApp], to: [idleApp]))
     }
 
     @Test("Closing the last browser helper invalidates its stale tap")

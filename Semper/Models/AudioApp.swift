@@ -5,6 +5,7 @@ import AudioToolbox
 struct AudioApp: Identifiable, Hashable {
     let id: pid_t
     let processObjectIDs: [AudioObjectID]
+    let runningProcessObjectIDs: [AudioObjectID]
     let name: String
     let icon: NSImage
     let bundleID: String?
@@ -14,6 +15,7 @@ struct AudioApp: Identifiable, Hashable {
     init(
         id: pid_t,
         processObjectIDs: [AudioObjectID],
+        runningProcessObjectIDs: [AudioObjectID] = [],
         name: String,
         icon: NSImage,
         bundleID: String?,
@@ -22,6 +24,7 @@ struct AudioApp: Identifiable, Hashable {
     ) {
         self.id = id
         self.processObjectIDs = processObjectIDs
+        self.runningProcessObjectIDs = runningProcessObjectIDs
         self.name = name
         self.icon = icon
         self.bundleID = bundleID
