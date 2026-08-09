@@ -45,9 +45,9 @@ Auto-detection gets it right for most devices, but some USB DACs and HDMI/Displa
 
 ## Audio device not switching automatically
 
-Semper uses a **device priority list** to decide which output device to use. When a device connects, Semper only switches to it if it's ranked higher than the current device. When a device disconnects, Semper falls back to the next highest-priority device that's still connected.
+Semper follows macOS when the system automatically selects a newly connected output, including AirPods. If macOS leaves the current output unchanged, Semper switches only when the connected device is ranked higher. When a device disconnects, Semper falls back to the next highest-priority device that's still connected.
 
-By default, devices are added to the bottom of the list in the order they're first seen. Since your Mac's built-in speakers are always connected, they end up at the top (highest priority), so Semper won't auto-switch to headphones, external speakers, or other devices when they connect.
+By default, devices are added to the bottom of the list in the order they're first seen. Reorder the list when you want Semper to prefer a device that macOS does not select automatically.
 
 **This is a one-time setup.** Once you set your preferred order, it's saved permanently and works across app restarts.
 
@@ -57,7 +57,7 @@ By default, devices are added to the bottom of the list in the order they're fir
 2. **Drag** devices to reorder, or **click the priority number** and type a new position
 3. Click the **checkmark** to exit edit mode — your order is saved
 
-The device at position 1 has the highest priority. Semper will always prefer the highest-priority device that's currently connected.
+The device at position 1 has the highest priority for Semper-initiated switches and disconnect fallback. A device that macOS has just made the system default takes precedence.
 
 Input and output devices have **separate priority lists** — switch between them using the tabs in edit mode.
 
