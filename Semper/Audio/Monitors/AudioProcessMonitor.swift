@@ -228,6 +228,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
                 // Keep idle process objects so their taps are ready before first playback.
                 runningProcessIDs.append(objectID)
+                let isRunning = objectID.readProcessIsRunning()
 
                 // Try to find the parent app (for helper processes like Safari Graphics and Media)
                 let directApp = runningAppsByPID[pid]
@@ -260,9 +261,15 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                         var mergedIDs = existing.processObjectIDs
                         mergedIDs.append(objectID)
                         mergedIDs.sort()
+                        var mergedRunningIDs = existing.runningProcessObjectIDs
+                        if isRunning {
+                            mergedRunningIDs.append(objectID)
+                            mergedRunningIDs.sort()
+                        }
                         appsByPID[parentPID] = AudioApp(
                             id: existing.id,
                             processObjectIDs: mergedIDs,
+                            runningProcessObjectIDs: mergedRunningIDs,
                             name: existing.name,
                             icon: existing.icon,
                             bundleID: existing.bundleID,
@@ -274,6 +281,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                     appsByPID[parentPID] = AudioApp(
                         id: parentPID,
                         processObjectIDs: [objectID],
+                        runningProcessObjectIDs: isRunning ? [objectID] : [],
                         name: name,
                         icon: icon,
                         bundleID: bundleID,
@@ -289,33 +297,29 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
             let sorted = appsByPID.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
             // Only fire callback if the app list actually changed (avoids churn from periodic refresh)
-            let oldSet = Set(activeApps.map {
-                AppFingerprint(
-                    pid: $0.id,
-                    objectIDs: $0.processObjectIDs,
-                    runningObjectIDs: $0.processObjectIDs.filter {
-                        $0.readProcessIsRunning()
-                    }
-                )
-            })
-            let newSet = Set(sorted.map {
-                AppFingerprint(
-                    pid: $0.id,
-                    objectIDs: $0.processObjectIDs,
-                    runningObjectIDs: $0.processObjectIDs.filter {
-                        $0.readProcessIsRunning()
-                    }
-                )
-            })
-
+            let changed = Self.hasMeaningfulChange(from: activeApps, to: sorted)
             activeApps = sorted
-            if oldSet != newSet {
+            if changed {
                 onAppsChanged?(activeApps)
             }
 
         } catch {
             logger.error("Failed to refresh process list: \(error.localizedDescription)")
         }
+    }
+
+    static func hasMeaningfulChange(from oldApps: [AudioApp], to newApps: [AudioApp]) -> Bool {
+        func fingerprints(_ apps: [AudioApp]) -> Set<AppFingerprint> {
+            Set(apps.map {
+                AppFingerprint(
+                    pid: $0.id,
+                    objectIDs: $0.processObjectIDs,
+                    runningObjectIDs: $0.runningProcessObjectIDs
+                )
+            })
+        }
+
+        return fingerprints(oldApps) != fingerprints(newApps)
     }
 
     private func updateProcessListeners(for processIDs: [AudioObjectID]) {

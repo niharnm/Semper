@@ -47,6 +47,7 @@ final class AudioEngine {
     private var lastConfirmedDefaultUID: String?
     private var pendingCleanup: [pid_t: Task<Void, Never>] = [:]  // Grace period for stale tap cleanup
     private var tapMembershipRefreshTasks: [pid_t: Task<Void, Never>] = [:]
+    private var lastRunningProcessObjectIDs: [pid_t: Set<AudioObjectID>] = [:]
     private var staleCleanupTask: Task<Void, Never>?  // Debounced cleanup scheduling
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
@@ -524,6 +525,13 @@ final class AudioEngine {
     }
 
     private func handleAppsChanged(_ updatedApps: [AudioApp]) {
+        let previousRunningProcessObjectIDs = lastRunningProcessObjectIDs
+        lastRunningProcessObjectIDs = Dictionary(
+            uniqueKeysWithValues: updatedApps.map {
+                ($0.id, Set($0.runningProcessObjectIDs))
+            }
+        )
+
         applyPersistedSettings()
         scheduleStaleCleanup()
 
@@ -547,8 +555,12 @@ final class AudioEngine {
         }
 
         for app in updatedApps {
-            guard let tap = taps[app.id],
-                  Self.shouldRefreshTapMembership(
+            guard let tap = taps[app.id] else { continue }
+            let latestRunningIDs = Set(app.runningProcessObjectIDs)
+            let stoppedRunningIDs = previousRunningProcessObjectIDs[app.id, default: []]
+                .subtracting(latestRunningIDs)
+            let helperActivityStopped = app.isHelperBacked && !stoppedRunningIDs.isEmpty
+            guard helperActivityStopped || Self.shouldRefreshTapMembership(
                     currentObjectIDs: tap.app.processObjectIDs,
                     latestObjectIDs: app.processObjectIDs
                   ) else {
@@ -563,17 +575,24 @@ final class AudioEngine {
                 }
                 guard !Task.isCancelled,
                       let latestApp = self.apps.first(where: { $0.id == app.id }),
-                      let currentTap = self.taps[app.id],
-                      Self.shouldRefreshTapMembership(
+                      let currentTap = self.taps[app.id] else {
+                    return
+                }
+                let stillStoppedIDs = stoppedRunningIDs.subtracting(
+                    Set(latestApp.runningProcessObjectIDs)
+                )
+                let membershipChanged = Self.shouldRefreshTapMembership(
                         currentObjectIDs: currentTap.app.processObjectIDs,
                         latestObjectIDs: latestApp.processObjectIDs
-                      ) else {
+                      )
+                guard !stillStoppedIDs.isEmpty || membershipChanged else {
                     return
                 }
                 let currentIDs = Set(currentTap.app.processObjectIDs)
                 let latestIDs = Set(latestApp.processObjectIDs)
                 let removedIDs = currentIDs.subtracting(latestIDs)
-                if removedIDs.isEmpty,
+                if stillStoppedIDs.isEmpty,
+                   removedIDs.isEmpty,
                    !currentIDs.isDisjoint(with: latestIDs),
                    currentTap.hasRecentAudioCallback(within: 1.0) {
                     return
