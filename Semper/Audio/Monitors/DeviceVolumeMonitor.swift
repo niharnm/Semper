@@ -1053,6 +1053,9 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
                 guard let self, self.isObservingDeviceList else { return }
                 self.logger.debug("Device list changed, refreshing volume listeners")
                 self.refreshDeviceListeners()
+                // Bluetooth can publish the default-output event before its UID is readable.
+                // Reconcile once the device list settles so that change is not lost.
+                self.handleDefaultDeviceChanged()
                 self.subscribeOutputDeviceListObservation()
             }
         }
