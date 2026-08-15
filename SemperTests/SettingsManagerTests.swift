@@ -322,9 +322,9 @@ struct OutputVolumeLimitPersistenceTests {
             .appendingPathComponent("SemperVolumeLimitTests-\(UUID().uuidString)", isDirectory: true)
     }
 
-    @Test("Default settings use schema 16")
+    @Test("Default settings use schema 17")
     func schemaVersion() {
-        #expect(SettingsManager.Settings().version == 16)
+        #expect(SettingsManager.Settings().version == 17)
     }
 
     @Test("Loading an older file advances its schema on the next write")
@@ -339,7 +339,7 @@ struct OutputVolumeLimitPersistenceTests {
         manager.flushSync()
 
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        #expect(object?["version"] as? Int == 16)
+        #expect(object?["version"] as? Int == 17)
     }
 
     @Test("Limits clamp, persist by UID, and clear with nil")
@@ -618,6 +618,28 @@ struct AppSettingsDefaultTests {
     func loudnessEqualizationEnabledDefault() {
         let settings = AppSettings()
         #expect(settings.loudnessEqualizationEnabled == false)
+    }
+
+    @Test("Mono audio defaults off and round-trips through JSON")
+    func monoAudioRoundTrip() throws {
+        var settings = AppSettings()
+        #expect(!settings.monoAudioEnabled)
+
+        settings.monoAudioEnabled = true
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+        #expect(decoded.monoAudioEnabled)
+    }
+
+    @Test("Schema 16 settings default mono audio to off")
+    func monoAudioMigrationDefault() throws {
+        let decoded = try JSONDecoder().decode(
+            SettingsManager.Settings.self,
+            from: Data(#"{"version":16,"appSettings":{}}"#.utf8)
+        )
+
+        #expect(!decoded.appSettings.monoAudioEnabled)
     }
 
     @Test("loudnessEqualizationEnabled round-trips through JSON as true")

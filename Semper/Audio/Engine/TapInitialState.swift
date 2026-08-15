@@ -6,6 +6,7 @@ struct TapInitialState {
     var eqSettings: EQSettings = .flat
     var autoEQProfile: AutoEQProfile? = nil
     var autoEQPreampEnabled: Bool = false
+    var monoAudioEnabled: Bool = false
     var loudnessVolume: Float = 1.0
     var loudnessCompensationEnabled: Bool = false
     var loudnessEqualizerSettings: LoudnessEqualizerSettings = .init()

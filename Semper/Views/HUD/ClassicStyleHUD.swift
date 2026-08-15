@@ -50,9 +50,9 @@ struct ClassicStyleHUD: View {
     var waveIconNameForTest: String { waveIconName }
     #endif
 
-    private var accessibilityDescription: String {
+    private var accessibilityValue: String {
         if mute { return "Muted" }
-        return "Volume \(Int((displayValue * 100).rounded())) percent"
+        return AudioAccessibility.percentage(Double(displayValue))
     }
 
     // MARK: - Body
@@ -72,7 +72,8 @@ struct ClassicStyleHUD: View {
                 .strokeBorder(DesignTokens.Colors.hudBorder, lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityDescription)
+        .accessibilityLabel("System volume")
+        .accessibilityValue(accessibilityValue)
     }
 
     private var iconSection: some View {

@@ -463,14 +463,14 @@ private struct PerAppHUD: View {
         "\(displayedPercent)%"
     }
 
-    private var accessibilityDescription: String {
+    private var accessibilityValue: String {
         switch content {
         case .volume:
-            return "\(title), volume \(Int((displayLevel * 100).rounded())) percent"
+            return AudioAccessibility.percentage(displayLevel)
         case .mute(let isMuted):
-            return isMuted ? "\(title), muted" : "\(title), unmuted"
+            return isMuted ? "Muted" : "Unmuted"
         case .notControlled:
-            return "\(title), not controlled by Semper"
+            return "Not controlled by Semper"
         }
     }
 
@@ -500,7 +500,8 @@ private struct PerAppHUD: View {
                 .strokeBorder(DesignTokens.Colors.hudBorder, lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityDescription)
+        .accessibilityLabel("\(title) volume")
+        .accessibilityValue(accessibilityValue)
     }
 
     @ViewBuilder
