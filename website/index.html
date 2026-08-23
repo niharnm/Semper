@@ -157,7 +157,7 @@
                 "name": "Can I download a stable Semper release?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Not yet. The source code and build instructions are public, but no packaged public release has been published as of July 31, 2026."
+                  "text": "Yes. Download the latest signed Semper release from GitHub Releases or install it with Homebrew. Semper requires macOS 15.4 or later."
                 }
               },
               {
@@ -810,22 +810,20 @@
       <section class="canary section" id="release" data-scene="canary">
         <div class="canary-layout">
           <div class="canary-copy reveal">
-            <p class="kicker">Release status</p>
-            <h2>Packaged builds are still being prepared.</h2>
+            <p class="kicker">Download</p>
+            <h2>Download Semper for macOS.</h2>
             <p>
-              There is no public Semper DMG yet. The source, tests, and build
-              instructions are open now. Signed and notarized downloads will
-              appear on GitHub Releases when they are ready.
+              Download the disk image, drag Semper into Applications, and grant
+              the audio permission on first launch. Semper keeps itself up to
+              date with its built-in updater. Requires macOS 15.4 or later.
             </p>
             <div class="canary-actions">
               <a
                 class="button button-primary"
-                href="https://github.com/niharnm/Semper/releases"
-                target="_blank"
-                rel="noreferrer"
+                href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"
                 data-release-status
               >
-                Check GitHub Releases
+                Download Semper
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M4 12 12 4M6 4h6v6" />
                 </svg>
@@ -846,22 +844,22 @@
             <li>
               <span>01</span>
               <div>
-                <h3>Inspect the source</h3>
-                <p>Review the Core Audio engine, SwiftUI app, tests, and guides.</p>
+                <h3>Download the DMG</h3>
+                <p>Get Semper.dmg from GitHub Releases or Homebrew.</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <h3>Build it locally</h3>
-                <p>Use Xcode and follow the repository build instructions.</p>
+                <h3>Drag to Applications</h3>
+                <p>Open the disk image and drag Semper into Applications.</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <h3>Watch for a release</h3>
-                <p>Use GitHub's Watch control to follow tagged builds.</p>
+                <h3>Grant audio access</h3>
+                <p>Approve Screen &amp; System Audio Recording on first launch.</p>
               </div>
             </li>
           </ol>
@@ -1065,9 +1063,13 @@
           <article class="faq-card reveal">
             <h3>Can I download a stable Semper release?</h3>
             <p>
-              Not yet. The source code and build instructions are public, but
-              no packaged public release has been published as of July 31,
-              2026.
+              Yes. Download the latest signed release from
+              <a
+                href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"
+              >GitHub Releases</a>
+              or install it with Homebrew:
+              <code>brew install --cask niharnm/tap/semper</code>. Semper
+              requires macOS 15.4 or later.
             </p>
           </article>
           <article class="faq-card reveal">
