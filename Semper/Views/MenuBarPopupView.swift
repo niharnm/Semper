@@ -7,6 +7,8 @@ struct MenuBarPopupView: View {
     @Bindable var audioEngine: AudioEngine
     let audioCommands: any AudioCommandDispatching
     @Bindable var audioActivityStore: AudioActivityStore
+    @Bindable var callMode: CallModeCoordinator
+    @Bindable var bluetoothHDGuard: BluetoothHDGuardCoordinator
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @ObservedObject var updateManager: UpdateManager
 
@@ -111,13 +113,17 @@ struct MenuBarPopupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             popupHeader
-            if audioEngine.audioProcessingState == .active {
-                AudioStatusStrip(store: audioActivityStore)
-            } else {
+            if audioEngine.audioProcessingState != .active {
                 AudioRecoveryStatusStrip(
                     audioEngine: audioEngine,
                     onResume: { dispatchAudioProcessing(.active) }
                 )
+            } else if bluetoothHDGuard.pendingPrompt != nil {
+                BluetoothHDGuardPromptStrip(guardCoordinator: bluetoothHDGuard)
+            } else if callMode.pendingPrompt != nil {
+                CallModePromptStrip(callMode: callMode)
+            } else {
+                AudioStatusStrip(store: audioActivityStore)
             }
             ScrollViewReader { proxy in
                 ScrollView {

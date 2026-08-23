@@ -103,6 +103,8 @@ struct AppRowControls: View {
             .frame(width: DesignTokens.Dimensions.sliderWidth)
             .opacity(showMutedIcon ? 0.5 : 1.0)
             .scrollWheelStep(sliderBinding, in: 0.0...1.0)
+            .accessibilityLabel("Volume for \(appName)")
+            .accessibilityValue("\(displayedPercentage) percent")
 
             MuteButton(isMuted: showMutedIcon, levelFraction: sliderValue) {
                 if showMutedIcon {
@@ -128,7 +130,8 @@ struct AppRowControls: View {
                     }
                 ),
                 range: 0...100,
-                isRowFocused: isRowFocused
+                isRowFocused: isRowFocused,
+                accessibilityName: "Volume percentage for \(appName)"
             )
 
             Menu {
