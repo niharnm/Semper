@@ -59,6 +59,9 @@ struct AudioTab: View {
         .onChange(of: settings.appSettings.bluetoothHDGuardEnabled) { _, newValue in
             bluetoothHDGuard.setEnabled(newValue)
         }
+        .onChange(of: settings.appSettings.monoAudioEnabled) { _, newValue in
+            audioEngine.setMonoAudioEnabled(newValue)
+        }
         .onChange(of: settings.appSettings.loudnessCompensationEnabled) { _, newValue in
             audioEngine.setLoudnessCompensationEnabled(newValue)
         }
@@ -275,8 +278,21 @@ struct AudioTab: View {
                 VolumeSlider(
                     $settings.appSettings.defaultNewAppVolume,
                     range: 0.1...1.0,
-                    width: DesignTokens.Dimensions.settingsSliderWidth
+                    width: DesignTokens.Dimensions.settingsSliderWidth,
+                    accessibilityLabel: "Default volume for new apps"
                 )
+            }
+            SettingsRowDivider()
+            SettingsRow(
+                "Mono Audio",
+                description: "Combine left and right channels for managed apps"
+            ) {
+                Toggle("", isOn: $settings.appSettings.monoAudioEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .accessibilityLabel("Mono audio")
+                    .accessibilityValue(settings.appSettings.monoAudioEnabled ? "On" : "Off")
             }
             SettingsRowDivider()
             SettingsRow(
@@ -336,7 +352,8 @@ struct AudioTab: View {
                         set: { deviceVolumeMonitor.setAlertVolume($0) }
                     ),
                     range: 0...1,
-                    width: DesignTokens.Dimensions.settingsSliderWidth
+                    width: DesignTokens.Dimensions.settingsSliderWidth,
+                    accessibilityLabel: "Alert volume"
                 )
             }
             .task {

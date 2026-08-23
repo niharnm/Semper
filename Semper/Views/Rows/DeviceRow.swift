@@ -284,7 +284,8 @@ struct DeviceRow: View {
                 ),
                 range: 0...Int(capabilities.maximumGain * 100),
                 normalTextColor: isBoosted ? DesignTokens.Colors.systemOrange : nil,
-                isRowFocused: isFocused
+                isRowFocused: isFocused,
+                accessibilityName: "Master volume percentage for \(device.name)"
             )
         }
     }
@@ -337,8 +338,9 @@ struct DeviceRow: View {
         HStack(spacing: 8) {
             Text("L")
             SemperBalanceSlider(value: $balanceValue)
-                .accessibilityLabel("Left right balance")
+                .accessibilityLabel("Balance for \(device.name)")
                 .accessibilityValue(balanceAccessibilityValue)
+                .accessibilityHint("Adjusts balance in five percent steps")
                 .onChange(of: balanceValue) { _, newValue in
                     onBalanceChange(Float(max(-1, min(1, newValue))))
                 }
@@ -432,6 +434,15 @@ private struct SemperBalanceSlider: View {
             .frame(maxHeight: .infinity)
         }
         .frame(height: 12)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAdjustableAction { direction in
+            value = AudioAccessibility.adjustedValue(
+                value,
+                direction: direction,
+                step: 0.05,
+                range: -1...1
+            )
+        }
     }
 }
 
@@ -470,6 +481,7 @@ private struct StereoOutputMeter: View {
             .frame(height: 3)
         }
         .frame(height: 4)
+        .accessibilityHidden(true)
     }
 }
 
