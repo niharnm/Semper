@@ -74,6 +74,7 @@ struct SemperApp: App {
             SettingsRootView(
                 settings: audioEngine.settingsManager,
                 audioEngine: audioEngine,
+                audioCommands: audioCommands,
                 deviceVolumeMonitor: audioEngine.deviceVolumeMonitor as! DeviceVolumeMonitor,
                 accessibility: accessibility,
                 mediaKeyStatus: mediaKeyStatus,
@@ -116,7 +117,7 @@ struct SemperApp: App {
         // Install crash handler to clean up aggregate devices on abnormal exit
         CrashGuard.install()
         // Destroy any orphaned aggregate devices from previous crashes
-        OrphanedTapCleanup.destroyOrphanedDevices()
+        let startupCleanup = OrphanedTapCleanup.destroyOrphanedDevices()
 
         let settings = SettingsManager(managesLaunchAtLogin: true)
         let updater = UpdateManager()
@@ -124,7 +125,12 @@ struct SemperApp: App {
         _experimentManager = State(initialValue: ExperimentManager())
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
-        let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
+        let engine = AudioEngine(
+            permission: permission,
+            settingsManager: settings,
+            autoEQProfileManager: profileManager,
+            initialCleanupResult: startupCleanup
+        )
         _audioEngine = State(initialValue: engine)
         let activityStore = AudioActivityStore()
         let commandDispatcher = AudioCommandDispatcher(
@@ -281,7 +287,8 @@ struct SemperApp: App {
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
         _appDelegate.wrappedValue.updateManager = updater
 
-        if permission.status == .unknown {
+        if permission.status == .unknown,
+           settings.audioProcessingMode != .bypassed {
             permission.request()
         }
 

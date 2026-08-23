@@ -8,7 +8,9 @@ struct DeviceDetailSheet: View {
     let transportType: TransportType
     let autoDetectedTier: VolumeControlTier
     let currentOverride: VolumeControlTier?
+    let currentVolumeLimit: Float?
     let onOverrideChange: (VolumeControlTier?) -> Void
+    let onVolumeLimitChange: (Float?) -> Void
     let onDismiss: () -> Void
 
     @State private var viewModel: DeviceInspectorViewModel
@@ -20,14 +22,18 @@ struct DeviceDetailSheet: View {
         transportType: TransportType,
         autoDetectedTier: VolumeControlTier,
         currentOverride: VolumeControlTier?,
+        currentVolumeLimit: Float? = nil,
         onOverrideChange: @escaping (VolumeControlTier?) -> Void,
+        onVolumeLimitChange: @escaping (Float?) -> Void = { _ in },
         onDismiss: @escaping () -> Void
     ) {
         self.device = device
         self.transportType = transportType
         self.autoDetectedTier = autoDetectedTier
         self.currentOverride = currentOverride
+        self.currentVolumeLimit = currentVolumeLimit
         self.onOverrideChange = onOverrideChange
+        self.onVolumeLimitChange = onVolumeLimitChange
         self.onDismiss = onDismiss
         self._viewModel = State(
             initialValue: DeviceInspectorViewModel(
@@ -59,6 +65,9 @@ struct DeviceDetailSheet: View {
                 hogModeRow(hogLine)
             }
 
+            separator
+            volumeLimitControls
+
             if Self.shouldShowToggle(autoTier: autoDetectedTier) {
                 separator
                 softwareToggle
@@ -76,6 +85,83 @@ struct DeviceDetailSheet: View {
         .padding(.bottom, DesignTokens.Spacing.xs)
         .onAppear { viewModel.start() }
         .onDisappear { viewModel.stop() }
+    }
+
+    // MARK: - Volume Limit
+
+    private var volumeLimitControls: some View {
+        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+            Toggle(isOn: volumeLimitEnabledBinding) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Volume limit")
+                        .font(DesignTokens.Typography.pickerText)
+                        .foregroundStyle(DesignTokens.Colors.textPrimary)
+                    Text("Prevent this output from exceeding a set volume.")
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundStyle(DesignTokens.Colors.textTertiary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .accessibilityLabel("Volume limit for \(device.name)")
+            .accessibilityValue(Self.volumeLimitAccessibilityValue(currentVolumeLimit))
+            .accessibilityHint("Prevents this output from exceeding the selected volume")
+
+            if currentVolumeLimit != nil {
+                HStack(spacing: DesignTokens.Spacing.sm) {
+                    Slider(value: volumeLimitBinding, in: 0.1...1.0, step: 0.05)
+                        .accessibilityLabel("Maximum volume for \(device.name)")
+                        .accessibilityValue(Self.volumeLimitAccessibilityPercentage(currentVolumeLimit ?? Self.defaultVolumeLimit))
+
+                    Text(Self.volumeLimitPercentage(currentVolumeLimit ?? Self.defaultVolumeLimit))
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundStyle(DesignTokens.Colors.textSecondary)
+                        .monospacedDigit()
+                        .frame(width: 34, alignment: .trailing)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+    }
+
+    private var volumeLimitEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { currentVolumeLimit != nil },
+            set: { setVolumeLimitEnabled($0) }
+        )
+    }
+
+    private var volumeLimitBinding: Binding<Float> {
+        Binding(
+            get: { Self.normalizedVolumeLimit(currentVolumeLimit ?? Self.defaultVolumeLimit) },
+            set: { onVolumeLimitChange(Self.normalizedVolumeLimit($0)) }
+        )
+    }
+
+    func setVolumeLimitEnabled(_ enabled: Bool) {
+        onVolumeLimitChange(
+            enabled ? Self.normalizedVolumeLimit(currentVolumeLimit ?? Self.defaultVolumeLimit) : nil
+        )
+    }
+
+    static let defaultVolumeLimit: Float = 0.8
+
+    static func normalizedVolumeLimit(_ limit: Float) -> Float {
+        guard limit.isFinite, limit > 0 else { return defaultVolumeLimit }
+        return max(0.1, min(1.0, limit))
+    }
+
+    static func volumeLimitPercentage(_ limit: Float) -> String {
+        "\(Int((normalizedVolumeLimit(limit) * 100).rounded()))%"
+    }
+
+    static func volumeLimitAccessibilityValue(_ limit: Float?) -> String {
+        guard let limit else { return "Off" }
+        return "On, \(volumeLimitAccessibilityPercentage(limit))"
+    }
+
+    static func volumeLimitAccessibilityPercentage(_ limit: Float) -> String {
+        "\(Int((normalizedVolumeLimit(limit) * 100).rounded())) percent"
     }
 
     // MARK: - Auto badge

@@ -38,7 +38,8 @@ final class EchoTracker {
 
     /// Record that we're about to programmatically change the default device.
     /// Must be called *after* confirming the HAL call succeeded.
-    func increment(_ uid: String) {
+    @discardableResult
+    func increment(_ uid: String) -> Int {
         let token = nextToken
         nextToken += 1
         activeTimeouts[uid, default: []].insert(token)
@@ -52,6 +53,14 @@ final class EchoTracker {
             }
             self.logger.warning("\(self.label) echo for \(uid) timed out")
             self.onTimeout?(uid)
+        }
+        return token
+    }
+
+    func cancel(_ uid: String, token: Int) {
+        guard activeTimeouts[uid]?.remove(token) != nil else { return }
+        if activeTimeouts[uid]?.isEmpty == true {
+            activeTimeouts.removeValue(forKey: uid)
         }
     }
 
