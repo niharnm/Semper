@@ -25,12 +25,30 @@ Semper is an open-source project founded and led by [**Nihar Manchikakapudi**](h
 > Start on the [contribute page](https://github.com/niharnm/Semper/contribute)
 > or read the [contributor guide](CONTRIBUTING.md).
 
-## Release status
+## Download
 
-Semper does not have a packaged public release yet. The source, tests, and
-build instructions are public. Signed and notarized downloads will appear on
-[GitHub Releases](https://github.com/niharnm/Semper/releases) when they are
-ready. Do not download a Semper DMG from an unofficial source.
+<p>
+  <a href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"><b>Download Semper for macOS</b></a>
+</p>
+
+Open the disk image and drag **Semper** into **Applications**. Requires
+macOS 15.4 or later.
+
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask niharnm/tap/semper
+```
+
+Or from the terminal:
+
+```bash
+curl -fL https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg -o "$HOME/Downloads/Semper.dmg" && open "$HOME/Downloads/Semper.dmg"
+```
+
+Semper updates itself through its built-in updater. Only download Semper from
+[GitHub Releases](https://github.com/niharnm/Semper/releases) or Homebrew. Do
+not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
