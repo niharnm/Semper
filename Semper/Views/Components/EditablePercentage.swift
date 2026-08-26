@@ -11,6 +11,7 @@ struct EditablePercentage: View {
     var normalTextColor: Color? = nil
     /// True when this row is the popup's keyboard selection (gates keyboard entry).
     var isRowFocused: Bool = false
+    var accessibilityName: String = "Volume percentage"
 
     @State private var isEditing = false
     @State private var inputText = ""
@@ -97,7 +98,21 @@ struct EditablePercentage: View {
         .contentShape(Rectangle())
         .onTapGesture { if !isEditing { startEditing() } }
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Edit volume percentage")
+        .accessibilityLabel(accessibilityName)
+        .accessibilityValue("\(percentage) percent")
+        .accessibilityHint("Adjust the value, or activate to enter an exact percentage")
+        .accessibilityAdjustableAction { direction in
+            let adjusted = AudioAccessibility.adjustedValue(
+                Double(percentage),
+                direction: direction,
+                step: 5,
+                range: Double(range.lowerBound)...Double(range.upperBound)
+            )
+            let newValue = Int(adjusted.rounded())
+            guard newValue != percentage else { return }
+            percentage = newValue
+            onCommit?(newValue)
+        }
         .onHover { hovering in
             isHovered = hovering
             if hovering {

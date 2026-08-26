@@ -36,7 +36,15 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Notifications
     var showDeviceDisconnectAlerts: Bool = true
 
+    // Call Mode
+    var callModeEnabled: Bool = true
+    var callModeQuietAlerts: Bool = false
+
+    // Bluetooth Audio
+    var bluetoothHDGuardEnabled: Bool = true
+
     // Audio Processing
+    var monoAudioEnabled: Bool = false              // Blend stereo channels for managed apps
     var loudnessCompensationEnabled: Bool = false  // ISO 226:2023 equal-loudness contour compensation
     var loudnessEqualizationEnabled: Bool = false  // Real-time loudness equalization
 
@@ -77,6 +85,13 @@ nonisolated struct AppSettings: Codable, Equatable {
         defaultNewAppVolume = try c.decodeIfPresent(Float.self, forKey: .defaultNewAppVolume) ?? 1.0
         lockInputDevice = try c.decodeIfPresent(Bool.self, forKey: .lockInputDevice) ?? true
         showDeviceDisconnectAlerts = try c.decodeIfPresent(Bool.self, forKey: .showDeviceDisconnectAlerts) ?? true
+        callModeEnabled = try c.decodeIfPresent(Bool.self, forKey: .callModeEnabled) ?? true
+        callModeQuietAlerts = try c.decodeIfPresent(Bool.self, forKey: .callModeQuietAlerts) ?? false
+        bluetoothHDGuardEnabled = try c.decodeIfPresent(
+            Bool.self,
+            forKey: .bluetoothHDGuardEnabled
+        ) ?? true
+        monoAudioEnabled = try c.decodeIfPresent(Bool.self, forKey: .monoAudioEnabled) ?? false
         loudnessCompensationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessCompensationEnabled) ?? false
         loudnessEqualizationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessEqualizationEnabled) ?? false
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
@@ -151,7 +166,7 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        static let currentVersion = 14
+        static let currentVersion = 17
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]
@@ -183,6 +198,8 @@ final class SettingsManager {
         var outputBalances: [String: Float] = [:]              // device UID → L/R balance (-1.0...1.0)
         var outputVolumeLimits: [String: Float] = [:]          // device UID → maximum volume (0.1...1.0)
         var audioProcessingMode: AudioProcessingMode = .active
+        var callModePreferences: [String: CallModePreference] = [:]
+        var bluetoothHDGuardPreferences: [String: BluetoothHDGuardPreferenceRecord] = [:]
 
         // Per-device volume control tier override (overrides auto-detection).
         // nil/missing → auto-detect (hardware/ddc/software). Populated only by
@@ -260,6 +277,42 @@ final class SettingsManager {
                 AudioProcessingMode.self,
                 forKey: .audioProcessingMode
             )) ?? .active
+            let rawCallModePreferences = try c.decodeIfPresent(
+                [String: String].self,
+                forKey: .callModePreferences
+            ) ?? [:]
+            callModePreferences = rawCallModePreferences.reduce(into: [:]) { result, item in
+                guard !item.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      let preference = CallModePreference(rawValue: item.value) else {
+                    return
+                }
+                result[item.key] = preference
+            }
+            let rawBluetoothPreferences = try c.decodeIfPresent(
+                [String: BluetoothHDGuardPreferenceRecord].self,
+                forKey: .bluetoothHDGuardPreferences
+            ) ?? [:]
+            bluetoothHDGuardPreferences = rawBluetoothPreferences.reduce(into: [:]) { result, item in
+                let headsetUID = item.key.trimmingCharacters(in: .whitespacesAndNewlines)
+                let headsetName = item.value.headsetName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !headsetUID.isEmpty,
+                      !headsetName.isEmpty,
+                      BluetoothHDGuardBehavior(rawValue: item.value.behavior) != nil else {
+                    return
+                }
+                let microphoneUID = item.value.microphoneUID?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                let microphoneName = item.value.microphoneName?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                result[headsetUID] = BluetoothHDGuardPreferenceRecord(
+                    behavior: item.value.behavior,
+                    headsetName: headsetName,
+                    microphoneUID: microphoneUID?.isEmpty == false ? microphoneUID : nil,
+                    microphoneName: microphoneName?.isEmpty == false ? microphoneName : nil
+                )
+            }
             deviceVolumeTierOverride = try c.decodeIfPresent([String: VolumeControlTier].self, forKey: .deviceVolumeTierOverride) ?? [:]
             deviceIconOverrides = try c.decodeIfPresent([String: String].self, forKey: .deviceIconOverrides) ?? [:]
             outputDevicePriority = try c.decodeIfPresent([String].self, forKey: .outputDevicePriority) ?? []
@@ -589,6 +642,89 @@ final class SettingsManager {
     func setAudioProcessingMode(_ mode: AudioProcessingMode) {
         guard settings.audioProcessingMode != mode else { return }
         settings.audioProcessingMode = mode
+        scheduleSave()
+    }
+
+    // MARK: - Call Mode
+
+    func callModePreference(for applicationIdentifier: String) -> CallModePreference {
+        settings.callModePreferences[applicationIdentifier] ?? .ask
+    }
+
+    func setCallModePreference(
+        _ preference: CallModePreference,
+        for applicationIdentifier: String
+    ) {
+        guard !applicationIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        if preference == .ask {
+            settings.callModePreferences.removeValue(forKey: applicationIdentifier)
+        } else {
+            settings.callModePreferences[applicationIdentifier] = preference
+        }
+        scheduleSave()
+    }
+
+    // MARK: - Bluetooth HD Guard
+
+    var bluetoothHDGuardPreferences: [BluetoothHDGuardPreference] {
+        settings.bluetoothHDGuardPreferences.compactMap { headsetUID, record in
+            guard let behavior = BluetoothHDGuardBehavior(rawValue: record.behavior) else {
+                return nil
+            }
+            return BluetoothHDGuardPreference(
+                headsetUID: headsetUID,
+                headsetName: record.headsetName,
+                behavior: behavior,
+                microphoneUID: record.microphoneUID,
+                microphoneName: record.microphoneName
+            )
+        }
+        .sorted {
+            $0.headsetName.localizedCaseInsensitiveCompare($1.headsetName) == .orderedAscending
+        }
+    }
+
+    func bluetoothHDGuardPreference(
+        for headsetUID: String,
+        headsetName: String
+    ) -> BluetoothHDGuardPreference {
+        guard let record = settings.bluetoothHDGuardPreferences[headsetUID],
+              let behavior = BluetoothHDGuardBehavior(rawValue: record.behavior) else {
+            return BluetoothHDGuardPreference(
+                headsetUID: headsetUID,
+                headsetName: headsetName,
+                behavior: .ask,
+                microphoneUID: nil,
+                microphoneName: nil
+            )
+        }
+        return BluetoothHDGuardPreference(
+            headsetUID: headsetUID,
+            headsetName: record.headsetName,
+            behavior: behavior,
+            microphoneUID: record.microphoneUID,
+            microphoneName: record.microphoneName
+        )
+    }
+
+    func setBluetoothHDGuardPreference(_ preference: BluetoothHDGuardPreference) {
+        let headsetUID = preference.headsetUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let headsetName = preference.headsetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !headsetUID.isEmpty, !headsetName.isEmpty else { return }
+        let microphoneUID = preference.microphoneUID?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let microphoneName = preference.microphoneName?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        settings.bluetoothHDGuardPreferences[headsetUID] = BluetoothHDGuardPreferenceRecord(
+            behavior: preference.behavior.rawValue,
+            headsetName: headsetName,
+            microphoneUID: microphoneUID?.isEmpty == false ? microphoneUID : nil,
+            microphoneName: microphoneName?.isEmpty == false ? microphoneName : nil
+        )
         scheduleSave()
     }
 
@@ -1019,6 +1155,8 @@ final class SettingsManager {
         settings.outputMasterGains.removeAll()
         settings.outputBalances.removeAll()
         settings.outputVolumeLimits.removeAll()
+        settings.callModePreferences.removeAll()
+        settings.bluetoothHDGuardPreferences.removeAll()
         settings.deviceVolumeTierOverride.removeAll()
         settings.deviceIconOverrides.removeAll()
         settings.outputDevicePriority.removeAll()

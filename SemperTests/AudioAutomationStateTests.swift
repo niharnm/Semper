@@ -31,6 +31,32 @@ struct AudioAutomationStateTests {
         #expect(store.effectiveGain(for: "music") == 1)
     }
 
+    @Test("Replacing owner gains updates added and removed apps together")
+    func replaceOwnerGains() {
+        let store = AudioModeOverlayStore()
+        let owner = AudioAutomationOwner(rawValue: "call")
+        var changed: [Set<String>] = []
+        store.onChange = { changed.append($0) }
+
+        #expect(store.replaceGains(["music": 0.25, "video": 0.25], for: owner))
+        #expect(store.replaceGains(["video": 0.25, "game": 0.25], for: owner))
+
+        #expect(store.effectiveGain(for: "music") == 1)
+        #expect(store.effectiveGain(for: "video") == 0.25)
+        #expect(store.effectiveGain(for: "game") == 0.25)
+        #expect(changed == [["music", "video"], ["music", "video", "game"]])
+    }
+
+    @Test("Replacing gains rejects the full invalid update")
+    func invalidReplacement() {
+        let store = AudioModeOverlayStore()
+        let owner = AudioAutomationOwner(rawValue: "call")
+        #expect(store.replaceGains(["music": 0.25], for: owner))
+        #expect(!store.replaceGains(["music": 0.5, "video": 1.1], for: owner))
+        #expect(store.effectiveGain(for: "music") == 0.25)
+        #expect(store.effectiveGain(for: "video") == 1)
+    }
+
     @Test("Repeated writes by one owner preserve the first original value")
     func recoveryPreservesOriginal() {
         let journal = AudioAutomationRecoveryJournal()
@@ -190,5 +216,27 @@ struct AudioAutomationStateTests {
         #expect(store.visibleActivity?.presentation.message == "Three")
         store.dismiss()
         #expect(store.visibleActivity == nil)
+    }
+
+    @Test("Clearing an activity action updates history and prevents execution")
+    func clearActivityAction() {
+        let store = AudioActivityStore()
+        var executions = 0
+        let id = store.record(
+            presentation: AudioActivityPresentation(
+                message: "Changed",
+                actionTitle: "Undo"
+            ),
+            source: .popup,
+            reason: .directUser,
+            action: { executions += 1 }
+        )
+
+        store.clearAction(for: id)
+        store.performVisibleAction()
+
+        #expect(executions == 0)
+        #expect(store.visibleActivity?.presentation.actionTitle == nil)
+        #expect(store.history.last?.presentation.actionTitle == nil)
     }
 }

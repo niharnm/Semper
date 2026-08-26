@@ -71,7 +71,7 @@ struct AudioCommandDispatcherTests {
             context: AudioCommandContext(source: .globalShortcut, reason: .shortcut)
         )
 
-        #expect(activityStore.visibleActivity?.presentation.message == "Changed by keyboard shortcut")
+        #expect(activityStore.visibleActivity?.presentation.message == "Keyboard shortcut app muted")
         #expect(activityStore.visibleActivity?.source == .globalShortcut)
     }
 

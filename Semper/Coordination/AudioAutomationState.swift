@@ -52,6 +52,23 @@ final class AudioModeOverlayStore {
         onChange?(Set(removed.keys))
     }
 
+    @discardableResult
+    func replaceGains(
+        _ gains: [AppIdentifier: Float],
+        for owner: AudioAutomationOwner
+    ) -> Bool {
+        guard gains.allSatisfy({
+            !$0.key.isEmpty && $0.value.isFinite && (0...1).contains($0.value)
+        }) else {
+            return false
+        }
+        let previous = gainsByOwner[owner] ?? [:]
+        guard previous != gains else { return true }
+        gainsByOwner[owner] = gains.isEmpty ? nil : gains
+        onChange?(Set(previous.keys).union(gains.keys))
+        return true
+    }
+
     func effectiveGain(for appIdentifier: AppIdentifier) -> Float {
         gainsByOwner.values.compactMap { $0[appIdentifier] }.min() ?? 1
     }
@@ -271,6 +288,14 @@ struct AudioActivityPresentation: Equatable, Sendable {
         self.systemImage = systemImage
         self.actionTitle = actionTitle
     }
+
+    func withActionTitle(_ actionTitle: String?) -> AudioActivityPresentation {
+        AudioActivityPresentation(
+            message: message,
+            systemImage: systemImage,
+            actionTitle: actionTitle
+        )
+    }
 }
 
 struct AudioActivity: Identifiable, Equatable, Sendable {
@@ -293,13 +318,14 @@ final class AudioActivityStore {
         self.historyLimit = max(1, historyLimit)
     }
 
+    @discardableResult
     func record(
         presentation: AudioActivityPresentation,
         source: AudioCommandSource,
         reason: AudioChangeReason,
         action: (() -> Void)? = nil,
         at timestamp: Date = Date()
-    ) {
+    ) -> UUID {
         let activity = AudioActivity(
             id: UUID(),
             presentation: presentation,
@@ -316,6 +342,7 @@ final class AudioActivityStore {
             for item in removed { actions[item.id] = nil }
         }
         if let action { actions[activity.id] = action }
+        return activity.id
     }
 
     func dismiss() {
@@ -325,5 +352,28 @@ final class AudioActivityStore {
     func performVisibleAction() {
         guard let id = visibleActivity?.id else { return }
         actions[id]?()
+    }
+
+    func clearAction(for activityID: UUID) {
+        actions[activityID] = nil
+        if let index = history.firstIndex(where: { $0.id == activityID }) {
+            let activity = history[index]
+            history[index] = AudioActivity(
+                id: activity.id,
+                presentation: activity.presentation.withActionTitle(nil),
+                source: activity.source,
+                reason: activity.reason,
+                timestamp: activity.timestamp
+            )
+        }
+        if let activity = visibleActivity, activity.id == activityID {
+            visibleActivity = AudioActivity(
+                id: activity.id,
+                presentation: activity.presentation.withActionTitle(nil),
+                source: activity.source,
+                reason: activity.reason,
+                timestamp: activity.timestamp
+            )
+        }
     }
 }

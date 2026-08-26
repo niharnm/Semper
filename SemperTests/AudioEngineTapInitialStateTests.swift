@@ -20,6 +20,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         case updateEQSettings(EQSettings)
         case updateAutoEQProfile(profileID: String?)
         case setAutoEQPreampEnabled(Bool)
+        case updateMonoAudio(Bool)
         case updateLoudnessCompensation(volume: Float, enabled: Bool)
         case updateLoudnessEqualization(LoudnessEqualizerSettings)
         case invalidate
@@ -31,6 +32,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         var eqSettings: EQSettings
         var autoEQProfileID: String?
         var autoEQPreampEnabled: Bool
+        var monoAudioEnabled: Bool
         var loudnessVolume: Float
         var loudnessCompensationEnabled: Bool
         var loudnessEqualizerSettings: LoudnessEqualizerSettings
@@ -40,6 +42,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
             self.eqSettings = s.eqSettings
             self.autoEQProfileID = s.autoEQProfile?.id
             self.autoEQPreampEnabled = s.autoEQPreampEnabled
+            self.monoAudioEnabled = s.monoAudioEnabled
             self.loudnessVolume = s.loudnessVolume
             self.loudnessCompensationEnabled = s.loudnessCompensationEnabled
             self.loudnessEqualizerSettings = s.loudnessEqualizerSettings
@@ -55,6 +58,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var currentDeviceVolume: Float = 1.0
     var isDeviceMuted: Bool = false
     var balance: Float = 0
+    var monoAudioEnabled = false
     var audioLevel: Float = 0.0
     private(set) var currentDeviceUIDs: [String]
     var currentDeviceUID: String? { currentDeviceUIDs.first }
@@ -114,6 +118,11 @@ final class RecordingProcessTapController: ProcessTapControlling {
 
     func updateBalance(_ balance: Float) {
         self.balance = balance
+    }
+
+    func updateMonoAudio(_ enabled: Bool) {
+        monoAudioEnabled = enabled
+        events.append(.updateMonoAudio(enabled))
     }
 
     func switchDevice(
@@ -444,6 +453,32 @@ struct AudioEngineTapInitialStateTests {
 
         let snap = try #require(capturedInitial(fix))
         #expect(snap.loudnessEqualizerSettings.enabled == value)
+    }
+
+    @Test("monoAudioEnabled mirrors appSettings.monoAudioEnabled",
+          arguments: [true, false])
+    func monoAudioFlagMirrored(value: Bool) throws {
+        let fix = makeFixture()
+        var settings = fix.settings.appSettings
+        settings.monoAudioEnabled = value
+        fix.settings.updateAppSettings(settings)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let snapshot = try #require(capturedInitial(fix))
+        #expect(snapshot.monoAudioEnabled == value)
+    }
+
+    @Test("Changing mono audio updates active taps")
+    func monoAudioUpdatesActiveTap() throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+
+        fix.engine.setMonoAudioEnabled(true)
+
+        #expect(tap.monoAudioEnabled)
+        #expect(tap.events.contains(.updateMonoAudio(true)))
     }
 
     @Test("loudnessVolume = currentDeviceVolume × per-app volume")
@@ -909,6 +944,170 @@ struct AudioEngineTapInitialStateTests {
         #expect(fix.settings.preferredInputDeviceUID == "input-preferred")
     }
 
+    @Test("An input choice during Call Mode remains selected after the mode ends")
+    func preferredInputOverridesCallMode() {
+        let fix = makeFixture()
+        let callInput = AudioDevice(
+            id: AudioDeviceID(703),
+            uid: "input-call",
+            name: "Call Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(704),
+            uid: "input-user",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(callInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = callInput.id
+        fix.deviceVolume.defaultInputDeviceUID = callInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(deviceUID: callInput.uid, owner: .callMode))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+
+        fix.engine.removeInputPolicyRequest(owner: .callMode)
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.lockedInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
+    @Test("HD Guard restores the original input only while it owns the route")
+    func bluetoothGuardRestoresOwnedInput() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(705),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(706),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == protectedInput.uid)
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == headsetInput.uid)
+    }
+
+    @Test("HD Guard preserves a later user microphone choice")
+    func bluetoothGuardPreservesUserOverride() {
+        let fix = makeFixture()
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(707),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(708),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(709),
+            uid: "user-input",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
+    @Test("HD Guard does not overwrite an unowned external input change")
+    func bluetoothGuardSkipsStaleRestoration() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(710),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(711),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let externalInput = AudioDevice(
+            id: AudioDeviceID(712),
+            uid: "external-input",
+            name: "External Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(externalInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        fix.deviceVolume.defaultInputDeviceID = externalInput.id
+        fix.deviceVolume.defaultInputDeviceUID = externalInput.uid
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == externalInput.uid)
+    }
+
     @Test("A newly discovered helper process rebuilds the app tap")
     func helperMembershipChangeRebuildsTap() async throws {
         let fix = makeFixture()
@@ -1206,7 +1405,7 @@ struct AudioEngineTapInitialStateTests {
         for event in tap.events.prefix(activateIndex) {
             switch event {
             case .updateEQSettings, .updateAutoEQProfile, .setAutoEQPreampEnabled,
-                 .updateLoudnessCompensation, .updateLoudnessEqualization:
+                 .updateMonoAudio, .updateLoudnessCompensation, .updateLoudnessEqualization:
                 Issue.record("Pre-activate mutation breaks the apply-initial-state contract: \(event)")
             case .activate, .invalidate:
                 break
@@ -1324,6 +1523,7 @@ struct RecordingProcessTapControllerContractTests {
             #expect(snap.loudnessCompensationEnabled == false)
             #expect(snap.loudnessEqualizerSettings.enabled == false)
             #expect(snap.autoEQPreampEnabled == false)
+            #expect(snap.monoAudioEnabled == false)
             #expect(snap.eqSettings == EQSettings.flat)
             #expect(snap.loudnessVolume == 1.0)
         } else {
