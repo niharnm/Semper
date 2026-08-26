@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss
+  xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+  version="2.0">
+  <channel>
+    <title>Semper Updates</title>
+    <link>https://semper.systems/appcast.xml</link>
+    <description>Official Semper release feed.</description>
+    <language>en</language>
+    <item>
+      <title>Semper 1.0.0</title>
+      <link>https://github.com/niharnm/Semper/releases/tag/v1.0.0</link>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.4</sparkle:minimumSystemVersion>
+      <pubDate>Wed, 26 Aug 2026 00:00:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/niharnm/Semper/releases/download/v1.0.0/Semper.dmg"
+        length="7378898"
+        type="application/octet-stream"
+        sparkle:edSignature="s4VJCVrPCNOqJfK6D7/16xm/EJgA4iVTHWgFMVg6KlwSfcintswICyc8IMWXjZg7ZnUo8AwQiL5la11YxhbbBg=="
+      />
+    </item>
+  </channel>
+</rss>
