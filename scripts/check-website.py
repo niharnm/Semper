@@ -180,8 +180,10 @@ for required_id in ("release", "faq"):
     if required_id not in index.ids:
         fail(f"index.html is missing the {required_id} section")
 
-if index.release_links != ["https://github.com/niharnm/Semper/releases"]:
-    fail("the release status link must point to the official releases page")
+if index.release_links != [
+    "https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"
+]:
+    fail("the release status link must point to the official packaged download")
 if f'href="{KO_FI_URL}"' not in index_source:
     fail("index.html is missing the canonical Ko-fi fallback link")
 update_command = (
@@ -268,8 +270,8 @@ for filename in ("index.html", "about.html", "llms.txt"):
             fail(f"{filename} is missing contributor link: {contributor_url}")
 
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
-if "releases/latest/download/Semper.dmg" in readme:
-    fail("README.md contains a broken packaged download link")
+if "releases/latest/download/Semper.dmg" not in readme:
+    fail("README.md is missing the packaged download link")
 if f"]({KO_FI_URL})" not in readme:
     fail("README.md is missing the canonical Ko-fi badge link")
 if update_command not in readme:
