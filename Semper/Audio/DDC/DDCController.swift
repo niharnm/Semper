@@ -5,7 +5,6 @@
 
 import AppKit
 import AudioToolbox
-import IOKit
 import os
 
 @Observable
@@ -21,28 +20,22 @@ final class DDCController {
     private var deviceUIDs: [AudioDeviceID: String] = [:]  // For persistence keying
     private var debounceTimers: [AudioDeviceID: DispatchWorkItem] = [:]
     private var probeWorkItem: DispatchWorkItem?
+    private var probeRequests = DDCProbeRequestState()
     private var displayChangeObserver: NSObjectProtocol?
 
-    private let ddcQueue = DispatchQueue(label: "com.semper.ddc", qos: .utility)
+    private let ddcQueue: DispatchQueue
     private let settingsManager: SettingsManager
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "DDCController")
 
     /// Callback when DDC probe completes (triggers device list refresh)
     var onProbeCompleted: (() -> Void)?
 
-    private struct DDCProbeDisplay {
-        let entry: io_service_t
-        let service: DDCService
-        let candidate: DDCDisplayCandidate
-    }
-
-    private struct CoreAudioProbeDevice {
-        let id: AudioDeviceID
-        let candidate: CoreAudioDisplayCandidate
-    }
-
-    init(settingsManager: SettingsManager) {
+    init(
+        settingsManager: SettingsManager,
+        ddcQueue: DispatchQueue = DispatchQueue(label: "com.semper.ddc", qos: .utility)
+    ) {
         self.settingsManager = settingsManager
+        self.ddcQueue = ddcQueue
     }
 
     // MARK: - Lifecycle
@@ -59,6 +52,7 @@ final class DDCController {
         }
         probeWorkItem?.cancel()
         probeWorkItem = nil
+        probeRequests.cancel()
         for (_, item) in debounceTimers { item.cancel() }
         debounceTimers.removeAll()
     }
@@ -131,264 +125,73 @@ final class DDCController {
     // MARK: - Display Probing
 
     /// Probes for DDC-capable displays on a background queue, then matches to CoreAudio devices.
-    private func probe() {
-        // Cancel pending debounced DDC writes — services will be replaced by re-probe
+    func probe(
+        operation: @escaping DDCProbeRunner.Operation = DDCProbeWorker.run
+    ) {
         for (_, item) in debounceTimers { item.cancel() }
         debounceTimers.removeAll()
 
-        // TODO(Swift 6): This closure captures @MainActor self and runs on ddcQueue.
-        // Currently safe because accessed properties are nonisolated or dispatched
-        // to @MainActor via Task { @MainActor in }.
-        let logger = self.logger
-        ddcQueue.async { [weak self, logger] in
-            guard let self else { return }
+        let input = probeRequests.begin()
+        let completion: @MainActor @Sendable (DDCProbeResult) -> Void = { [weak self] result in
+            self?.receiveProbeResult(result)
+        }
+        DDCProbeRunner.submit(
+            on: ddcQueue,
+            input: input,
+            operation: operation,
+            completion: completion
+        )
+    }
 
-            // 1. Discover all DCPAVServiceProxy entries and create DDC services
-            let discovered = DDCService.discoverServices()
-            logger.info("DDC probe: found \(discovered.count) DCPAVServiceProxy entries")
-            guard !discovered.isEmpty else {
-                Task { @MainActor [weak self] in
-                    self?.ddcBackedDevices = []
-                    self?.services = [:]
-                    self?.onProbeCompleted?()
-                }
-                return
+    private func receiveProbeResult(_ result: DDCProbeResult) {
+        guard probeRequests.accept(result) else { return }
+
+        for record in result.logs {
+            switch record {
+            case .info(let message):
+                logger.info("\(message, privacy: .private)")
+            case .error(let message):
+                logger.error("\(message, privacy: .private)")
             }
+        }
 
-            // 2. Probe each service for audio volume support (VCP 0x62)
-            //    Read EDID via I2C (address 0x50) directly from each monitor.
-            //    The IORegistry parent walk from DCPAVServiceProxy does NOT work on Apple
-            //    Silicon: IODisplay nodes are siblings of DCPAVServiceProxy, not ancestors,
-            //    so getDisplayName/getDisplayEDID via IORegistry return "External Display"/nil
-            //    for both entries, making name matching and IOKit-EDID matching fail.
-            //    I2C EDID reads from the same physical bus as DDC commands, guaranteeing
-            //    the EDID belongs to the exact monitor this DDCService controls.
-            var audioCapable: [DDCProbeDisplay] = []
-            for (index, (entry, service)) in discovered.enumerated() {
-                let name = Self.getDisplayName(for: entry)
+        applyProbePublication(result.publication)
+    }
 
-                // Read EDID directly from the monitor over I2C
-                let edid: DDCDisplayEDID? = {
-                    guard let raw = service.readEDID() else { return nil }
-                    return DDCDisplayEDID(
-                        vendorID: raw.vendorID,
-                        productID: raw.productID,
-                        serialNumber: raw.serialNumber
-                    )
-                }()
+    func applyProbePublication(_ publication: DDCProbePublication) {
+        switch publication {
+        case .unavailable:
+            ddcBackedDevices = []
+            services = [:]
 
-                logger.info("DDC probe: display \(index + 1) '\(name)' EDID(\(edid != nil ? "I2C" : "none")): \(edid.map { "v\($0.vendorID) p\($0.productID) s\($0.serialNumber)" } ?? "–")")
-                if service.supportsAudioVolume() {
-                    audioCapable.append(DDCProbeDisplay(
-                        entry: entry,
-                        service: service,
-                        candidate: DDCDisplayCandidate(
-                            id: Self.displayCandidateID(for: entry),
-                            name: name,
-                            edid: edid
-                        )
-                    ))
-                    logger.info("DDC audio-capable display: '\(name)'")
-                } else {
-                    logger.info("DDC probe: '\(name)' does not support VCP 0x62")
-                    IOObjectRelease(entry)
-                }
+        case .matched(let services, let deviceUIDs, let readVolumes):
+            self.services = services
+            self.deviceUIDs = deviceUIDs
+            ddcBackedDevices = Set(services.keys)
+
+            var savedVolumes: [AudioDeviceID: Int] = [:]
+            for (deviceID, uid) in deviceUIDs {
+                savedVolumes[deviceID] = settingsManager.getDDCVolume(for: uid)
             }
-
-            guard !audioCapable.isEmpty else {
-                logger.info("DDC probe: no audio-capable displays found")
-                // Entries that failed supportsAudioVolume() were already released above
-                Task { @MainActor [weak self] in
-                    self?.ddcBackedDevices = []
-                    self?.services = [:]
-                    self?.onProbeCompleted?()
-                }
-                return
-            }
-
-            // 3. Get all CoreAudio output devices (candidates for DDC matching)
-            let coreAudioDevices = self.getCoreAudioOutputDevices()
-            for ca in coreAudioDevices {
-                logger.info("DDC probe: CoreAudio candidate: '\(ca.candidate.name)' (uid: \(ca.candidate.id?.rawValue ?? "unavailable"))")
-            }
-
-            // 4. Match DDC displays to CoreAudio devices
-            var matched: [AudioDeviceID: DDCService] = [:]
-            var matchedUIDs: [AudioDeviceID: String] = [:]
-            var volumes: [AudioDeviceID: Int] = [:]
-            let matchResult = DDCDisplayMatcher.match(
-                displays: audioCapable.map(\.candidate),
-                coreAudioDevices: coreAudioDevices.map(\.candidate)
+            let volumePlan = DDCProbeVolumePlan.make(
+                deviceIDs: Array(deviceUIDs.keys),
+                readVolumes: readVolumes,
+                savedVolumes: savedVolumes
             )
-
-            var displaysByID: [DDCDisplayCandidate.ID: DDCProbeDisplay] = [:]
-            var duplicateDisplayIDs = Set<DDCDisplayCandidate.ID>()
-            for display in audioCapable {
-                guard let id = display.candidate.id else { continue }
-                if displaysByID.updateValue(display, forKey: id) != nil {
-                    duplicateDisplayIDs.insert(id)
+            for (deviceID, volume) in volumePlan.cachedVolumes {
+                cachedVolumes[deviceID] = volume
+            }
+            for (deviceID, volume) in volumePlan.restoreVolumes {
+                guard let service = services[deviceID] else { continue }
+                ddcQueue.async { @Sendable in
+                    try? service.setAudioVolume(volume)
                 }
             }
-            for id in duplicateDisplayIDs {
-                displaysByID.removeValue(forKey: id)
-            }
 
-            var coreAudioByID: [CoreAudioDisplayCandidate.ID: CoreAudioProbeDevice] = [:]
-            var duplicateCoreAudioIDs = Set<CoreAudioDisplayCandidate.ID>()
-            for device in coreAudioDevices {
-                guard let id = device.candidate.id else { continue }
-                if coreAudioByID.updateValue(device, forKey: id) != nil {
-                    duplicateCoreAudioIDs.insert(id)
-                }
-            }
-            for id in duplicateCoreAudioIDs {
-                coreAudioByID.removeValue(forKey: id)
-            }
-
-            for diagnostic in matchResult.identityDiagnostics {
-                logger.error("DDC match identity diagnostic: \(String(describing: diagnostic))")
-            }
-            for unmatched in matchResult.unmatchedDisplays {
-                logger.info("DDC display \(unmatched.id.rawValue) unmatched: \(String(describing: unmatched.reasons))")
-            }
-            for unmatched in matchResult.unmatchedCoreAudioDevices {
-                logger.info("CoreAudio device '\(unmatched.id.rawValue)' unmatched for DDC: \(String(describing: unmatched.reasons))")
-            }
-
-            for match in matchResult.matches {
-                guard let ddcDisplay = displaysByID[match.displayID],
-                      let caDevice = coreAudioByID[match.coreAudioID] else {
-                    logger.error("DDC matcher returned unresolved candidate identities")
-                    continue
-                }
-
-                matched[caDevice.id] = ddcDisplay.service
-                matchedUIDs[caDevice.id] = match.coreAudioID.rawValue
-
-                if let vol = try? ddcDisplay.service.getAudioVolume() {
-                    volumes[caDevice.id] = vol.current
-                }
-
-                logger.info("Matched CoreAudio '\(caDevice.candidate.name)' to DDC '\(ddcDisplay.candidate.name)' using \(String(describing: match.method))")
-            }
-
-            // Release IOKit entries
-            for item in audioCapable {
-                IOObjectRelease(item.entry)
-            }
-
-            // 5. Publish results on main thread
-            let matchedSnapshot = matched
-            let matchedUIDsSnapshot = matchedUIDs
-            let volumesSnapshot = volumes
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.services = matchedSnapshot
-                self.deviceUIDs = matchedUIDsSnapshot
-                self.ddcBackedDevices = Set(matchedSnapshot.keys)
-
-                // Use persisted volumes if available, otherwise use read values
-                for (deviceID, uid) in matchedUIDsSnapshot {
-                    if let savedVolume = self.settingsManager.getDDCVolume(for: uid) {
-                        self.cachedVolumes[deviceID] = savedVolume
-                        // Restore saved volume to the display
-                        let service = matchedSnapshot[deviceID]
-                        self.ddcQueue.async {
-                            try? service?.setAudioVolume(savedVolume)
-                        }
-                    } else if let readVolume = volumesSnapshot[deviceID] {
-                        self.cachedVolumes[deviceID] = readVolume
-                    }
-                }
-
-                self.logger.info("DDC probe complete: \(matchedSnapshot.count) display(s) matched")
-                self.onProbeCompleted?()
-            }
-        }
-    }
-
-    // MARK: - CoreAudio Device Discovery
-
-    /// Gets all CoreAudio output devices as candidates for DDC matching.
-    /// Includes devices both with and without CoreAudio volume control,
-    /// since some monitors report having volume control that doesn't actually work.
-    private nonisolated func getCoreAudioOutputDevices() -> [CoreAudioProbeDevice] {
-        guard let deviceIDs = try? AudioObjectID.readDeviceList() else { return [] }
-
-        var results: [CoreAudioProbeDevice] = []
-        for deviceID in deviceIDs {
-            guard !deviceID.isAggregateDevice(),
-                  !deviceID.isVirtualDevice(),
-                  deviceID.hasOutputStreams() else { continue }
-
-            guard let name = try? deviceID.readDeviceName() else { continue }
-            let uid = try? deviceID.readDeviceUID()
-            let candidateID = uid.flatMap { value in
-                value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? nil
-                    : CoreAudioDisplayCandidate.ID(rawValue: value)
-            }
-            results.append(CoreAudioProbeDevice(
-                id: deviceID,
-                candidate: CoreAudioDisplayCandidate(
-                    id: candidateID,
-                    name: name,
-                    transport: deviceID.readTransportType()
-                )
-            ))
-        }
-        return results
-    }
-
-    private nonisolated static func displayCandidateID(for entry: io_service_t) -> DDCDisplayCandidate.ID? {
-        var rawValue: UInt64 = 0
-        guard IORegistryEntryGetRegistryEntryID(entry, &rawValue) == KERN_SUCCESS else { return nil }
-        return DDCDisplayCandidate.ID(rawValue: rawValue)
-    }
-
-    // MARK: - Display Name from IOKit
-
-    /// Gets the display product name from the IORegistry entry or its parent framebuffer.
-    private nonisolated static func getDisplayName(for entry: io_service_t) -> String {
-        // Walk up to find a parent with display info
-        var current = entry
-        IOObjectRetain(current)
-
-        // Try up to 10 levels of parents to find display info
-        // `needsRelease` tracks whether `current` holds an unreleased io_service_t
-        var needsRelease = true
-        for _ in 0..<10 {
-            if let name = displayNameFromEntry(current) {
-                IOObjectRelease(current)
-                return name
-            }
-
-            var next: io_registry_entry_t = 0
-            let kr = IORegistryEntryGetParentEntry(current, kIOServicePlane, &next)
-            IOObjectRelease(current)
-            guard kr == kIOReturnSuccess else {
-                needsRelease = false  // `current` was already released above
-                break
-            }
-            current = next
+            logger.info("DDC probe complete: \(services.count) display(s) matched")
         }
 
-        // Release the final `current` if the loop exhausted all 10 levels
-        if needsRelease {
-            IOObjectRelease(current)
-        }
-
-        // No display name found in registry hierarchy
-        return "External Display"
-    }
-
-    private nonisolated static func displayNameFromEntry(_ entry: io_service_t) -> String? {
-        guard let info = IODisplayCreateInfoDictionary(entry, IOOptionBits(kIODisplayOnlyPreferredName))?.takeRetainedValue() as? [String: Any],
-              let names = info[kDisplayProductName] as? [String: String],
-              let name = names.values.first else {
-            return nil
-        }
-        return name
+        onProbeCompleted?()
     }
 
     // MARK: - Display Change Observer
@@ -401,6 +204,7 @@ final class DDCController {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.probeRequests.cancel()
                 self.probeWorkItem?.cancel()
                 let item = DispatchWorkItem { [weak self] in
                     Task { @MainActor [weak self] in
