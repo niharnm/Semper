@@ -13,9 +13,27 @@ for every device with the same transport or device class.
 
 ## Observed results
 
-| Semper commit | macOS | Mac architecture | Transport | Generic device class | Per-app volume | Per-app mute | Routing | Disconnect and reconnect | Relaunch | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| [`910a9c29503cc7e7fa596dfe38975bd606ba204e`](https://github.com/niharnm/Semper/commit/910a9c29503cc7e7fa596dfe38975bd606ba204e) | 27.0 (26A5388g) | Apple silicon, arm64 | Built-in | Laptop speakers | Passed | Passed | Passed | Unsupported | Passed | Native Core Audio controlled the output device. Semper's process tap handled per-app gain and mute. With an isolated settings profile, a running app was set to 40 percent, muted, assigned to the built-in output, and retained all three settings after Semper relaunched. Redacted logs confirmed permission, tap activation, the saved route, the saved gain, and the saved mute. Acoustic quality was not judged in this run. |
+### Built-in laptop speakers
+
+| Field | Result |
+| --- | --- |
+| Semper commit | [`910a9c29503cc7e7fa596dfe38975bd606ba204e`](https://github.com/niharnm/Semper/commit/910a9c29503cc7e7fa596dfe38975bd606ba204e) |
+| macOS | 27.0 (26A5388g) |
+| Mac architecture | Apple silicon, arm64 |
+| Transport | Built-in |
+| Generic device class | Laptop speakers |
+| Per-app volume | Passed |
+| Per-app mute | Passed |
+| Routing | Passed |
+| Disconnect and reconnect | Unsupported, the built-in output is not removable |
+| Relaunch | Passed |
+
+Native Core Audio controlled the output device. Semper's process tap handled
+per-app gain and mute. With an isolated settings profile, a running app was
+set to 40 percent, muted, assigned to the built-in output, and retained all
+three settings after Semper relaunched. Redacted logs confirmed permission,
+tap activation, the saved route, the saved gain, and the saved mute. Acoustic
+quality was not judged in this run.
 
 The built-in output above exposes native Core Audio volume control. Semper's
 per-app volume and mute still use its software process tap. A device that does
