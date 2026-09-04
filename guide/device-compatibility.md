@@ -35,4 +35,3 @@ volume** fallback, which applies output-device gain in the tap.
    than acoustic output.
 6. Add one row in a focused pull request and include the same test setup and
    expected versus actual results in the pull-request description.
-
