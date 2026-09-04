@@ -42,7 +42,9 @@ volume** fallback, which applies output-device gain in the tap.
 
 ## Add a result
 
-1. Build and test one exact Semper commit on a supported macOS version.
+1. Build and test one exact Semper commit on a supported macOS version. Record
+   the full commit SHA, macOS version and build, and Mac architecture in the
+   result entry.
 2. Use a generic device class and transport. Remove personal device names,
    usernames, file paths, and unrelated process data from notes and logs.
 3. Exercise per-app volume, mute and unmute, an explicit output route, Semper
