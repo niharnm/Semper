@@ -109,6 +109,7 @@ release.
 - [Canary Testing](guide/canary.md)
 - [Troubleshooting](guide/troubleshooting.md)
 - [Real-time Audio Safety](guide/realtime-audio-safety.md)
+- [Device Compatibility](guide/device-compatibility.md)
 - [Contributing Guidelines](CONTRIBUTING.md)
 
 ## Contributing
