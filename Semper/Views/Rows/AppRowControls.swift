@@ -136,7 +136,6 @@ struct AppRowControls: View {
             .accessibilityElement()
             .accessibilityLabel(AppRowAccessibility.volumeLabel(appName: appName))
             .accessibilityValue(AppRowAccessibility.volumeValue(percentage: displayedPercentage))
-            .accessibilityAddTraits(.isAdjustable)
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment:

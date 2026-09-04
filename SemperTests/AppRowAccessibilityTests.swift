@@ -7,6 +7,7 @@
 // action-phrasing contract (the label names what activating the button will
 // do, not the state it is currently in).
 
+import Foundation
 import Testing
 @testable import Semper
 
