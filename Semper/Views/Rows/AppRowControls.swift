@@ -1,6 +1,30 @@
 // Semper/Views/Rows/AppRowControls.swift
 import SwiftUI
 
+/// VoiceOver wording for the app-row controls.
+///
+/// Kept as pure functions so the strings can be unit-tested without building
+/// the SwiftUI view. Device and input rows keep their own wording and do not
+/// read from here.
+enum AppRowAccessibility {
+    /// Label for the per-app volume slider, e.g. "Volume for Music".
+    static func volumeLabel(appName: String) -> String {
+        "Volume for \(appName)"
+    }
+
+    /// Value for the per-app volume slider. Mirrors the percentage rendered in
+    /// the row, e.g. "40 percent".
+    static func volumeValue(percentage: Int) -> String {
+        "\(percentage) percent"
+    }
+
+    /// Label for the per-app mute button, phrased as the action activating it
+    /// will perform, e.g. "Mute Music" or "Unmute Music".
+    static func muteLabel(appName: String, isMuted: Bool) -> String {
+        isMuted ? "Unmute \(appName)" : "Mute \(appName)"
+    }
+}
+
 /// Shared controls for app rows: mute button, volume slider, percentage, VU meter, device picker, EQ button.
 /// Used by both AppRow (active apps) and InactiveAppRow (pinned inactive apps).
 struct AppRowControls: View {
@@ -50,6 +74,9 @@ struct AppRowControls: View {
 
     /// The displayed percentage value, matching EditablePercentage's formula.
     private var displayedPercentage: Int { Int(round(sliderValue * 100)) }
+
+    /// Slider-space step for VoiceOver increment and decrement (5 percentage points).
+    private static let accessibilityVolumeStep = 0.05
 
     /// Show muted icon when muted OR displayed volume is 0%.
     /// Uses percentage threshold (not exact sliderValue == 0) because the x² volume
@@ -103,6 +130,22 @@ struct AppRowControls: View {
             .frame(width: DesignTokens.Dimensions.sliderWidth)
             .opacity(showMutedIcon ? 0.5 : 1.0)
             .scrollWheelStep(sliderBinding, in: 0.0...1.0)
+            // LiquidGlassSlider draws shapes and handles its own gestures, so it
+            // publishes no accessibility element of its own. Declare one here and
+            // keep the wording app-specific; device rows are unaffected.
+            .accessibilityElement()
+            .accessibilityLabel(AppRowAccessibility.volumeLabel(appName: appName))
+            .accessibilityValue(AppRowAccessibility.volumeValue(percentage: displayedPercentage))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment:
+                    sliderBinding.wrappedValue = min(1.0, sliderValue + Self.accessibilityVolumeStep)
+                case .decrement:
+                    sliderBinding.wrappedValue = max(0.0, sliderValue - Self.accessibilityVolumeStep)
+                @unknown default:
+                    break
+                }
+            }
 
             MuteButton(isMuted: showMutedIcon, levelFraction: sliderValue) {
                 if showMutedIcon {
@@ -115,6 +158,9 @@ struct AppRowControls: View {
                 }
             }
             .frame(width: 22, height: 22)
+            .accessibilityLabel(
+                AppRowAccessibility.muteLabel(appName: appName, isMuted: showMutedIcon)
+            )
 
             EditablePercentage(
                 percentage: Binding(
