@@ -7,7 +7,7 @@ private let logger = Logger(subsystem: "systems.semper.Semper", category: "Permi
 
 // MARK: - Permission Status
 
-enum AudioCapturePermissionStatus {
+enum AudioCapturePermissionStatus: Equatable, Sendable {
     case unknown
     case authorized
     case denied
@@ -57,6 +57,13 @@ final class AudioRecordingPermission {
             }
         }
         #endif
+    }
+
+    func openSystemSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: - App Activation Observer

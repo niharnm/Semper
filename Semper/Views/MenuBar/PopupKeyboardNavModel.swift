@@ -6,14 +6,18 @@ import Foundation
 final class PopupKeyboardNavModel {
     enum RowID: Hashable {
         case device(uid: String)
-        case app(persistenceID: String)
+        case app(target: AudioAppCommandTarget)
+
+        static func app(persistenceID: String) -> RowID {
+            .app(target: .persisted(persistenceID))
+        }
     }
 
     private(set) var orderedRowIDs: [RowID] = []
 
     func syncOrder(
         activeDevices: [AudioDevice],
-        appPersistenceIDs: [String],
+        appTargets: [AudioAppCommandTarget],
         isEditingPriority: Bool
     ) {
         guard !isEditingPriority else {
@@ -21,14 +25,26 @@ final class PopupKeyboardNavModel {
             return
         }
         var next: [RowID] = []
-        next.reserveCapacity(activeDevices.count + appPersistenceIDs.count)
+        next.reserveCapacity(activeDevices.count + appTargets.count)
         for device in activeDevices {
             next.append(.device(uid: device.uid))
         }
-        for id in appPersistenceIDs {
-            next.append(.app(persistenceID: id))
+        for target in appTargets {
+            next.append(.app(target: target))
         }
         orderedRowIDs = next
+    }
+
+    func syncOrder(
+        activeDevices: [AudioDevice],
+        appPersistenceIDs: [String],
+        isEditingPriority: Bool
+    ) {
+        syncOrder(
+            activeDevices: activeDevices,
+            appTargets: appPersistenceIDs.map(AudioAppCommandTarget.persisted),
+            isEditingPriority: isEditingPriority
+        )
     }
 
     func next(after current: RowID?) -> RowID? {

@@ -20,6 +20,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         case updateEQSettings(EQSettings)
         case updateAutoEQProfile(profileID: String?)
         case setAutoEQPreampEnabled(Bool)
+        case updateMonoAudio(Bool)
         case updateLoudnessCompensation(volume: Float, enabled: Bool)
         case updateLoudnessEqualization(LoudnessEqualizerSettings)
         case invalidate
@@ -31,6 +32,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
         var eqSettings: EQSettings
         var autoEQProfileID: String?
         var autoEQPreampEnabled: Bool
+        var monoAudioEnabled: Bool
         var loudnessVolume: Float
         var loudnessCompensationEnabled: Bool
         var loudnessEqualizerSettings: LoudnessEqualizerSettings
@@ -40,6 +42,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
             self.eqSettings = s.eqSettings
             self.autoEQProfileID = s.autoEQProfile?.id
             self.autoEQPreampEnabled = s.autoEQPreampEnabled
+            self.monoAudioEnabled = s.monoAudioEnabled
             self.loudnessVolume = s.loudnessVolume
             self.loudnessCompensationEnabled = s.loudnessCompensationEnabled
             self.loudnessEqualizerSettings = s.loudnessEqualizerSettings
@@ -55,6 +58,7 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var currentDeviceVolume: Float = 1.0
     var isDeviceMuted: Bool = false
     var balance: Float = 0
+    var monoAudioEnabled = false
     var audioLevel: Float = 0.0
     private(set) var currentDeviceUIDs: [String]
     var currentDeviceUID: String? { currentDeviceUIDs.first }
@@ -62,6 +66,13 @@ final class RecordingProcessTapController: ProcessTapControlling {
     var shouldFailDeviceSwitch = false
     private(set) var lastSwitchRequiredExclusiveOutput: Bool?
     var hasRecentAudioCallbackResult = false
+    var switchDeviceDelays: [String: Duration] = [:]
+    private(set) var switchDeviceStarts: [String] = []
+    var updateDevicesDelays: [Set<String>: Duration] = [:]
+    private(set) var updateDevicesStarts: [[String]] = []
+    var invalidationDelay: Duration?
+    var invalidationResult = TapResourceCleanupResult.empty
+    var onInvalidate: (() -> Void)?
 
     init(app: AudioApp, deviceUIDs: [String]) {
         self.app = app
@@ -74,6 +85,15 @@ final class RecordingProcessTapController: ProcessTapControlling {
 
     func invalidate() {
         events.append(.invalidate)
+        onInvalidate?()
+    }
+
+    func invalidateAsync() async -> TapResourceCleanupResult {
+        if let invalidationDelay {
+            try? await Task.sleep(for: invalidationDelay)
+        }
+        invalidate()
+        return invalidationResult
     }
 
     func updateEQSettings(_ settings: EQSettings) {
@@ -100,11 +120,22 @@ final class RecordingProcessTapController: ProcessTapControlling {
         self.balance = balance
     }
 
+    func updateMonoAudio(_ enabled: Bool) {
+        monoAudioEnabled = enabled
+        events.append(.updateMonoAudio(enabled))
+    }
+
     func switchDevice(
         to newDeviceUID: String,
         preferredTapSourceDeviceUID: String?,
         requiresExclusiveOutput: Bool
     ) async throws {
+        switchDeviceStarts.append(newDeviceUID)
+        if let delay = switchDeviceDelays[newDeviceUID] {
+            await Task.detached {
+                try? await Task.sleep(for: delay)
+            }.value
+        }
         if shouldFailDeviceSwitch {
             throw NSError(
                 domain: "SemperTests.Route",
@@ -121,6 +152,12 @@ final class RecordingProcessTapController: ProcessTapControlling {
         preferredTapSourceDeviceUID: String?,
         requiresExclusiveOutput: Bool
     ) async throws {
+        updateDevicesStarts.append(newDeviceUIDs)
+        if let delay = updateDevicesDelays[Set(newDeviceUIDs)] {
+            await Task.detached {
+                try? await Task.sleep(for: delay)
+            }.value
+        }
         currentDeviceUIDs = newDeviceUIDs
     }
 
@@ -138,8 +175,10 @@ final class RecordingProcessTapController: ProcessTapControlling {
 final class StubProcessMonitor: AudioProcessMonitoring {
     var activeApps: [AudioApp] = []
     var onAppsChanged: (([AudioApp]) -> Void)?
-    func start() {}
-    func stop() {}
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    func start() { startCount += 1 }
+    func stop() { stopCount += 1 }
 }
 
 // MARK: - Fixture
@@ -236,6 +275,15 @@ private func makeFixture(
 @MainActor
 private final class TapBox {
     var last: RecordingProcessTapController?
+}
+
+@MainActor
+private func waitForAudioState(_ condition: @MainActor () -> Bool) async -> Bool {
+    for _ in 0..<300 {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return false
 }
 
 @Suite("Output device topology")
@@ -409,6 +457,32 @@ struct AudioEngineTapInitialStateTests {
         #expect(snap.loudnessEqualizerSettings.enabled == value)
     }
 
+    @Test("monoAudioEnabled mirrors appSettings.monoAudioEnabled",
+          arguments: [true, false])
+    func monoAudioFlagMirrored(value: Bool) throws {
+        let fix = makeFixture()
+        var settings = fix.settings.appSettings
+        settings.monoAudioEnabled = value
+        fix.settings.updateAppSettings(settings)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let snapshot = try #require(capturedInitial(fix))
+        #expect(snapshot.monoAudioEnabled == value)
+    }
+
+    @Test("Changing mono audio updates active taps")
+    func monoAudioUpdatesActiveTap() throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+
+        fix.engine.setMonoAudioEnabled(true)
+
+        #expect(tap.monoAudioEnabled)
+        #expect(tap.events.contains(.updateMonoAudio(true)))
+    }
+
     @Test("loudnessVolume = currentDeviceVolume × per-app volume")
     func loudnessVolumeIsProduct() throws {
         let fix = makeFixture(deviceVolume: 0.5)
@@ -429,13 +503,227 @@ struct AudioEngineTapInitialStateTests {
         fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
         let tap = try #require(fix.lastTap())
 
-        fix.engine.setMasterOutputVolume(for: fix.device, to: 3)
+        let result = fix.engine.setMasterOutputVolume(for: fix.device, to: 3)
 
+        #expect(result == .applied(3))
         let lastWrite = try #require(fix.deviceVolume.setVolumeCalls.last)
         #expect(lastWrite.deviceID == fix.device.id)
         #expect(lastWrite.volume == 1)
         #expect(tap.volume == 3)
         #expect(fix.engine.masterOutputVolume(for: fix.device) == 3)
+    }
+
+    @Test("A hardware ceiling above the device volume does not attenuate the tap")
+    func hardwareCeilingDoesNotAttenuateTap() throws {
+        let fix = makeFixture(deviceVolume: 0.4)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let tap = try #require(fix.lastTap())
+        #expect(tap.volume == 1)
+    }
+
+    @Test("A failed ceiling remains visible above the configured limit")
+    func failedCeilingDoesNotMaskReadback() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.4)
+
+        #expect(fix.engine.masterOutputVolume(for: fix.device) == 0.8)
+    }
+
+    @Test("A software ceiling does not apply the device volume twice")
+    func softwareCeilingDoesNotDoubleAttenuateTap() throws {
+        let fix = makeFixture(deviceVolume: 0.4)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .software
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let tap = try #require(fix.lastTap())
+        #expect(tap.volume == 0.4)
+    }
+
+    @Test("A failed ceiling write restores the prior setting")
+    func failedCeilingWriteRollsBack() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.volumeWritesSucceed = false
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+    }
+
+    @Test("A failed asynchronous DDC ceiling write restores the prior setting")
+    func failedDDCCeilingWriteRollsBack() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        fix.settings.setOutputMasterGain(for: fix.device.uid, to: 2)
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+        #expect(fix.settings.getOutputMasterGain(for: fix.device.uid) == 2)
+    }
+
+    @Test("Disabling a ceiling wins over a late DDC failure")
+    func disableSupersedesPendingDDCCeiling() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: result
+        )
+        fix.engine.commitOutputVolumeLimitChange(for: fix.device.uid, to: nil)
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == nil)
+    }
+
+    @Test("A newer ceiling owns rollback for a late DDC failure")
+    func newerCeilingSupersedesPendingDDCCeiling() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.4)
+        let first = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.8),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: first
+        )
+        fix.engine.beginOutputVolumeLimitChange(for: fix.device.uid, to: 0.45)
+        let second = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 0.4),
+            context: AudioCommandContext(source: .popup, reason: .safeCap)
+        )
+        fix.engine.resolveOutputVolumeLimitChange(
+            for: fix.device.uid,
+            commandResult: second
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+
+        #expect(fix.settings.outputVolumeLimit(for: fix.device.uid) == 0.8)
+    }
+
+    @Test("Unknown physical volume has no known master value")
+    func unknownMasterOutputVolume() {
+        let fix = makeFixture()
+        fix.deviceVolume.volumes[fix.device.id] = nil
+
+        #expect(fix.engine.knownMasterOutputVolume(for: fix.device) == nil)
+        #expect(fix.engine.masterOutputVolume(for: fix.device) == 1)
+    }
+
+    @Test("DDC completion reports stored master gain after output disconnects")
+    func ddcMasterGainCompletionAfterDisconnect() {
+        let fix = makeFixture(deviceVolume: 0.4)
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        var observations: [(AudioControlKey, AudioControlValue)] = []
+        fix.engine.onCommandValueObserved = { observations.append(($0, $1)) }
+
+        let result = fix.engine.setMasterOutputVolume(for: fix.device, to: 3)
+        fix.deviceMonitor.outputDevices.removeAll()
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, true)
+
+        #expect(result == .accepted)
+        #expect(observations.contains { observation in
+            observation.0 == .outputMasterGain(fix.device.uid)
+                && observation.1 == .scalar(3)
+        })
+    }
+
+    @Test("Failed DDC master write restores the prior stored gain")
+    func failedDDCMasterGainRestoresPriorState() {
+        let fix = makeFixture(deviceVolume: 1)
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        #expect(fix.engine.setMasterOutputVolume(for: fix.device, to: 2) == .applied(2))
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+
+        #expect(fix.engine.setMasterOutputVolume(for: fix.device, to: 0.4) == .accepted)
+        fix.deviceVolume.volumes[fix.device.id] = 1
+        fix.deviceVolume.onVolumeChanged?(fix.device.id, 1)
+        fix.deviceMonitor.outputDevices.removeAll()
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, false)
+        fix.deviceMonitor.outputDevices = [fix.device]
+
+        #expect(fix.engine.masterOutputVolume(for: fix.device) == 2)
+    }
+
+    @Test("A direct DDC mute supersedes pending volume recovery")
+    func ddcPhysicalControlSupersedesOtherCommandKey() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        let backend = AudioEngineCommandBackend(engine: fix.engine)
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+        fix.engine.onCommandValueObserved = { key, value in
+            dispatcher.completeAccepted(key, observed: value)
+        }
+        fix.engine.onCommandWriteRejected = { key in
+            dispatcher.rejectAccepted(key)
+        }
+        let owner = AudioAutomationOwner(rawValue: "test-owner")
+
+        let volumeResult = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: fix.device.uid, volume: 0.4),
+            context: AudioCommandContext(source: .automation, owner: owner)
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, true)
+        let muteResult = dispatcher.dispatch(
+            .setOutputMute(deviceUID: fix.device.uid, muted: true),
+            context: AudioCommandContext(source: .popup)
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, true)
+
+        guard case .accepted = volumeResult, case .accepted = muteResult else {
+            Issue.record("Expected accepted DDC commands")
+            return
+        }
+        let report = dispatcher.recoveryJournal.restore(
+            owner: owner,
+            read: { backend.read($0) },
+            write: { _, _ in true }
+        )
+        #expect(report == AudioRecoveryReport())
     }
 
     @Test("Boost is capped at 100% until a single-output route activates")
@@ -537,6 +825,291 @@ struct AudioEngineTapInitialStateTests {
         #expect(tap.currentDeviceUID == secondDevice.uid)
     }
 
+    @Test("A newer route waits for a canceled route before switching")
+    func rapidRoutesCommitNewestDevice() async throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+        let second = AudioDevice(
+            id: AudioDeviceID(100),
+            uid: "uid-second",
+            name: "Second Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let third = AudioDevice(
+            id: AudioDeviceID(101),
+            uid: "uid-third",
+            name: "Third Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addOutputDevice(second)
+        fix.deviceMonitor.addOutputDevice(third)
+        tap.switchDeviceDelays[second.uid] = .milliseconds(50)
+        tap.switchDeviceDelays[third.uid] = .milliseconds(1)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: second.uid)
+        let firstStarted = await waitForAudioState {
+            tap.switchDeviceStarts.contains(second.uid)
+        }
+        #expect(firstStarted)
+        fix.engine.setDevice(for: fix.app, deviceUID: third.uid)
+        let newestFinished = await waitForAudioState {
+            tap.currentDeviceUIDs == [third.uid]
+                && fix.engine.getDeviceUID(for: fix.app) == third.uid
+        }
+
+        #expect(newestFinished)
+        #expect(tap.currentDeviceUIDs == [third.uid])
+        #expect(fix.engine.getDeviceUID(for: fix.app) == third.uid)
+    }
+
+    @Test("A newer multi-output selection waits for the mode transition")
+    func rapidModeAndDeviceSetCommitNewestSelection() async throws {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+        let second = AudioDevice(
+            id: AudioDeviceID(100),
+            uid: "uid-second",
+            name: "Second Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let third = AudioDevice(
+            id: AudioDeviceID(101),
+            uid: "uid-third",
+            name: "Third Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addOutputDevice(second)
+        fix.deviceMonitor.addOutputDevice(third)
+        fix.engine.setSelectedDeviceUIDs(for: fix.app, to: [second.uid])
+        tap.updateDevicesDelays[[second.uid]] = .milliseconds(50)
+        tap.updateDevicesDelays[[third.uid]] = .milliseconds(1)
+
+        fix.engine.setDeviceSelectionMode(for: fix.app, to: .multi)
+        let modeStarted = await waitForAudioState {
+            tap.updateDevicesStarts.contains([second.uid])
+        }
+        #expect(modeStarted)
+        fix.engine.setSelectedDeviceUIDs(for: fix.app, to: [third.uid])
+        let newestFinished = await waitForAudioState {
+            tap.currentDeviceUIDs == [third.uid]
+        }
+
+        #expect(newestFinished)
+        #expect(tap.currentDeviceUIDs == [third.uid])
+        #expect(fix.engine.getDeviceSelectionMode(for: fix.app) == .multi)
+        #expect(fix.engine.getSelectedDeviceUIDs(for: fix.app) == [third.uid])
+    }
+
+    @Test("Denied recording permission returns the permission rejection")
+    func deniedRoutePermission() {
+        let fix = makeFixture()
+        fix.engine.permission.status = .denied
+        let backend = AudioEngineCommandBackend(engine: fix.engine)
+
+        let result = backend.apply(
+            .setAppDevice(target: .active(fix.app), deviceUID: fix.device.uid)
+        )
+
+        #expect(result == .rejected(.permissionDenied))
+    }
+
+    @Test("Failed preferred input readback restores persistent policy")
+    func failedPreferredInputRestoresPolicy() {
+        let fix = makeFixture()
+        let input = AudioDevice(
+            id: AudioDeviceID(702),
+            uid: "input-new",
+            name: "New Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(input)
+        fix.settings.setLockedInputDeviceUID("input-old")
+        fix.settings.setPreferredInputDeviceUID("input-preferred")
+        let backend = AudioEngineCommandBackend(
+            engine: fix.engine,
+            readDefaultInputDevice: { nil }
+        )
+
+        let result = backend.apply(
+            .setDefaultInput(deviceUID: input.uid, intent: .userPreference)
+        )
+
+        #expect(result == .rejected(.writeFailed))
+        #expect(fix.settings.lockedInputDeviceUID == "input-old")
+        #expect(fix.settings.preferredInputDeviceUID == "input-preferred")
+    }
+
+    @Test("An input choice during Call Mode remains selected after the mode ends")
+    func preferredInputOverridesCallMode() {
+        let fix = makeFixture()
+        let callInput = AudioDevice(
+            id: AudioDeviceID(703),
+            uid: "input-call",
+            name: "Call Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(704),
+            uid: "input-user",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(callInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = callInput.id
+        fix.deviceVolume.defaultInputDeviceUID = callInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(deviceUID: callInput.uid, owner: .callMode))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+
+        fix.engine.removeInputPolicyRequest(owner: .callMode)
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.lockedInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
+    @Test("HD Guard restores the original input only while it owns the route")
+    func bluetoothGuardRestoresOwnedInput() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(705),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(706),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.deviceVolume.defaultInputDeviceUID == protectedInput.uid)
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == headsetInput.uid)
+    }
+
+    @Test("HD Guard preserves a later user microphone choice")
+    func bluetoothGuardPreservesUserOverride() {
+        let fix = makeFixture()
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(707),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(708),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let userInput = AudioDevice(
+            id: AudioDeviceID(709),
+            uid: "user-input",
+            name: "User Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(userInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        #expect(fix.engine.setLockedInputDevice(userInput))
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == userInput.uid)
+        #expect(fix.settings.preferredInputDeviceUID == userInput.uid)
+    }
+
+    @Test("HD Guard does not overwrite an unowned external input change")
+    func bluetoothGuardSkipsStaleRestoration() {
+        let fix = makeFixture()
+        fix.settings.appSettings.lockInputDevice = false
+        let headsetInput = AudioDevice(
+            id: AudioDeviceID(710),
+            uid: "headset-input",
+            name: "Headset Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let protectedInput = AudioDevice(
+            id: AudioDeviceID(711),
+            uid: "protected-input",
+            name: "Protected Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        let externalInput = AudioDevice(
+            id: AudioDeviceID(712),
+            uid: "external-input",
+            name: "External Input",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addInputDevice(headsetInput)
+        fix.deviceMonitor.addInputDevice(protectedInput)
+        fix.deviceMonitor.addInputDevice(externalInput)
+        fix.deviceVolume.defaultInputDeviceID = headsetInput.id
+        fix.deviceVolume.defaultInputDeviceUID = headsetInput.uid
+
+        #expect(fix.engine.setInputPolicyRequest(
+            deviceUID: protectedInput.uid,
+            owner: .bluetoothGuard
+        ))
+        fix.deviceVolume.defaultInputDeviceID = externalInput.id
+        fix.deviceVolume.defaultInputDeviceUID = externalInput.uid
+
+        fix.engine.releaseBluetoothHDGuard(
+            originalUID: headsetInput.uid,
+            protectedUID: protectedInput.uid,
+            restoreOriginal: true
+        )
+
+        #expect(fix.deviceVolume.defaultInputDeviceUID == externalInput.uid)
+    }
+
     @Test("A newly discovered helper process rebuilds the app tap")
     func helperMembershipChangeRebuildsTap() async throws {
         let fix = makeFixture()
@@ -554,7 +1127,7 @@ struct AudioEngineTapInitialStateTests {
         fix.processMonitor.activeApps = [updatedApp]
         fix.processMonitor.onAppsChanged?([updatedApp])
 
-        for _ in 0..<100 {
+        for _ in 0..<120 {
             if let current = fix.lastTap(),
                current !== firstTap,
                current.app.processObjectIDs == [777] {
@@ -896,7 +1469,7 @@ struct AudioEngineTapInitialStateTests {
         for event in tap.events.prefix(activateIndex) {
             switch event {
             case .updateEQSettings, .updateAutoEQProfile, .setAutoEQPreampEnabled,
-                 .updateLoudnessCompensation, .updateLoudnessEqualization:
+                 .updateMonoAudio, .updateLoudnessCompensation, .updateLoudnessEqualization:
                 Issue.record("Pre-activate mutation breaks the apply-initial-state contract: \(event)")
             case .activate, .invalidate:
                 break
@@ -1014,6 +1587,7 @@ struct RecordingProcessTapControllerContractTests {
             #expect(snap.loudnessCompensationEnabled == false)
             #expect(snap.loudnessEqualizerSettings.enabled == false)
             #expect(snap.autoEQPreampEnabled == false)
+            #expect(snap.monoAudioEnabled == false)
             #expect(snap.eqSettings == EQSettings.flat)
             #expect(snap.loudnessVolume == 1.0)
         } else {

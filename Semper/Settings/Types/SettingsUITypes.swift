@@ -4,6 +4,12 @@ import AppKit
 
 // MARK: - App-Wide Settings Enums
 
+enum AudioProcessingMode: String, Codable, Equatable, Sendable {
+    case active
+    case bypassed
+    case resumeRequested
+}
+
 enum MenuBarIconStyle: String, Codable, CaseIterable, Identifiable {
     case `default` = "Default"
     case speaker = "Speaker"

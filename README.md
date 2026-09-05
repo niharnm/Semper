@@ -57,6 +57,7 @@ not download a Semper DMG from an unofficial source.
 - **Capability-Aware Audio Routing**: Per-application routing to independent output devices (e.g. video calls to AirPods, music to desktop monitors) with automatic hardware capability detection.
 - **300% Device-Aware Gain & Peak Limiting**: Software master gain boosting up to 300% paired with a zero-latency peak soft limiter starting at -1 dBFS.
 - **AutoEQ Engine**: 10-band parametric EQ supporting AutoEQ headphone profiles and custom user presets.
+- **Ramped Mono Audio**: Combines left and right channels for managed apps without abrupt signal changes, while retaining output balance control.
 - **Liquid Glass Interface**: High-vibrancy macOS design system with dynamic Tahoe-style HUDs, balance controls, and menu bar interaction.
 
 ## Requirements
@@ -104,6 +105,7 @@ release.
 ## Documentation & Guides
 
 - [URL Schemes](guide/url-schemes.md)
+- [App Shortcuts](guide/app-shortcuts.md)
 - [Experiments](guide/experiments.md)
 - [AutoEQ Integration](guide/autoeq.md)
 - [Canary Testing](guide/canary.md)

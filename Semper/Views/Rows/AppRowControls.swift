@@ -174,7 +174,8 @@ struct AppRowControls: View {
                     }
                 ),
                 range: 0...100,
-                isRowFocused: isRowFocused
+                isRowFocused: isRowFocused,
+                accessibilityName: "Volume percentage for \(appName)"
             )
 
             Menu {

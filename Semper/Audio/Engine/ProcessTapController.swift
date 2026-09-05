@@ -56,6 +56,10 @@ final class ProcessTapController: ProcessTapControlling {
     private nonisolated(unsafe) var _balance: Float = 0
     private nonisolated(unsafe) var _primaryCurrentBalance: Float = 0
     private nonisolated(unsafe) var _secondaryCurrentBalance: Float = 0
+    /// Target stereo-to-mono blend. The render thread ramps between 0 and 1.
+    private nonisolated(unsafe) var _monoMix: Float = 0
+    private nonisolated(unsafe) var _primaryCurrentMonoMix: Float = 0
+    private nonisolated(unsafe) var _secondaryCurrentMonoMix: Float = 0
     /// Emergency silence flag - zeroes output immediately (used during destructive device switch)
     /// Unlike _isMuted, this bypasses all processing including VU metering
     private nonisolated(unsafe) var _forceSilence: Bool = false
@@ -315,6 +319,10 @@ final class ProcessTapController: ProcessTapControlling {
 
     func updateBalance(_ balance: Float) {
         _balance = max(-1, min(1, balance))
+    }
+
+    func updateMonoAudio(_ enabled: Bool) {
+        _monoMix = enabled ? 1 : 0
     }
 
     // MARK: - Multi-Device Aggregate Configuration
@@ -684,6 +692,7 @@ final class ProcessTapController: ProcessTapControlling {
             loudnessCompensator?.updateForVolume(initial.loudnessVolume)
         }
         _lastLoudnessVolume = initial.loudnessVolume
+        _monoMix = initial.monoAudioEnabled ? 1 : 0
 
         // Create IO proc with gain processing
         nextCallbackID += 1
@@ -711,6 +720,7 @@ final class ProcessTapController: ProcessTapControlling {
         // ramps from userVolume→userVolume (no-op) instead of 1.0→userVolume.
         _primaryCurrentVolume = _volume
         _primaryCurrentBalance = _balance
+        _primaryCurrentMonoMix = _monoMix
 
         // Reset output gate to armed and size the ramp from the device sample rate.
         _outputGateRawPhase = 0
@@ -859,47 +869,33 @@ final class ProcessTapController: ProcessTapControlling {
 
     /// Tears down the tap and releases all CoreAudio resources.
     /// Safe to call multiple times - subsequent calls are no-ops.
-    private var _invalidating = false
+    private var invalidationTask: Task<TapResourceCleanupResult, Never>?
+    private var outstandingCleanupCount = 0
+    private var completedOutstandingCleanup = TapResourceCleanupResult.empty
+    private var outstandingCleanupContinuation: CheckedContinuation<TapResourceCleanupResult, Never>?
+
     func invalidate() {
-        guard beginInvalidation() else { return }
-        defer { endInvalidation() }
-
-        // destroyAsync() captures IDs, clears instance state immediately,
-        // then dispatches blocking teardown to a background queue.
-        // Safe even if activate() is called again before cleanup completes.
-        secondaryResources.destroyAsync()
-        primaryResources.destroyAsync()
-
-        logger.info("Tap invalidated for \(self.app.name)")
+        _ = startInvalidationIfNeeded()
     }
 
     /// Awaitable invalidation: suspends until CoreAudio resources are fully
     /// destroyed. Prevents orphaned IO procs when a new tap is created immediately after.
-    func invalidateAsync() async {
-        guard beginInvalidation() else { return }
-        defer { endInvalidation() }
-
-        // Await full teardown of both resource sets (uses .userInitiated QoS for timely cleanup)
-        await withCheckedContinuation { continuation in
-            secondaryResources.destroyAsync(on: .global(qos: .userInitiated)) {
-                continuation.resume()
-            }
-        }
-        await withCheckedContinuation { continuation in
-            primaryResources.destroyAsync(on: .global(qos: .userInitiated)) {
-                continuation.resume()
-            }
-        }
-
-        logger.info("Tap invalidated (async) for \(self.app.name)")
+    func invalidateAsync() async -> TapResourceCleanupResult {
+        guard let task = startInvalidationIfNeeded() else { return .empty }
+        return await task.value
     }
 
     // MARK: - Invalidation Helpers
 
-    /// Shared preamble for invalidation. Returns false if already invalidating or not activated.
-    private func beginInvalidation() -> Bool {
-        guard activated, !_invalidating else { return false }
-        _invalidating = true
+    /// Shared preamble for invalidation. Partial activation resources also require cleanup.
+    private func startInvalidationIfNeeded() -> Task<TapResourceCleanupResult, Never>? {
+        if let invalidationTask { return invalidationTask }
+        guard activated
+                || primaryResources.isActive
+                || secondaryResources.isActive
+                || outstandingCleanupCount > 0 else {
+            return nil
+        }
         activated = false
 
         _lastRenderHostTime = 0
@@ -915,7 +911,16 @@ final class ProcessTapController: ProcessTapControlling {
         _primaryCallbackID = 0
         _secondaryCallbackID = 0
 
-        return true
+        let task = Task { @MainActor [self] in
+            var result = await destroyCurrentResources()
+            result.merge(await waitForOutstandingCleanup())
+            endInvalidation()
+            invalidationTask = nil
+            logger.info("Tap invalidated for \(self.app.name)")
+            return result
+        }
+        invalidationTask = task
+        return task
     }
 
     /// Shared epilogue for invalidation. Clears EQ state and resets the reentrant guard.
@@ -924,11 +929,52 @@ final class ProcessTapController: ProcessTapControlling {
         secondaryAutoEQProcessor = nil
         secondaryLoudnessCompensator = nil
         secondaryLoudnessEqualizerProcessor = nil
-        _invalidating = false
+    }
+
+    private func destroyCurrentResources() async -> TapResourceCleanupResult {
+        var result = await withCheckedContinuation { continuation in
+            secondaryResources.destroyAsync(on: .global(qos: .userInitiated)) { result in
+                continuation.resume(returning: result)
+            }
+        }
+        let primaryResult = await withCheckedContinuation { continuation in
+            primaryResources.destroyAsync(on: .global(qos: .userInitiated)) { result in
+                continuation.resume(returning: result)
+            }
+        }
+        result.merge(primaryResult)
+        return result
+    }
+
+    private func waitForOutstandingCleanup() async -> TapResourceCleanupResult {
+        guard outstandingCleanupCount > 0 else {
+            let result = completedOutstandingCleanup
+            completedOutstandingCleanup = .empty
+            return result
+        }
+        return await withCheckedContinuation { continuation in
+            outstandingCleanupContinuation = continuation
+        }
+    }
+
+    private func recordOutstandingCleanup(_ result: TapResourceCleanupResult) {
+        completedOutstandingCleanup.merge(result)
+        outstandingCleanupCount -= 1
+        guard outstandingCleanupCount == 0,
+              let continuation = outstandingCleanupContinuation else { return }
+        outstandingCleanupContinuation = nil
+        let completed = completedOutstandingCleanup
+        completedOutstandingCleanup = .empty
+        continuation.resume(returning: completed)
+    }
+
+    private func recordSynchronousCleanup(_ result: TapResourceCleanupResult) {
+        completedOutstandingCleanup.merge(result)
     }
 
     isolated deinit {
-        invalidate()
+        secondaryResources.destroyAsync()
+        primaryResources.destroyAsync()
     }
 
     // MARK: - Crossfade Operations
@@ -1045,14 +1091,14 @@ final class ProcessTapController: ProcessTapControlling {
         err = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggID)
         guard err == noErr else {
             // TapResources.destroy() handles correct teardown order + CrashGuard.untrackDevice
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.aggregateCreationFailed(err)
         }
         secondaryResources.aggregateDeviceID = aggID
         CrashGuard.trackDevice(aggID)
 
         guard secondaryResources.aggregateDeviceID.waitUntilReady(timeout: 2.0) else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.deviceNotReady
         }
 
@@ -1071,6 +1117,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         _secondaryCurrentVolume = _primaryCurrentVolume
         _secondaryCurrentBalance = _primaryCurrentBalance
+        _secondaryCurrentMonoMix = _primaryCurrentMonoMix
         _secondaryLeftPeakLevel = 0
         _secondaryRightPeakLevel = 0
 
@@ -1112,7 +1159,7 @@ final class ProcessTapController: ProcessTapControlling {
             self.processAudioCallback(inInputData, to: outOutputData, callbackID: secondaryCallbackID)
         }
         guard err == noErr else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1120,7 +1167,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         err = AudioDeviceStart(secondaryResources.aggregateDeviceID, secondaryResources.deviceProcID)
         guard err == noErr else {
-            secondaryResources.destroy()
+            recordSynchronousCleanup(secondaryResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1128,14 +1175,19 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     private func destroyPrimaryTap() {
-        primaryResources.destroyAsync()
+        outstandingCleanupCount += 1
+        primaryResources.destroyAsync { [weak self] result in
+            Task { @MainActor [weak self] in
+                self?.recordOutstandingCleanup(result)
+            }
+        }
     }
 
     /// Tears down any in-progress secondary tap (used by re-entrant crossfade guard).
     private func cleanupSecondaryTap() {
         guard secondaryResources.isActive else { return }
         _secondaryCallbackID = 0
-        secondaryResources.destroy()
+        recordSynchronousCleanup(secondaryResources.destroy())
         secondaryEQProcessor = nil
         secondaryAutoEQProcessor = nil
         secondaryLoudnessCompensator = nil
@@ -1185,6 +1237,8 @@ final class ProcessTapController: ProcessTapControlling {
         _secondaryCurrentVolume = 0
         _primaryCurrentBalance = _secondaryCurrentBalance
         _secondaryCurrentBalance = 0
+        _primaryCurrentMonoMix = _secondaryCurrentMonoMix
+        _secondaryCurrentMonoMix = 0
         _primaryLeftPeakLevel = _secondaryLeftPeakLevel
         _primaryRightPeakLevel = _secondaryRightPeakLevel
         _secondaryLeftPeakLevel = 0
@@ -1276,14 +1330,14 @@ final class ProcessTapController: ProcessTapControlling {
         var aggID: AudioObjectID = .unknown
         err = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggID)
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.aggregateCreationFailed(err)
         }
         newResources.aggregateDeviceID = aggID
         CrashGuard.trackDevice(aggID)
 
         guard newResources.aggregateDeviceID.waitUntilReady(timeout: 2.0) else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.deviceNotReady
         }
 
@@ -1302,7 +1356,7 @@ final class ProcessTapController: ProcessTapControlling {
             self.processAudioCallback(inInputData, to: outOutputData, callbackID: switchCallbackID)
         }
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1310,12 +1364,12 @@ final class ProcessTapController: ProcessTapControlling {
 
         err = AudioDeviceStart(newResources.aggregateDeviceID, newResources.deviceProcID)
         guard err == noErr else {
-            newResources.destroy()
+            recordSynchronousCleanup(newResources.destroy())
             throw CrossfadeError.tapCreationFailed(err)
         }
 
         // Destroy old resources, adopt new
-        primaryResources.destroy()
+        recordSynchronousCleanup(primaryResources.destroy())
         primaryResources = newResources
         targetDeviceUIDs = outputUIDs
         currentDeviceUIDs = outputUIDs
@@ -1339,7 +1393,7 @@ final class ProcessTapController: ProcessTapControlling {
     }
 
     private func cleanupPartialActivation() {
-        primaryResources.destroy()
+        recordSynchronousCleanup(primaryResources.destroy())
     }
 
     /// Advance the output-gate state machine for one buffer and return the multiplier
@@ -1387,6 +1441,8 @@ final class ProcessTapController: ProcessTapControlling {
         preferredStereoLeft: Int,
         preferredStereoRight: Int,
         currentVol: inout Float,
+        targetMonoMix: Float,
+        currentMonoMix: inout Float,
         targetBalance: Float,
         currentBalance: inout Float,
         eqProc: EQProcessor?,
@@ -1531,12 +1587,20 @@ final class ProcessTapController: ProcessTapControlling {
             }
 
             if outputChannels > 1, safeLeft != safeRight {
+                let clampedTargetMonoMix = max(0, min(1, targetMonoMix))
                 let clampedTargetBalance = max(-1, min(1, targetBalance))
                 for frame in 0..<frameCount {
+                    currentMonoMix += (clampedTargetMonoMix - currentMonoMix) * rampCoefficient
+                    let base = frame * outputChannels
+                    let left = outputSamples[base + safeLeft]
+                    let right = outputSamples[base + safeRight]
+                    let mono = (left + right) * 0.5
+                    outputSamples[base + safeLeft] = left + ((mono - left) * currentMonoMix)
+                    outputSamples[base + safeRight] = right + ((mono - right) * currentMonoMix)
+
                     currentBalance += (clampedTargetBalance - currentBalance) * rampCoefficient
                     let leftGain = currentBalance > 0 ? 1 - currentBalance : 1
                     let rightGain = currentBalance < 0 ? 1 + currentBalance : 1
-                    let base = frame * outputChannels
                     outputSamples[base + safeLeft] *= leftGain
                     outputSamples[base + safeRight] *= rightGain
                 }
@@ -1720,8 +1784,10 @@ final class ProcessTapController: ProcessTapControlling {
         }
 
         let targetVol = _volume
+        let targetMonoMix = _monoMix
         let targetBalance = _balance
         var currentVol: Float
+        var currentMonoMix: Float
         var currentBalance: Float
         let crossfadeMultiplier: Float
         let rampCoeff: Float
@@ -1734,6 +1800,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         if isPrimary {
             currentVol = _primaryCurrentVolume
+            currentMonoMix = _primaryCurrentMonoMix
             currentBalance = _primaryCurrentBalance
             // Equal-power crossfade: primary uses cosine curve (1→0).
             // CrossfadeState.primaryMultiplier handles all phase logic including the
@@ -1748,6 +1815,7 @@ final class ProcessTapController: ProcessTapControlling {
             loudnessCompensatorProc = loudnessCompensator
         } else {
             currentVol = _secondaryCurrentVolume
+            currentMonoMix = _secondaryCurrentMonoMix
             currentBalance = _secondaryCurrentBalance
             // Secondary uses sine curve (0→1).
             // .warmingUp → 0.0 (muted), .crossfading → sin(progress*π/2), .idle → 1.0
@@ -1771,6 +1839,8 @@ final class ProcessTapController: ProcessTapControlling {
             preferredStereoLeft: stereoLeft,
             preferredStereoRight: stereoRight,
             currentVol: &currentVol,
+            targetMonoMix: targetMonoMix,
+            currentMonoMix: &currentMonoMix,
             targetBalance: targetBalance,
             currentBalance: &currentBalance,
             eqProc: eqProc,
@@ -1787,11 +1857,13 @@ final class ProcessTapController: ProcessTapControlling {
 
         if isPrimary {
             _primaryCurrentVolume = currentVol
+            _primaryCurrentMonoMix = currentMonoMix
             _primaryCurrentBalance = currentBalance
             _primaryLeftPeakLevel += levelSmoothingFactor * (measuredLevel.left - _primaryLeftPeakLevel)
             _primaryRightPeakLevel += levelSmoothingFactor * (measuredLevel.right - _primaryRightPeakLevel)
         } else {
             _secondaryCurrentVolume = currentVol
+            _secondaryCurrentMonoMix = currentMonoMix
             _secondaryCurrentBalance = currentBalance
             _secondaryLeftPeakLevel += levelSmoothingFactor * (measuredLevel.left - _secondaryLeftPeakLevel)
             _secondaryRightPeakLevel += levelSmoothingFactor * (measuredLevel.right - _secondaryRightPeakLevel)

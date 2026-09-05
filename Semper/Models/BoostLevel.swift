@@ -2,7 +2,7 @@
 import Foundation
 
 /// Per-app volume boost multiplier
-enum BoostLevel: Float, CaseIterable, Codable {
+enum BoostLevel: Float, CaseIterable, Codable, Equatable, Sendable {
     case x1 = 1.0
     case x2 = 2.0
     case x3 = 3.0

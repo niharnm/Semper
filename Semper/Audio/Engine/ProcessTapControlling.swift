@@ -39,12 +39,13 @@ protocol ProcessTapControlling: AnyObject, Sendable {
 
     func activate(initial: TapInitialState) throws
     func invalidate()
-    func invalidateAsync() async
+    func invalidateAsync() async -> TapResourceCleanupResult
     func updateEQSettings(_ settings: EQSettings)
     func updateAutoEQProfile(_ profile: AutoEQProfile?)
     func setAutoEQPreampEnabled(_ enabled: Bool)
     func updateLoudnessCompensation(volume: Float, enabled: Bool)
     func updateLoudnessEqualization(_ settings: LoudnessEqualizerSettings)
+    func updateMonoAudio(_ enabled: Bool)
     func updateBalance(_ balance: Float)
     func switchDevice(
         to newDeviceUID: String,
@@ -94,8 +95,9 @@ extension ProcessTapControlling {
         )
     }
 
-    func invalidateAsync() async {
+    func invalidateAsync() async -> TapResourceCleanupResult {
         invalidate()
+        return .empty
     }
 
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {
@@ -107,6 +109,10 @@ extension ProcessTapControlling {
     }
 
     func updateBalance(_ balance: Float) {
+        // Default no-op for test controllers that do not process sample buffers.
+    }
+
+    func updateMonoAudio(_ enabled: Bool) {
         // Default no-op for test controllers that do not process sample buffers.
     }
 }

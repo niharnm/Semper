@@ -55,11 +55,13 @@ struct TahoeStyleHUD: View {
     var waveIconNameForTest: String { waveIconName }
     #endif
 
-    private var accessibilityDescription: String {
-        let device = deviceName.isEmpty ? "Unknown device" : deviceName
-        let percent = Int((displayFloat * 100).rounded())
-        if displayMute { return "\(device), muted, volume at \(percent) percent" }
-        return "\(device), volume \(percent) percent"
+    private var accessibilityName: String {
+        "\(deviceName.isEmpty ? "Unknown device" : deviceName) volume"
+    }
+
+    private var accessibilityValue: String {
+        let percentage = AudioAccessibility.percentage(Double(displayFloat))
+        return displayMute ? "Muted, \(percentage)" : percentage
     }
 
     private var sliderBinding: Binding<Double> {
@@ -130,7 +132,19 @@ struct TahoeStyleHUD: View {
             dragValue = nil
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityDescription)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAdjustableAction { direction in
+            guard onSliderChange != nil else { return }
+            let adjusted = AudioAccessibility.adjustedValue(
+                Double(displayFloat),
+                direction: direction,
+                step: 0.05,
+                range: 0...1
+            )
+            dragValue = adjusted
+            onSliderChange?(Float(adjusted))
+        }
     }
 }
 
