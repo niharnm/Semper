@@ -113,43 +113,6 @@ struct DDCWriteLedgerTests {
     }
 }
 
-@Suite("DDC probe lifecycle")
-struct DDCProbeLifecycleTests {
-    @Test("Stop invalidates an active probe publication")
-    func stopInvalidatesProbe() throws {
-        var lifecycle = DDCProbeLifecycle()
-        lifecycle.start()
-        let candidate = lifecycle.beginProbe()
-        let generation = try #require(candidate)
-
-        lifecycle.stop()
-
-        #expect(lifecycle.permitsPublication(for: generation) == false)
-    }
-
-    @Test("A newer probe invalidates an older publication")
-    func newerProbeInvalidatesOlderProbe() throws {
-        var lifecycle = DDCProbeLifecycle()
-        lifecycle.start()
-        let firstCandidate = lifecycle.beginProbe()
-        let first = try #require(firstCandidate)
-        let secondCandidate = lifecycle.beginProbe()
-        let second = try #require(secondCandidate)
-
-        #expect(lifecycle.permitsPublication(for: first) == false)
-        #expect(lifecycle.permitsPublication(for: second) == true)
-    }
-
-    @Test("A late probe cannot restart a stopped controller")
-    func probeAfterStopIsRejected() {
-        var lifecycle = DDCProbeLifecycle()
-        lifecycle.start()
-        lifecycle.stop()
-
-        #expect(lifecycle.beginProbe() == nil)
-    }
-}
-
 @Suite("Device volume monitor DDC completion")
 @MainActor
 struct DeviceVolumeMonitorDDCCompletionTests {

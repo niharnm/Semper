@@ -312,7 +312,7 @@ final class DDCService: @unchecked Sendable {
 
 extension DDCService {
     /// Finds all DCPAVServiceProxy entries in the IORegistry and creates DDCService instances.
-    /// Returns pairs of (io_service_t entry, DDCService).
+    /// Each returned entry remains retained and must be released exactly once by the caller.
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "DDCService")
 
     static func discoverServices() -> [(entry: io_service_t, service: DDCService)] {

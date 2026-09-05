@@ -7,7 +7,7 @@ struct UpdatesTab: View {
     @ObservedObject var updateManager: UpdateManager
     @State private var copiedUpdateCommand = false
 
-    private let updateCommand = #"open "semper://update""#
+    private let updateCommand = #"/usr/bin/curl -fsSL https://raw.githubusercontent.com/niharnm/Semper/main/scripts/update-local.sh | /bin/bash"#
 
     private var lastCheckDescription: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"

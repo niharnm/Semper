@@ -27,15 +27,15 @@ struct OutputDeviceReconnectRoutingTests {
         #expect(action == .ensureHighestPriorityDefault)
     }
 
-    @Test("Lower-priority system auto-switch restores the previous output")
-    func lowerPriorityAutoSwitchRestoresPrevious() {
+    @Test("macOS auto-switch to a connected output is accepted")
+    func systemAutoSwitchIsAccepted() {
         let action = AudioEngine.connectedOutputDefaultAction(
-            connectedDeviceUID: "speakers",
-            highestPriorityConnectedUID: "headphones",
-            currentDefaultUID: "speakers"
+            connectedDeviceUID: "airpods",
+            highestPriorityConnectedUID: "speakers",
+            currentDefaultUID: "airpods"
         )
 
-        #expect(action == .restorePrevious)
+        #expect(action == .acceptSystemDefault)
     }
 
     @Test("Lower-priority connection leaves an unchanged default alone")

@@ -114,15 +114,13 @@ final class AudioEngine {
     private var appliedPIDs: Set<pid_t> = []
     private var appDeviceRouting: [pid_t: String] = [:]  // pid → deviceUID (always explicit)
     private var followsDefault: Set<pid_t> = []  // Apps that follow system default
-    /// The last output default confirmed by Semper (user change or programmatic switch).
-    /// Used to restore after macOS auto-switches to a lower-priority device.
+    /// The last output default confirmed by macOS or Semper.
+    /// Used to recover if a programmatic default-device change loses its callback.
     private var lastConfirmedDefaultUID: String?
-    /// Timestamp of the last auto-switch override. Used to distinguish rapid BT auto-switches
-    /// (< 1s apart) from deliberate user changes (> 1s after last override).
-    private var lastAutoSwitchOverrideTime: Date?
     private var pendingCleanup: [pid_t: Task<Void, Never>] = [:]  // Grace period for stale tap cleanup
     private var tapMembershipRefreshTasks: [pid_t: Task<Void, Never>] = [:]
     private var tapMaintenanceTasks: [UUID: Task<Void, Never>] = [:]
+    private var lastRunningProcessObjectIDs: [pid_t: Set<AudioObjectID>] = [:]
     private var staleCleanupTask: Task<Void, Never>?  // Debounced cleanup scheduling
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
@@ -507,7 +505,7 @@ final class AudioEngine {
 
     enum ConnectedOutputDefaultAction: Equatable {
         case ensureHighestPriorityDefault
-        case restorePrevious
+        case acceptSystemDefault
         case none
     }
 
@@ -520,7 +518,7 @@ final class AudioEngine {
             return .ensureHighestPriorityDefault
         }
         if connectedDeviceUID == currentDefaultUID {
-            return .restorePrevious
+            return .acceptSystemDefault
         }
         return .none
     }
@@ -905,6 +903,12 @@ final class AudioEngine {
                 }
             )
         })
+        let previousRunningProcessObjectIDs = lastRunningProcessObjectIDs
+        lastRunningProcessObjectIDs = Dictionary(
+            uniqueKeysWithValues: updatedApps.map {
+                ($0.id, Set($0.runningProcessObjectIDs))
+            }
+        )
         guard canCreateProcessTaps else { return }
         applyPersistedSettings()
         scheduleStaleCleanup()
@@ -929,8 +933,12 @@ final class AudioEngine {
         }
 
         for app in updatedApps {
-            guard let tap = taps[app.id],
-                  Self.shouldRefreshTapMembership(
+            guard let tap = taps[app.id] else { continue }
+            let latestRunningIDs = Set(app.runningProcessObjectIDs)
+            let stoppedRunningIDs = previousRunningProcessObjectIDs[app.id, default: []]
+                .subtracting(latestRunningIDs)
+            let helperActivityStopped = app.isHelperBacked && !stoppedRunningIDs.isEmpty
+            guard helperActivityStopped || Self.shouldRefreshTapMembership(
                     currentObjectIDs: tap.app.processObjectIDs,
                     latestObjectIDs: app.processObjectIDs
                   ) else {
@@ -945,17 +953,24 @@ final class AudioEngine {
                 }
                 guard !Task.isCancelled,
                       let latestApp = self.apps.first(where: { $0.id == app.id }),
-                      let currentTap = self.taps[app.id],
-                      Self.shouldRefreshTapMembership(
+                      let currentTap = self.taps[app.id] else {
+                    return
+                }
+                let stillStoppedIDs = stoppedRunningIDs.subtracting(
+                    Set(latestApp.runningProcessObjectIDs)
+                )
+                let membershipChanged = Self.shouldRefreshTapMembership(
                         currentObjectIDs: currentTap.app.processObjectIDs,
                         latestObjectIDs: latestApp.processObjectIDs
-                      ) else {
+                      )
+                guard !stillStoppedIDs.isEmpty || membershipChanged else {
                     return
                 }
                 let currentIDs = Set(currentTap.app.processObjectIDs)
                 let latestIDs = Set(latestApp.processObjectIDs)
                 let removedIDs = currentIDs.subtracting(latestIDs)
-                if removedIDs.isEmpty,
+                if stillStoppedIDs.isEmpty,
+                   removedIDs.isEmpty,
                    !currentIDs.isDisjoint(with: latestIDs),
                    currentTap.hasRecentAudioCallback(within: 1.0) {
                     return
@@ -3038,8 +3053,11 @@ final class AudioEngine {
         ) {
         case .ensureHighestPriorityDefault:
             reEvaluateOutputDefault()
-        case .restorePrevious:
-            restoreConfirmedDefault()
+        case .acceptSystemDefault:
+            lastConfirmedDefaultUID = deviceUID
+            routeFollowsDefaultApps(to: deviceUID)
+            logger.info("Accepted macOS default output → \(deviceName)")
+            return
         case .none:
             break
         }
@@ -3065,7 +3083,6 @@ final class AudioEngine {
             self.logger.debug("Auto-switch grace period expired, no macOS switch detected")
         }
 
-        lastAutoSwitchOverrideTime = nil
         outputPriorityState = .pendingAutoSwitch(
             connectedDeviceUID: deviceUID,
             timeoutTask: timeoutTask
@@ -3187,48 +3204,20 @@ final class AudioEngine {
             }
 
             if newDefaultUID == pendingUID {
-                // Settling heuristic: if >1s since last override, BT auto-switches have
-                // settled. This is likely the user changing via System Settings — accept it.
-                // BT auto-switches happen within ms; user actions take >1s.
-                if let lastOverride = lastAutoSwitchOverrideTime,
-                   Date().timeIntervalSince(lastOverride) > 1.0 {
-                    timeoutTask.cancel()
-                    outputPriorityState = .stable
-                    lastConfirmedDefaultUID = newDefaultUID
-                    lastAutoSwitchOverrideTime = nil
-                    routeFollowsDefaultApps(to: newDefaultUID)
-                    let deviceName = deviceMonitor.device(for: newDefaultUID)?.name ?? newDefaultUID
-                    logger.info("Accepted user change to \(deviceName) (settled >1s)")
-                    return
-                }
-
-                // Case 1: macOS auto-switched to the newly connected device — restore what
-                // the user was on. Re-enter PENDING_AUTOSWITCH for further auto-switches.
+                // macOS selected the newly connected output. Accept that choice so AirPods and
+                // other wireless outputs become Semper's main output as soon as they connect.
                 timeoutTask.cancel()
-                restoreConfirmedDefault()
-                lastAutoSwitchOverrideTime = Date()
-                let transport = deviceMonitor.device(for: pendingUID)?.id.readTransportType()
-                let timeout = (transport == .bluetooth || transport == .bluetoothLE)
-                    ? btAutoSwitchGracePeriod
-                    : autoSwitchGracePeriod
-                let newTimeoutTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(timeout))
-                    guard let self, !Task.isCancelled else { return }
-                    self.outputPriorityState = .stable
-                    self.lastAutoSwitchOverrideTime = nil
-                    self.logger.debug("Auto-switch grace period expired after override")
-                }
-                outputPriorityState = .pendingAutoSwitch(
-                    connectedDeviceUID: pendingUID,
-                    timeoutTask: newTimeoutTask
-                )
+                outputPriorityState = .stable
+                lastConfirmedDefaultUID = newDefaultUID
+                routeFollowsDefaultApps(to: newDefaultUID)
+                let deviceName = deviceMonitor.device(for: newDefaultUID)?.name ?? newDefaultUID
+                logger.info("Accepted macOS default output → \(deviceName)")
                 return
             }
 
             // Case 3: Genuine user intent (different device, not our echo) — respect it.
             timeoutTask.cancel()
             outputPriorityState = .stable
-            lastAutoSwitchOverrideTime = nil
         }
 
         // Suppress echo from our own priority-based override (when not in pendingAutoSwitch)
