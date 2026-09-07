@@ -441,6 +441,40 @@ struct ProcessTapSwitchSerializationTests {
         case rateChange
     }
 
+    enum TestFailure: Error {
+        case expected
+    }
+
+    @Test("Warmup waits beyond its minimum for delayed render readiness")
+    func warmupWaitsForDelayedRenderReadiness() async throws {
+        var elapsedMs: UInt64 = 0
+
+        let isReady = try await ProcessTapController.waitForSecondaryWarmup(
+            minimumWaitMs: 50,
+            timeoutMs: 100,
+            sleep: { elapsedMs += $0 },
+            isComplete: { elapsedMs >= 65 }
+        )
+
+        #expect(isReady)
+        #expect(elapsedMs == 65)
+    }
+
+    @Test("Warmup stops at its timeout when render readiness never arrives")
+    func warmupStopsAtTimeout() async throws {
+        var elapsedMs: UInt64 = 0
+
+        let isReady = try await ProcessTapController.waitForSecondaryWarmup(
+            minimumWaitMs: 50,
+            timeoutMs: 62,
+            sleep: { elapsedMs += $0 },
+            isComplete: { false }
+        )
+
+        #expect(!isReady)
+        #expect(elapsedMs == 62)
+    }
+
     @Test("A replacement switch starts after cancelled work cleans up")
     func replacementWaitsForCleanup() async throws {
         let controller = makeController()
@@ -468,6 +502,50 @@ struct ProcessTapSwitchSerializationTests {
         try await second.value
         _ = try? await first.value
         #expect(events == ["first-started", "first-cleaned", "second-started"])
+    }
+
+    @Test("Cancelling the caller cancels an active serialized switch")
+    func cancellingCallerCancelsInnerOperation() async throws {
+        let controller = makeController()
+        var caller: Task<Void, Error>?
+        var releaseOperation: CheckedContinuation<Void, Never>?
+        var innerObservedCancellation = false
+        var didPromote = false
+
+        await withCheckedContinuation { operationStarted in
+            caller = Task { @MainActor in
+                try await controller.performSerializedDeviceSwitch {
+                    operationStarted.resume()
+
+                    let _: Void = await withCheckedContinuation { continuation in
+                        releaseOperation = continuation
+                    }
+
+                    innerObservedCancellation = Task.isCancelled
+                    try Task.checkCancellation()
+                    didPromote = true
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        let operationRelease = try #require(releaseOperation)
+        releaseOperation = nil
+
+        callerTask.cancel()
+        await Task.yield()
+        operationRelease.resume()
+
+        do {
+            try await callerTask.value
+            Issue.record("Cancelled serialized switch returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled serialized switch returned \(error)")
+        }
+
+        #expect(innerObservedCancellation)
+        #expect(!didPromote)
     }
 
     @Test(
@@ -533,6 +611,94 @@ struct ProcessTapSwitchSerializationTests {
         }
 
         #expect(controller.volume == 0.8)
+    }
+
+    @Test("Tap source failure before promotion restores the previous source")
+    func sourceFailureBeforePromotionRestoresPreviousSource() async throws {
+        let controller = makeController()
+        try await controller.refreshTapSource("A")
+
+        do {
+            try await controller.performTapSourceRefreshTransaction(to: "B") { _ in
+                throw TestFailure.expected
+            }
+            Issue.record("Failed tap source refresh returned success")
+        } catch TestFailure.expected {
+        } catch {
+            Issue.record("Tap source refresh returned \(error)")
+        }
+
+        #expect(controller.tapSourceDeviceUID == "A")
+    }
+
+    @Test("Rapid A to B to A switch keeps the promoted source during cleanup")
+    func rapidSwitchKeepsPromotedSourceDuringCleanup() async throws {
+        let controller = makeController()
+        controller.volume = 0.8
+        try await controller.refreshTapSource("A")
+
+        var activeSource = "A"
+        var sourceSeenByA: (preferred: String, active: String)?
+        var events: [String] = []
+        var bTask: Task<Void, Error>?
+
+        await withCheckedContinuation { bPromoted in
+            bTask = Task { @MainActor in
+                try await controller.performSerializedDeviceSwitch {
+                    do {
+                        try await controller.performTapSourceRefreshTransaction(to: "B") { onPromotion in
+                            activeSource = "B"
+                            onPromotion()
+                            events.append("B-promoted")
+                            bPromoted.resume()
+                            try await controller.performPostPromotionVolumeRamp(
+                                originalVolume: 0.8
+                            )
+                        }
+                    } catch {
+                        events.append("B-cleaned")
+                        throw error
+                    }
+                }
+            }
+        }
+
+        #expect(controller.volume == 0)
+
+        let b = try #require(bTask)
+        let a = Task { @MainActor in
+            try await controller.performSerializedDeviceSwitch {
+                sourceSeenByA = (controller.tapSourceDeviceUID ?? "", activeSource)
+                events.append("A-started")
+                try await controller.performTapSourceRefreshTransaction(to: "A") { onPromotion in
+                    activeSource = "A"
+                    onPromotion()
+                }
+                events.append("A-committed")
+            }
+        }
+
+        try await a.value
+
+        do {
+            try await b.value
+            Issue.record("Cancelled B switch returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled B switch returned \(error)")
+        }
+
+        #expect(sourceSeenByA?.preferred == "B")
+        #expect(sourceSeenByA?.active == "B")
+        #expect(controller.tapSourceDeviceUID == "A")
+        #expect(activeSource == "A")
+        #expect(controller.volume == 0.8)
+        #expect(events == [
+            "B-promoted",
+            "B-cleaned",
+            "A-started",
+            "A-committed"
+        ])
     }
 
     private func makeController() -> ProcessTapController {

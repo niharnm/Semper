@@ -204,6 +204,32 @@ final class ProcessTapController: ProcessTapControlling {
         sourceHasRecentAudio && !requiresExclusiveOutput
     }
 
+    static func waitForSecondaryWarmup(
+        minimumWaitMs: UInt64,
+        timeoutMs: UInt64,
+        pollIntervalMs: UInt64 = 5,
+        sleep: @MainActor (UInt64) async throws -> Void = { milliseconds in
+            try await Task.sleep(for: .milliseconds(milliseconds))
+        },
+        isComplete: @MainActor () -> Bool
+    ) async throws -> Bool {
+        precondition(pollIntervalMs > 0)
+
+        let initialWaitMs = min(minimumWaitMs, timeoutMs)
+        if initialWaitMs > 0 {
+            try await sleep(initialWaitMs)
+        }
+
+        var elapsedMs = initialWaitMs
+        while !isComplete() && elapsedMs < timeoutMs {
+            let waitMs = min(pollIntervalMs, timeoutMs - elapsedMs)
+            try await sleep(waitMs)
+            elapsedMs += waitMs
+        }
+
+        return isComplete()
+    }
+
     /// Health checks should only run after activation has settled and at least one callback occurred.
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool {
         guard _hasRenderedAudio else { return false }
@@ -844,31 +870,30 @@ final class ProcessTapController: ProcessTapControlling {
             try await performSerializedDeviceSwitch { [self] in
                 let oldPreferred = self.preferredTapSourceDeviceUID
                 guard oldPreferred != preferredDeviceUID else { return }
-                self.preferredTapSourceDeviceUID = preferredDeviceUID
-                guard activated, let primaryUID = currentDeviceUIDs.first else { return }
+                guard activated, let primaryUID = currentDeviceUIDs.first else {
+                    self.preferredTapSourceDeviceUID = preferredDeviceUID
+                    return
+                }
 
                 let allUIDs = currentDeviceUIDs
                 logger.info("[REFRESH] Tap source changing for \(self.app.name): \(oldPreferred ?? "mixdown") → \(preferredDeviceUID ?? "mixdown")")
 
-                do {
-                    try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
-                } catch is CancellationError {
-                    self.preferredTapSourceDeviceUID = oldPreferred
-                    throw CancellationError()
-                } catch {
-                    logger.warning("[REFRESH] Crossfade failed, using destructive switch: \(error.localizedDescription)")
-                    guard primaryResources.tapDescription != nil else {
-                        self.preferredTapSourceDeviceUID = oldPreferred
-                        throw CrossfadeError.noTapDescription
-                    }
+                try await performTapSourceRefreshTransaction(to: preferredDeviceUID) { onPromotion in
                     do {
+                        try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+                        onPromotion()
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        logger.warning("[REFRESH] Crossfade failed, using destructive switch: \(error.localizedDescription)")
+                        guard primaryResources.tapDescription != nil else {
+                            throw CrossfadeError.noTapDescription
+                        }
                         try await performDestructiveDeviceSwitch(
                             to: primaryUID,
-                            allDeviceUIDs: allUIDs
+                            allDeviceUIDs: allUIDs,
+                            onPromotion: onPromotion
                         )
-                    } catch {
-                        self.preferredTapSourceDeviceUID = oldPreferred
-                        throw error
                     }
                 }
 
@@ -877,6 +902,26 @@ final class ProcessTapController: ProcessTapControlling {
         } catch is CancellationError {
             logger.info("[REFRESH] Tap source refresh superseded or cancelled")
             throw CancellationError()
+        }
+    }
+
+    func performTapSourceRefreshTransaction(
+        to preferredDeviceUID: String?,
+        operation: @MainActor (@MainActor () -> Void) async throws -> Void
+    ) async throws {
+        let oldPreferred = preferredTapSourceDeviceUID
+        preferredTapSourceDeviceUID = preferredDeviceUID
+        var replacementPromoted = false
+
+        do {
+            try await operation {
+                replacementPromoted = true
+            }
+        } catch {
+            if !replacementPromoted {
+                preferredTapSourceDeviceUID = oldPreferred
+            }
+            throw error
         }
     }
 
@@ -898,6 +943,7 @@ final class ProcessTapController: ProcessTapControlling {
         }
 
         let nextTask = Task { @MainActor in
+            try Task.checkCancellation()
             try await operation()
         }
         deviceSwitchTask = nextTask
@@ -906,7 +952,11 @@ final class ProcessTapController: ProcessTapControlling {
                 deviceSwitchTask = nil
             }
         }
-        try await nextTask.value
+        try await withTaskCancellationHandler {
+            try await nextTask.value
+        } onCancel: {
+            nextTask.cancel()
+        }
     }
 
     private func cancelDeviceSwitch() -> Task<Void, Error>? {
@@ -1066,11 +1116,16 @@ final class ProcessTapController: ProcessTapControlling {
             logger.info("[CROSSFADE] Destination is Bluetooth - using extended warmup")
         }
 
-        let warmupMs = isBluetoothDestination ? 300 : 50
-        logger.info("[CROSSFADE] Step 4: Waiting for secondary tap warmup (\(warmupMs)ms)...")
-        try await Task.sleep(for: .milliseconds(UInt64(warmupMs)))
+        let minimumWarmupMs: UInt64 = isBluetoothDestination ? 300 : 50
+        let callbackTimeoutMs: UInt64 = 500
+        logger.info("[CROSSFADE] Step 4: Waiting for secondary tap warmup (minimum \(minimumWarmupMs)ms)...")
+        let isWarmupComplete = try await Self.waitForSecondaryWarmup(
+            minimumWaitMs: minimumWarmupMs,
+            timeoutMs: callbackTimeoutMs,
+            isComplete: { self.crossfadeState.isWarmupComplete }
+        )
 
-        guard crossfadeState.isWarmupComplete else {
+        guard isWarmupComplete else {
             logger.error("[CROSSFADE] Secondary tap produced no usable audio during warmup")
             throw CrossfadeError.secondaryTapFailed
         }
@@ -1306,7 +1361,12 @@ final class ProcessTapController: ProcessTapControlling {
     /// Performs a destructive (non-crossfade) device switch with silence padding.
     /// - Parameter skipTimedTransition: If true (e.g. source device disconnected), skips the
     ///   pre-switch silence wait and uses a shorter post-switch settle time.
-    private func performDestructiveDeviceSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil, skipTimedTransition: Bool = false) async throws {
+    private func performDestructiveDeviceSwitch(
+        to primaryDeviceUID: String,
+        allDeviceUIDs: [String]? = nil,
+        skipTimedTransition: Bool = false,
+        onPromotion: @MainActor () -> Void = {}
+    ) async throws {
         let deviceUIDs = allDeviceUIDs ?? [primaryDeviceUID]
         let originalVolume = _volume
         var replacementReady = false
@@ -1332,25 +1392,25 @@ final class ProcessTapController: ProcessTapControlling {
 
         try createSecondaryTap(for: deviceUIDs)
 
-        let callbackTimeoutMs = 500
-        let pollIntervalMs: UInt64 = 5
-        var elapsedMs = 0
-        while !crossfadeState.isWarmupComplete && elapsedMs < callbackTimeoutMs {
-            try await Task.sleep(for: .milliseconds(pollIntervalMs))
-            elapsedMs += Int(pollIntervalMs)
-        }
+        let isWarmupComplete = try await Self.waitForSecondaryWarmup(
+            minimumWaitMs: 0,
+            timeoutMs: 500,
+            isComplete: { self.crossfadeState.isWarmupComplete }
+        )
 
-        guard crossfadeState.isWarmupComplete else {
+        guard isWarmupComplete else {
             logger.error("[SWITCH-DESTROY] Replacement tap produced no usable audio")
             throw CrossfadeError.secondaryTapFailed
         }
 
+        try Task.checkCancellation()
         destroyPrimaryTap()
         promoteSecondaryToPrimary()
         crossfadeState.complete()
         replacementReady = true
         targetDeviceUIDs = deviceUIDs
         currentDeviceUIDs = deviceUIDs
+        onPromotion()
 
         if skipTimedTransition {
             _primaryCurrentVolume = originalVolume
