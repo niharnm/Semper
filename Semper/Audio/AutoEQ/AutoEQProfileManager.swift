@@ -26,13 +26,24 @@ final class AutoEQProfileManager {
     /// Normalized names for fuzzy search (parallel array with sortedEntries).
     private var normalizedNames: [String] = []
 
+    private let catalogLoadOperation: @MainActor () async -> Bool
+    private var catalogPreparationTask: Task<Bool, Never>?
+    private var catalogPreparationGeneration = 0
+    private var hasPreparedCatalog = false
+
     init(
         loader: AutoEQProfileLoader = AutoEQProfileLoader(),
         fetcher: AutoEQFetcher? = nil,
-        loadCatalogAutomatically: Bool = true
+        loadCatalogAutomatically: Bool = false,
+        catalogLoadOperation: (@MainActor () async -> Bool)? = nil
     ) {
         self.loader = loader
-        self.fetcher = fetcher ?? AutoEQFetcher()
+        let resolvedFetcher = fetcher ?? AutoEQFetcher()
+        self.fetcher = resolvedFetcher
+        self.catalogLoadOperation = catalogLoadOperation ?? {
+            await resolvedFetcher.loadCatalog()
+            return resolvedFetcher.catalogState == .loaded
+        }
 
         // Imported profiles are small — load synchronously
         let imported = loader.loadImportedProfiles()
@@ -41,9 +52,8 @@ final class AutoEQProfileManager {
         }
 
         if loadCatalogAutomatically {
-            Task { @MainActor in
-                await self.fetcher.loadCatalog()
-                self.rebuildSearchIndex()
+            Task { @MainActor [weak self] in
+                await self?.prepareCatalogIfNeeded()
             }
         }
     }
@@ -52,6 +62,39 @@ final class AutoEQProfileManager {
 
     var catalogState: AutoEQFetcher.FetchState { fetcher.catalogState }
     var catalogEntries: [AutoEQCatalogEntry] { fetcher.catalog }
+
+    /// Loads the catalog and builds its search index once, sharing concurrent requests.
+    func prepareCatalogIfNeeded() async {
+        guard !hasPreparedCatalog else { return }
+
+        let task: Task<Bool, Never>
+        let generation: Int
+        if let catalogPreparationTask {
+            task = catalogPreparationTask
+            generation = catalogPreparationGeneration
+        } else {
+            let loadCatalog = catalogLoadOperation
+            task = Task { @MainActor in
+                await loadCatalog()
+            }
+            catalogPreparationGeneration += 1
+            generation = catalogPreparationGeneration
+            catalogPreparationTask = task
+        }
+
+        let succeeded = await task.value
+        if succeeded {
+            if !hasPreparedCatalog {
+                rebuildSearchIndex()
+                hasPreparedCatalog = true
+            }
+        } else {
+            rebuildSearchIndex()
+        }
+        if catalogPreparationGeneration == generation {
+            catalogPreparationTask = nil
+        }
+    }
 
     func catalogEntry(for id: String) -> AutoEQCatalogEntry? {
         fetcher.catalog.first(where: { $0.id == id })
@@ -82,6 +125,8 @@ final class AutoEQProfileManager {
     func resolveProfile(for id: String) async -> AutoEQProfile? {
         // Already loaded (imported or previously fetched)
         if let existing = profiles[id] { return existing }
+
+        await prepareCatalogIfNeeded()
 
         // Find catalog entry for this ID
         guard let entry = fetcher.catalog.first(where: { $0.id == id }) else { return nil }

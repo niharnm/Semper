@@ -163,6 +163,10 @@ struct AutoEQSearchPanel: View {
             cachedSearchResult = profileManager.search(query: newQuery)
         }
         .onAppear { isSearchFocused = true }
+        .task {
+            await profileManager.prepareCatalogIfNeeded()
+            cachedSearchResult = profileManager.search(query: debouncedQuery)
+        }
     }
 
     // MARK: - Status Zone
