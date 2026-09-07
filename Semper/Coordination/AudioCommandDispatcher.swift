@@ -697,10 +697,14 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
 
     func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue {
         switch command {
-        case .setOutputVolume(let uid, let volume),
-             .setOutputMasterGain(let uid, let volume):
+        case .setOutputVolume(let uid, let volume):
             let limit = engine.settingsManager.outputVolumeLimit(for: uid) ?? volume
             return .scalar(min(volume, limit))
+        case .setOutputMasterGain(let uid, let gain):
+            guard let device = engine.deviceMonitor.device(for: uid) else {
+                return .scalar(gain)
+            }
+            return .scalar(min(gain, engine.maximumSelectableOutputGain(for: device)))
         case .setAudioProcessingMode(let mode)
             where mode != .bypassed && engine.permission.status != .authorized:
             return .mode(AudioProcessingMode.resumeRequested.rawValue)
@@ -817,7 +821,7 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
             guard let device = engine.deviceMonitor.device(for: uid) else {
                 return .rejected(.deviceUnavailable(uid))
             }
-            let safeGain = min(gain, engine.settingsManager.outputVolumeLimit(for: uid) ?? gain)
+            let safeGain = min(gain, engine.maximumSelectableOutputGain(for: device))
             switch engine.setMasterOutputVolume(for: device, to: safeGain) {
             case .applied(let observed):
                 return .applied(.scalar(observed))

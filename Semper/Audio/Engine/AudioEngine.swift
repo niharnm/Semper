@@ -162,6 +162,14 @@ final class AudioEngine {
     }
 
     func outputCapabilities(for device: AudioDevice) -> OutputDeviceCapabilities {
+        let isRouteVerified = taps.values.contains { $0.currentDeviceUIDs == [device.uid] }
+        return outputCapabilities(for: device, isRouteVerified: isRouteVerified)
+    }
+
+    private func outputCapabilities(
+        for device: AudioDevice,
+        isRouteVerified: Bool
+    ) -> OutputDeviceCapabilities {
         guard permission.status == .authorized else {
             return .unavailable(
                 channelCount: device.outputTopology.channelCount,
@@ -174,9 +182,7 @@ final class AudioEngine {
                 reason: "This output has no usable audio channels"
             )
         }
-
-        let isVerified = taps.values.contains { $0.currentDeviceUIDs == [device.uid] }
-        guard isVerified else {
+        guard isRouteVerified else {
             return .unavailable(
                 channelCount: device.outputTopology.channelCount,
                 reason: "Route an app here to verify boost"
@@ -189,6 +195,24 @@ final class AudioEngine {
             channelCount: device.outputTopology.channelCount,
             isRouteVerified: true,
             unavailableReason: nil
+        )
+    }
+
+    func maximumSelectableOutputGain(for device: AudioDevice) -> Float {
+        maximumSelectableOutputGain(
+            for: device,
+            capabilities: outputCapabilities(for: device)
+        )
+    }
+
+    private func maximumSelectableOutputGain(
+        for device: AudioDevice,
+        capabilities: OutputDeviceCapabilities
+    ) -> Float {
+        let capabilityMaximum = capabilities.maximumGain
+        return min(
+            capabilityMaximum,
+            settingsManager.outputVolumeLimit(for: device.uid) ?? capabilityMaximum
         )
     }
 
@@ -235,13 +259,16 @@ final class AudioEngine {
     }
 
     func knownMasterOutputVolume(for device: AudioDevice) -> Float? {
-        let maximumGain = outputCapabilities(for: device).maximumGain
         if let boostedGain = outputMasterGains[device.uid]
             ?? settingsManager.getOutputMasterGain(for: device.uid) {
-            return min(maximumGain, boostedGain)
+            let capabilityMaximum = outputCapabilities(for: device).maximumGain
+            let effectiveMaximum = pendingOutputVolumeLimitChanges[device.uid].map {
+                min(capabilityMaximum, $0.previousLimit ?? capabilityMaximum)
+            } ?? maximumSelectableOutputGain(for: device)
+            return min(effectiveMaximum, boostedGain)
         }
         guard let deviceVolume = deviceVolumeMonitor.volumes[device.id] else { return nil }
-        return min(maximumGain, deviceVolume)
+        return min(outputCapabilities(for: device).maximumGain, deviceVolume)
     }
 
     func beginOutputVolumeLimitChange(for deviceUID: String, to limit: Float) {
@@ -292,10 +319,7 @@ final class AudioEngine {
         for device: AudioDevice,
         to gain: Float
     ) -> MasterOutputVolumeWriteResult {
-        let maximumGain = min(
-            outputCapabilities(for: device).maximumGain,
-            settingsManager.outputVolumeLimit(for: device.uid) ?? .greatestFiniteMagnitude
-        )
+        let maximumGain = maximumSelectableOutputGain(for: device)
         let clampedGain = max(0, min(maximumGain, gain))
         let previousGain = outputMasterGains[device.uid]
             ?? settingsManager.getOutputMasterGain(for: device.uid)
@@ -699,6 +723,7 @@ final class AudioEngine {
             return
         }
 
+        refreshAllTapOutputStates()
         if settingsManager.audioProcessingMode == .active {
             if !persistAudioProcessingMode(.resumeRequested) {
                 permissionPersistenceFailurePending = true
@@ -1653,9 +1678,12 @@ final class AudioEngine {
             : 1.0
         let storedMasterGain = outputMasterGains[primaryUID]
             ?? settingsManager.getOutputMasterGain(for: primaryUID)
-        let masterGain = storedMasterGain.map {
-            min($0, settingsManager.outputVolumeLimit(for: primaryUID) ?? $0)
-        } ?? 1
+        let routeCapabilities = outputCapabilities(for: device, isRouteVerified: true)
+        let maximumMasterGain = maximumSelectableOutputGain(
+            for: device,
+            capabilities: routeCapabilities
+        )
+        let masterGain = storedMasterGain.map { min($0, maximumMasterGain) } ?? 1
         return appGain * deviceGain * masterGain
     }
 

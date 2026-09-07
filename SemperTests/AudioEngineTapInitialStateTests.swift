@@ -589,6 +589,32 @@ struct AudioEngineTapInitialStateTests {
         #expect(fix.settings.getOutputMasterGain(for: fix.device.uid) == 2)
     }
 
+    @Test("An unverified DDC boost request completes at the route cap")
+    func unverifiedDDCBoostCompletesAtRouteCap() {
+        let fix = makeFixture(deviceVolume: 0.8)
+        fix.deviceVolume.autoDetectedTiersByID[fix.device.id] = .ddc
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fix.engine)
+        )
+        var completionResults: [Bool] = []
+        fix.engine.onCommandValueObserved = { key, value in
+            completionResults.append(dispatcher.completeAccepted(key, observed: value))
+        }
+
+        let result = dispatcher.dispatch(
+            .setOutputMasterGain(deviceUID: fix.device.uid, gain: 3),
+            context: AudioCommandContext(source: .popup)
+        )
+        fix.deviceVolume.onOutputWriteCompleted?(fix.device.id, true)
+
+        guard case .accepted = result else {
+            Issue.record("Expected an accepted DDC command")
+            return
+        }
+        #expect(completionResults == [true])
+        #expect(fix.settings.getOutputMasterGain(for: fix.device.uid) == nil)
+    }
+
     @Test("Disabling a ceiling wins over a late DDC failure")
     func disableSupersedesPendingDDCCeiling() {
         let fix = makeFixture(deviceVolume: 0.8)
@@ -733,13 +759,94 @@ struct AudioEngineTapInitialStateTests {
         let before = fix.engine.outputCapabilities(for: fix.device)
         #expect(before.maximumGain == 1)
         #expect(!before.isRouteVerified)
+        #expect(!before.supportsBoost)
+        #expect(fix.engine.maximumSelectableOutputGain(for: fix.device) == 1)
+        #expect(
+            AudioEngineCommandBackend(engine: fix.engine).apply(
+                .setOutputMasterGain(deviceUID: fix.device.uid, gain: 3)
+            ) == .applied(.scalar(1))
+        )
+        #expect(fix.settings.getOutputMasterGain(for: fix.device.uid) == nil)
 
         fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
 
         let after = fix.engine.outputCapabilities(for: fix.device)
         #expect(after.maximumGain == 3)
         #expect(after.isRouteVerified)
+        #expect(after.supportsBoost)
+        #expect(fix.engine.maximumSelectableOutputGain(for: fix.device) == 3)
         #expect(after.supportsBalance)
+    }
+
+    @Test("Multi-output routing does not verify boost for either output")
+    func multiOutputRouteDoesNotVerifyBoost() async throws {
+        let fix = makeFixture()
+        let secondDevice = AudioDevice(
+            id: 100,
+            uid: "uid-second",
+            name: "Second Output",
+            icon: nil,
+            supportsAutoEQ: false
+        )
+        fix.deviceMonitor.addOutputDevice(secondDevice)
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+
+        try await tap.updateDevices(
+            to: [fix.device.uid, secondDevice.uid],
+            preferredTapSourceDeviceUID: nil,
+            requiresExclusiveOutput: false
+        )
+
+        #expect(!fix.engine.outputCapabilities(for: fix.device).supportsBoost)
+        #expect(!fix.engine.outputCapabilities(for: secondDevice).supportsBoost)
+
+        try await tap.updateDevices(
+            to: [secondDevice.uid],
+            preferredTapSourceDeviceUID: nil,
+            requiresExclusiveOutput: true
+        )
+
+        #expect(!fix.engine.outputCapabilities(for: fix.device).supportsBoost)
+        #expect(fix.engine.outputCapabilities(for: secondDevice).supportsBoost)
+    }
+
+    @Test("A per-output limit removes the selectable boost range")
+    func outputLimitRemovesSelectableBoost() {
+        let fix = makeFixture()
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        #expect(fix.engine.outputCapabilities(for: fix.device).supportsBoost)
+        #expect(fix.engine.maximumSelectableOutputGain(for: fix.device) == 0.8)
+    }
+
+    @Test("A saved boost is reported at the output's current selectable maximum")
+    func savedBoostUsesCurrentSelectableMaximum() throws {
+        let fix = makeFixture()
+        fix.settings.setOutputMasterGain(for: fix.device.uid, to: 2)
+        fix.settings.setOutputVolumeLimit(for: fix.device.uid, to: 0.8)
+
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+
+        let tap = try #require(fix.lastTap())
+        #expect(fix.engine.masterOutputVolume(for: fix.device) == 0.8)
+        #expect(tap.volume == 0.8)
+    }
+
+    @Test("A stale boost stops applying when route capability becomes unavailable")
+    func staleBoostStopsAfterPermissionLoss() throws {
+        let fix = makeFixture()
+        fix.settings.setOutputMasterGain(for: fix.device.uid, to: 2)
+        fix.engine.setDevice(for: fix.app, deviceUID: fix.device.uid)
+        let tap = try #require(fix.lastTap())
+        #expect(tap.volume == 2)
+
+        fix.engine.permission.status = .denied
+        fix.engine.handleAudioPermissionChange()
+
+        #expect(fix.engine.maximumSelectableOutputGain(for: fix.device) == 1)
+        #expect(tap.volume == 1)
     }
 
     @Test("Mono output can boost after route activation but cannot expose balance")

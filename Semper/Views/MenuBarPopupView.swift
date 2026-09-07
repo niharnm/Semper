@@ -818,6 +818,8 @@ struct MenuBarPopupView: View {
             } else {
                 ForEach(visibleMasterOutputDevices) { device in
                     let selection = audioEngine.getAutoEQSelection(for: device.uid)
+                    let capabilities = audioEngine.outputCapabilities(for: device)
+                    let observedVolume = audioEngine.knownMasterOutputVolume(for: device)
                     let profileName: String? = {
                         guard let sel = selection else { return nil }
                         return audioEngine.autoEQProfileManager.profile(for: sel.profileID)?.name
@@ -827,10 +829,12 @@ struct MenuBarPopupView: View {
                     DeviceRow(
                         device: device,
                         isDefault: device.id == deviceVolumeMonitor.defaultDeviceID,
-                        volume: audioEngine.masterOutputVolume(for: device),
+                        volume: observedVolume ?? 1,
+                        observedVolume: observedVolume,
                         isMuted: deviceVolumeMonitor.muteStates[device.id] ?? false,
                         volumeBackend: audioEngine.outputVolumeBackend(for: device.id),
-                        capabilities: audioEngine.outputCapabilities(for: device),
+                        capabilities: capabilities,
+                        maximumSelectableGain: audioEngine.maximumSelectableOutputGain(for: device),
                         onSetDefault: {
                             dispatchPopup(.setDefaultOutput(deviceUID: device.uid))
                         },
@@ -1895,7 +1899,16 @@ struct MenuBarPopupView: View {
                     device: device,
                     isDefault: device == MockData.sampleDevices[0],
                     volume: 0.75,
+                    observedVolume: 0.75,
                     isMuted: false,
+                    capabilities: OutputDeviceCapabilities(
+                        maximumGain: 1,
+                        supportsBalance: false,
+                        channelCount: device.outputTopology.channelCount,
+                        isRouteVerified: false,
+                        unavailableReason: "Route an app here to verify boost"
+                    ),
+                    maximumSelectableGain: 1,
                     onSetDefault: {},
                     onVolumeChange: { _ in },
                     onMuteToggle: {}

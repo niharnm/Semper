@@ -180,6 +180,38 @@ struct VolumeMappingMasterOutputTests {
         #expect(abs(recovered - gain) < 1e-6)
     }
 
+    @Test("A sub-unity maximum uses the entire hardware slider")
+    func hardwareLimit() {
+        let maximumGain: Float = 0.8
+        #expect(VolumeMapping.unityMasterSliderFraction(maximumGain: maximumGain) == 1)
+        #expect(VolumeMapping.masterGain(
+            forSliderFraction: 1,
+            tier: .hardware,
+            maximumGain: maximumGain
+        ) == maximumGain)
+        #expect(VolumeMapping.masterSliderFraction(
+            forGain: maximumGain,
+            tier: .hardware,
+            maximumGain: maximumGain
+        ) == 1)
+    }
+
+    @Test("A sub-unity maximum preserves the software curve")
+    func softwareLimit() {
+        let maximumGain: Float = 0.8
+        let gain = VolumeMapping.masterGain(
+            forSliderFraction: 0.5,
+            tier: .software,
+            maximumGain: maximumGain
+        )
+        #expect(abs(gain - 0.2) < 1e-6)
+        #expect(abs(VolumeMapping.masterSliderFraction(
+            forGain: gain,
+            tier: .software,
+            maximumGain: maximumGain
+        ) - 0.5) < 1e-6)
+    }
+
     @Test("Master mapping clamps outside its supported range")
     func masterClamps() {
         #expect(VolumeMapping.masterGain(forSliderFraction: -1, tier: .hardware) == 0)
