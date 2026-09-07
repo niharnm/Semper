@@ -32,6 +32,8 @@ class ReleaseContractTests(unittest.TestCase):
             'echo "base_version=$BASE_VERSION"',
             "BASE_VERSION: ${{ needs.verify.outputs.base_version }}",
             '"MARKETING_VERSION=$BASE_VERSION"',
+            'DMG_NAME="Semper.dmg"',
+            'DMG_NAME="$ARTIFACT_STEM.dmg"',
             "draft: true",
             "scripts/notarize-and-log.sh",
             "xcrun stapler staple build/export/Semper.app",

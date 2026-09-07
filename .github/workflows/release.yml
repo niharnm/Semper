@@ -9,7 +9,7 @@ on:
       version:
         description: Base semantic version for the Canary candidate
         required: true
-        default: "1.0.0"
+        default: "1.1.0"
         type: string
 
 concurrency:
@@ -109,7 +109,11 @@ jobs:
           fi
 
           ARTIFACT_STEM="Semper-${VERSION}-${BUILD_NUMBER}-macOS"
-          DMG_NAME="$ARTIFACT_STEM.dmg"
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            DMG_NAME="$ARTIFACT_STEM.dmg"
+          else
+            DMG_NAME="Semper.dmg"
+          fi
           APPCAST_NAME="$ARTIFACT_STEM-appcast.xml"
           CHECKSUM_NAME="$ARTIFACT_STEM-SHA256SUMS.txt"
 

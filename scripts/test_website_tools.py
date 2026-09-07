@@ -35,8 +35,14 @@ class WebsiteCheckTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy2(CHECK_SCRIPT, self.root / "scripts" / CHECK_SCRIPT.name)
         shutil.copytree(ROOT / "website", self.root / "website")
-        shutil.copy2(ROOT / "LICENSE", self.root / "LICENSE")
-        shutil.copy2(ROOT / "README.md", self.root / "README.md")
+        for filename in (
+            "CONTRIBUTING.md",
+            "LICENSE",
+            "README.md",
+            "ROADMAP.md",
+            "SUPPORT.md",
+        ):
+            shutil.copy2(ROOT / filename, self.root / filename)
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()

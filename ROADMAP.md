@@ -1,17 +1,19 @@
 # Semper roadmap
 
-Semper is source-first and does not have a packaged public release yet. This
-roadmap describes the work needed to make the first release dependable and to
-grow the project without hiding experimental behavior.
+Semper publishes signed macOS releases. This roadmap describes the work needed
+to keep distribution dependable and grow the project without hiding
+experimental behavior.
 
 ## Current priorities
 
-### 1. First public release
+### 1. Release maintenance
 
-- Test signed and notarized builds on a clean Mac.
-- Verify install, permission, relaunch, update, and uninstall behavior.
+- Test signed and notarized builds on a clean Mac before publication.
+- Verify install, permission, relaunch, update, and uninstall behavior for each
+  release.
 - Publish accurate release notes and known device limits.
-- Keep the website and README release status tied to real artifacts.
+- Keep the website, README, Homebrew cask, and update feed tied to the same
+  release artifact.
 
 ### 2. Audio reliability
 
@@ -58,10 +60,11 @@ discussion and include a hardware test plan.
 ## Current boundaries
 
 - Supported platform: macOS 15.4 or later.
-- Reliable today: source builds, unit tests, and the documented static website.
+- Available today: source builds, unit tests, the static website, and signed
+  macOS releases through GitHub and Homebrew.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, and permission behavior.
-- Experimental until a public release proves otherwise: packaged distribution,
-  update channels, and broad device compatibility claims.
+- Release-dependent: automatic updates require a current signed feed, and broad
+  device compatibility claims require verified hardware reports.
 - Out of scope today: Windows, Linux, iOS, cloud accounts, audio recording, and
   unrelated system utilities.

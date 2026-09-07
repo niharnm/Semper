@@ -44,8 +44,8 @@ The packaging job:
 2. archives and exports the app, then checks its certificate authority, Team
    ID, hardened runtime, secure timestamp, and nested signatures;
 3. notarizes and staples the app, then runs Gatekeeper assessment;
-4. creates a versioned DMG, signs it, notarizes it separately, staples it, and
-   runs a second Gatekeeper assessment;
+4. creates `Semper.dmg` for Stable or a versioned DMG for Canary, signs it,
+   notarizes it separately, staples it, and runs a second Gatekeeper assessment;
 5. writes and verifies a SHA-256 checksum;
 6. generates a locally staged Sparkle appcast with an Ed25519 signature;
 7. uploads notarization reports as a retained Actions artifact; and
@@ -85,8 +85,8 @@ Before publishing a Canary or Stable draft:
 5. Test permissions, per-app volume, routing, mute, sleep and wake, device
    reconnect, and update settings with real audio devices.
 6. Check the retained app and DMG notarization reports in the workflow run.
-7. Inspect the staged appcast and confirm its enclosure names the versioned
-   DMG, includes `sparkle:edSignature`, and uses `canary` only for Canary.
+7. Inspect the staged appcast and confirm its enclosure names the expected DMG,
+   includes `sparkle:edSignature`, and uses `canary` only for Canary.
 8. Publish the GitHub draft. Keep Canary marked as a prerelease.
 9. In a separately reviewed update-feed change, replace `appcast.xml` with the
    staged appcast only after its GitHub release is public.

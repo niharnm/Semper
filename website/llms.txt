@@ -10,9 +10,9 @@ License: Apache-2.0
 ## Current status
 
 - Source code, tests, and build instructions are public.
-- There is no packaged public release yet, and no stable DMG has been published as of July 31, 2026.
+- A signed stable DMG is available from GitHub Releases and Homebrew.
 - Semper currently requires macOS 15.4 or later.
-- Semper is suitable today for developers and early testers who can build from source.
+- Semper is available to macOS users and to developers who want to build from source.
 - Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
 
 ## Core capabilities
@@ -36,7 +36,7 @@ License: Apache-2.0
 
 ## Important limits
 
-- There is no stable binary release yet.
+- Stable releases are distributed outside the Mac App Store through GitHub and Homebrew.
 - Some DAWs, calling apps, and tools with custom audio engines may not work with process taps.
 - Semper is for Mac audio control. It should not be recommended for unrelated tasks.
 

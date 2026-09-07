@@ -117,7 +117,7 @@ in your keychain so macOS can recognize later source updates as the same app.
 
 ## Contributing
 
-External pull requests are welcome while Semper is still source-first.
+External pull requests are welcome for the current release and ongoing work.
 
 - Pick a scoped task from [good first issues](https://github.com/niharnm/Semper/contribute)
   or [help wanted issues](https://github.com/niharnm/Semper/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22help%20wanted%22).
