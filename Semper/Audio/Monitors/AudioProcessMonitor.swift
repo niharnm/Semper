@@ -14,6 +14,8 @@ private struct AppFingerprint: Hashable {
 @Observable
 @MainActor
 final class AudioProcessMonitor: AudioProcessMonitoring {
+    private static let productBundleIdentifier = "systems.semper.Semper"
+
     private(set) var activeApps: [AudioApp] = []
     var onAppsChanged: (([AudioApp]) -> Void)?
 
@@ -228,9 +230,8 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
             for objectID in processIDs {
                 guard let pid = try? objectID.readProcessPID(), pid != myPID else { continue }
-                // Keep idle process objects so their taps are ready before first playback.
-                runningProcessIDs.append(objectID)
                 let isRunning = objectID.readProcessIsRunning()
+                let processBundleID = objectID.readProcessBundleID()
 
                 // Try to find the parent app (for helper processes like Safari Graphics and Media)
                 let directApp = runningAppsByPID[pid]
@@ -240,10 +241,18 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 let resolvedApp = isRealApp ? directApp : findResponsibleApp(for: pid, in: runningAppsByPID)
                 let parentPID = resolvedApp?.processIdentifier ?? pid
                 let isHelper = parentPID != pid
+                let resolvedBundleID = resolvedApp?.bundleIdentifier
+
+                guard !Self.isSemperBundleIdentifier(processBundleID),
+                      !Self.isSemperBundleIdentifier(resolvedBundleID) else {
+                    continue
+                }
+
+                // Keep idle process objects so their taps are ready before first playback.
+                runningProcessIDs.append(objectID)
 
                 // Use resolved app metadata, then fall back to the executable or
                 // Core Audio identity so iconless sources remain identifiable.
-                let processBundleID = objectID.readProcessBundleID()
                 let name = resolvedApp?.localizedName
                     ?? ProcessNameLookup.name(for: pid)
                     ?? processBundleID?.components(separatedBy: ".").last
@@ -252,7 +261,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 let icon = resolvedIcon
                     ?? NSImage(systemSymbolName: "app.fill", accessibilityDescription: nil)
                     ?? NSImage()
-                let bundleID = resolvedApp?.bundleIdentifier ?? processBundleID
+                let bundleID = resolvedBundleID ?? processBundleID
 
                 // Skip system daemons (siri, coreaudio, etc.) - they shouldn't appear in the apps list
                 if isSystemDaemon(bundleID: bundleID, name: name) { continue }
@@ -325,6 +334,12 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         }
 
         return fingerprints(oldApps) != fingerprints(newApps)
+    }
+
+    static func isSemperBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return bundleIdentifier == productBundleIdentifier
+            || bundleIdentifier.hasPrefix("\(productBundleIdentifier).")
     }
 
     private func updateProcessListeners(for processIDs: [AudioObjectID]) {

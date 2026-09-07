@@ -110,6 +110,11 @@ nonisolated struct CrossfadeState: @unchecked Sendable {
         progress >= 1.0
     }
 
+    /// The primary tap may be retired only after the secondary has rendered enough audio.
+    var isReadyForPromotion: Bool {
+        isWarmupComplete && isCrossfadeComplete
+    }
+
     /// Equal-power fade-out multiplier for primary tap.
     /// cos(0) = 1.0 (full volume), cos(pi/2) = 0.0 (silent)
     @inline(__always)

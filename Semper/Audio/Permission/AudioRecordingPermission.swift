@@ -20,11 +20,23 @@ enum AudioCapturePermissionStatus: Equatable, Sendable {
 final class AudioRecordingPermission {
 
     var status: AudioCapturePermissionStatus = .unknown
+    private var requestIsInFlight = false
+
+    #if ENABLE_TCC_SPI
+    private let requestAccessHandler: (@escaping (Bool) -> Void) -> Void
+
+    init(requestAccess: ((@escaping (Bool) -> Void) -> Void)? = nil) {
+        requestAccessHandler = requestAccess ?? Self.requestAccess
+        refreshStatus()
+        registerForActivation()
+    }
+    #else
 
     init() {
         refreshStatus()
         registerForActivation()
     }
+    #endif
 
     /// Check current TCC status without prompting.
     func refreshStatus() {
@@ -44,14 +56,15 @@ final class AudioRecordingPermission {
         #endif
     }
 
-    /// Trigger the system permission dialog. Only shows once per app per TCC service.
-    /// Subsequent calls are no-ops at the OS level.
+    /// Trigger the system permission dialog after an explicit user action.
     func request() {
         #if ENABLE_TCC_SPI
-        guard status != .authorized else { return }
-        Self.requestAccess { [weak self] granted in
+        guard status != .authorized, !requestIsInFlight else { return }
+        requestIsInFlight = true
+        requestAccessHandler { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
+                self.requestIsInFlight = false
                 self.status = granted ? .authorized : .denied
                 logger.info("Audio capture permission request result: \(granted)")
             }

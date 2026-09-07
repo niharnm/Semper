@@ -3,6 +3,7 @@ import SwiftUI
 import UserNotifications
 import FluidMenuBarExtra
 import AppKit
+import Darwin
 import os
 
 private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 @main
 struct SemperApp: App {
+    private let instanceLock: AppInstanceLock
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var audioEngine: AudioEngine
     @State private var audioCommands: AudioCommandDispatcher
@@ -120,6 +122,22 @@ struct SemperApp: App {
     }
 
     init() {
+        do {
+            switch try AppInstanceLock.acquire() {
+            case .acquired(let instanceLock):
+                self.instanceLock = instanceLock
+            case .alreadyRunning:
+                let bundleIdentifier = Bundle.main.bundleIdentifier ?? "systems.semper.Semper"
+                NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+                    .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier })?
+                    .activate(options: [.activateAllWindows])
+                exit(EXIT_SUCCESS)
+            }
+        } catch {
+            logger.fault("Semper could not acquire its process lock: \(error.localizedDescription)")
+            exit(EXIT_FAILURE)
+        }
+
         // Install crash handler to clean up aggregate devices on abnormal exit
         CrashGuard.install()
         // Destroy any orphaned aggregate devices from previous crashes
@@ -348,11 +366,6 @@ struct SemperApp: App {
         _appDelegate.wrappedValue.audioEngine = engine
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
         _appDelegate.wrappedValue.updateManager = updater
-
-        if permission.status == .unknown,
-           settings.audioProcessingMode != .bypassed {
-            permission.request()
-        }
 
         // DeviceVolumeMonitor is now created and started inside AudioEngine
         // This ensures proper initialization order: deviceMonitor.start() -> deviceVolumeMonitor.start()

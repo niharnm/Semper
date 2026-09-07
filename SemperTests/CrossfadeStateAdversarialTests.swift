@@ -4,6 +4,8 @@
 // progress monotonicity and bounds, multiplier continuity,
 // warmup/completion thresholds, and out-of-order operations.
 
+import AppKit
+import Foundation
 import Testing
 @testable import Semper
 
@@ -194,6 +196,32 @@ struct CrossfadePhaseTransitionTests {
         #expect(state.secondarySamplesProcessed == 0)
         #expect(state.primaryMultiplier == 1.0, "After re-warmup, primary should be 1.0")
         #expect(state.secondaryMultiplier == 0.0, "After re-warmup, secondary should be 0.0")
+    }
+}
+
+@Suite("CrossfadeState promotion readiness")
+struct CrossfadePromotionReadinessTests {
+    @Test("Zero-sample secondary is never ready for promotion")
+    func rejectsCallbackDeadSecondary() {
+        var state = CrossfadeState()
+        state.beginWarmup()
+        state.totalSamples = 1
+        state.beginCrossfading()
+        state.progress = 1
+
+        #expect(!state.isReadyForPromotion)
+    }
+
+    @Test("Completed warmup and fade are ready for promotion")
+    func acceptsRenderedSecondary() {
+        var state = CrossfadeState()
+        state.beginWarmup()
+        state.totalSamples = 1
+        _ = state.updateProgress(samples: CrossfadeState.minimumWarmupSamples)
+        state.beginCrossfading()
+        _ = state.updateProgress(samples: 1)
+
+        #expect(state.isReadyForPromotion)
     }
 }
 
@@ -401,5 +429,120 @@ struct CrossfadeIdleTests {
         let durationMs = Double(samples) / 48000.0 * 1000.0
         #expect(durationMs > 20, "Warmup should be > 20ms, is \(durationMs)ms")
         #expect(durationMs < 100, "Warmup should be < 100ms, is \(durationMs)ms")
+    }
+}
+
+@Suite("Process tap switch serialization")
+@MainActor
+struct ProcessTapSwitchSerializationTests {
+    enum CancelledOperation: CaseIterable, Sendable {
+        case update
+        case refresh
+        case rateChange
+    }
+
+    @Test("A replacement switch starts after cancelled work cleans up")
+    func replacementWaitsForCleanup() async throws {
+        let controller = makeController()
+        var events: [String] = []
+
+        let first = Task { @MainActor in
+            try await controller.performSerializedDeviceSwitch {
+                events.append("first-started")
+                defer { events.append("first-cleaned") }
+                try await Task.sleep(for: .seconds(30))
+            }
+        }
+
+        for _ in 0..<100 where events.isEmpty {
+            await Task.yield()
+        }
+        #expect(events == ["first-started"])
+
+        let second = Task { @MainActor in
+            try await controller.performSerializedDeviceSwitch {
+                events.append("second-started")
+            }
+        }
+
+        try await second.value
+        _ = try? await first.value
+        #expect(events == ["first-started", "first-cleaned", "second-started"])
+    }
+
+    @Test(
+        "Public switch operations propagate cancellation",
+        arguments: CancelledOperation.allCases
+    )
+    func publicOperationsPropagateCancellation(operation: CancelledOperation) async {
+        let controller = makeController()
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { currentTask in
+                currentTask?.cancel()
+            }
+
+            switch operation {
+            case .update:
+                try await controller.updateDevices(to: ["new-device"])
+            case .refresh:
+                try await controller.refreshTapSource("new-source")
+            case .rateChange:
+                try await controller.recreateForOutputRateChange()
+            }
+        }
+
+        do {
+            try await task.value
+            Issue.record("Cancelled switch operation returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled switch operation returned \(error)")
+        }
+    }
+
+    @Test("Inactive refresh remembers the requested tap source")
+    func inactiveRefreshStoresPreference() async throws {
+        let controller = makeController()
+
+        try await controller.refreshTapSource("new-source")
+
+        #expect(controller.tapSourceDeviceUID == "new-source")
+    }
+
+    @Test("Cancelled post-promotion ramp restores the original volume")
+    func cancelledRampRestoresVolume() async {
+        let controller = makeController()
+        controller.volume = 0.8
+
+        let ramp = Task { @MainActor in
+            try await controller.performPostPromotionVolumeRamp(originalVolume: 0.8)
+        }
+
+        for _ in 0..<100 where controller.volume != 0 {
+            await Task.yield()
+        }
+        #expect(controller.volume == 0)
+
+        ramp.cancel()
+        do {
+            try await ramp.value
+            Issue.record("Cancelled volume ramp returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled volume ramp returned \(error)")
+        }
+
+        #expect(controller.volume == 0.8)
+    }
+
+    private func makeController() -> ProcessTapController {
+        let app = AudioApp(
+            id: 1,
+            processObjectIDs: [],
+            name: "Test App",
+            icon: NSImage(),
+            bundleID: "com.test.app"
+        )
+        return ProcessTapController(app: app, targetDeviceUID: "test-device")
     }
 }
