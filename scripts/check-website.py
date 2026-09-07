@@ -255,6 +255,7 @@ if "A signed stable DMG is available from GitHub Releases and Homebrew." not in 
     fail("llms.txt must state the current release status")
 stale_release_claims = (
     "no packaged public release",
+    "no signed public dmg",
     "no stable binary release",
 )
 release_status_files = (
@@ -262,8 +263,10 @@ release_status_files = (
     ROOT / "README.md",
     ROOT / "ROADMAP.md",
     ROOT / "SUPPORT.md",
+    WEBSITE / "about.html",
     WEBSITE / "index.html",
     WEBSITE / "llms.txt",
+    WEBSITE / "mac-volume-mixer.html",
 )
 for path in release_status_files:
     source = path.read_text(encoding="utf-8").lower()

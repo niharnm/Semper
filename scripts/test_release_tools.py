@@ -5,6 +5,7 @@ import os
 import plistlib
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +43,7 @@ class ReleaseContractTests(unittest.TestCase):
             "--type open",
             "shasum -a 256",
             "sparkle:edSignature",
+            "scripts/validate-release-appcast.py",
         )
         for fragment in required_fragments:
             self.assertIn(fragment, workflow)
@@ -58,6 +60,51 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn('(HTTP 404)', workflow)
         self.assertLess(workflow.index(branch_lookup), workflow.index(feed_lookup))
         self.assertLess(workflow.index(feed_lookup), workflow.index(template_fallback))
+
+    def test_appcast_validation_selects_the_current_release_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            appcast = Path(temporary_directory) / "appcast.xml"
+            appcast.write_text(
+                """<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Semper Updates</title>
+    <link>https://www.semper.systems/</link>
+    <description>Official Semper release feed.</description>
+    <item>
+      <title>Semper 1.1.0</title>
+      <sparkle:version>42</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/niharnm/Semper/releases/download/v1.1.0/Semper.dmg" length="8000000" sparkle:edSignature="new-signature" />
+    </item>
+    <item>
+      <title>Semper 1.0.0</title>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/niharnm/Semper/releases/download/v1.0.0/Semper.dmg" length="7378898" sparkle:edSignature="old-signature" />
+    </item>
+  </channel>
+</rss>
+""",
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/validate-release-appcast.py"),
+                    str(appcast),
+                    "niharnm/Semper",
+                    "v1.1.0",
+                    "Semper.dmg",
+                    "",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_canary_guide_matches_current_release_contract(self) -> None:
         guide = (ROOT / "guide/canary.md").read_text()

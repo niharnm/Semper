@@ -87,10 +87,14 @@ Before publishing a Canary or Stable draft:
 6. Check the retained app and DMG notarization reports in the workflow run.
 7. Inspect the staged appcast and confirm its enclosure names the expected DMG,
    includes `sparkle:edSignature`, and uses `canary` only for Canary.
-8. Publish the GitHub draft. Keep Canary marked as a prerelease.
-9. In a separately reviewed update-feed change, replace `appcast.xml` with the
+8. Publish the GitHub draft. Mark a verified Stable release as latest so
+   `/releases/latest/download/Semper.dmg` resolves to it. Keep Canary marked as
+   a prerelease and non-latest.
+9. For Stable only, update the `niharnm/homebrew-tap` cask version and SHA-256
+   to the published DMG, then run the cask audit. Skip this step for Canary.
+10. In a separately reviewed update-feed change, replace `appcast.xml` with the
    staged appcast only after its GitHub release is public.
-10. Confirm the public feed downloads the exact checksum-verified DMG.
+11. Confirm the public feed downloads the exact checksum-verified DMG.
 
 Never replace a release asset or edit a signed appcast item in place. Publish a
 higher version for every correction.

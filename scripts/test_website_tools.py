@@ -111,6 +111,24 @@ class WebsiteCheckTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_stale_release_claim_on_public_page_is_rejected(self) -> None:
+        about = self.root / "website" / "about.html"
+        source = about.read_text(encoding="utf-8")
+        self.assertIn("Semper requires macOS 15.4 or later.", source)
+        about.write_text(
+            source.replace(
+                "Semper requires macOS 15.4 or later.",
+                "There is no signed public DMG or stable release yet.",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("about.html contains a stale release claim", result.stderr)
+
 
 class IndexNowTests(unittest.TestCase):
     @classmethod
