@@ -202,6 +202,10 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("three-integer base version", guide)
         self.assertIn("Mark a verified Stable release as latest", guide)
         self.assertIn("update the `niharnm/homebrew-tap` cask version", guide)
+        self.assertIn(
+            "Define `SPARKLE_PRIVATE_ED_KEY` as a repository Actions secret",
+            guide,
+        )
         self.assertNotIn("Until that dependency lands", guide)
         self.assertNotIn("SPARKLE_PUBLIC_ED_KEY", guide)
 

@@ -57,7 +57,7 @@ draft. Those are separate review decisions.
 
 ## Required configuration
 
-Define these secrets on the protected `production-release` environment:
+Define these Apple secrets on the protected `production-release` environment:
 
 - `APPLE_CERTIFICATE_BASE64`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -66,11 +66,13 @@ Define these secrets on the protected `production-release` environment:
 - `APPLE_TEAM_ID`
 - `CERT_IDENTITY`
 - `KEYCHAIN_PASSWORD`
-- `SPARKLE_PRIVATE_ED_KEY`
 
 `APPLE_ID_PASSWORD` must be an app-specific password. `CERT_IDENTITY` must
-exactly match the imported Developer ID Application identity. The Sparkle
-private key must match the literal public key embedded by
+exactly match the imported Developer ID Application identity.
+
+Define `SPARKLE_PRIVATE_ED_KEY` as a repository Actions secret. The workflow
+reads it only in the protected packaging job. The private key must match the
+literal public key embedded by
 [automatic-updates PR #32](https://github.com/niharnm/Semper/pull/32).
 
 ## Review and publication
