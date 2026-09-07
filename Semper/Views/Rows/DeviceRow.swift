@@ -309,7 +309,9 @@ struct DeviceRow: View {
             EditablePercentage(
                 percentage: Binding(
                     get: { displayedPercentage },
-                    set: commitPercentage
+                    set: { percentage in
+                        commitPercentage(percentage)
+                    }
                 ),
                 range: 0...Int((controlMaximumGain * 100).rounded()),
                 normalTextColor: isBoosted || isObservedAboveMaximum
