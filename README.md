@@ -100,7 +100,8 @@ To build the current GitHub `main` commit and replace the installed app, run:
 The updater shows the installed and GitHub versions, asks for confirmation,
 then replaces `/Applications/Semper.app` and reopens it. Declining leaves the
 installed app unchanged. This is a local source build, not a signed public
-release.
+release. It requires a Developer ID Application or Apple Development identity
+in your keychain so macOS can recognize later source updates as the same app.
 
 ## Documentation & Guides
 
