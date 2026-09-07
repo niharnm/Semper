@@ -21,10 +21,12 @@ struct DeviceRow: View {
     let device: AudioDevice
     let isDefault: Bool
     let volume: Float
+    let observedVolume: Float?
     let isMuted: Bool
     /// The device's volume backend. Determines which slider ↔ value mapping to use.
     let volumeBackend: VolumeControlTier
     let capabilities: OutputDeviceCapabilities
+    let maximumSelectableGain: Float
     let onSetDefault: () -> Void
     let onVolumeChange: (Float) -> Void
     let onMuteToggle: () -> Void
@@ -54,14 +56,35 @@ struct DeviceRow: View {
     @State private var balanceValue: Double
     @State private var isEditing = false
     @State private var suppressSliderAutoUnmute = false
-    /// Suppresses write-back when slider is being synced from a device volume change.
+    /// Prevents a programmatic slider synchronization from writing back as a user command.
     /// Breaks the quantization feedback loop on USB DACs with discrete dB steps.
-    @State private var isUpdatingSliderFromDevice = false
+    @State private var suppressNextSliderWrite = false
 
     /// The displayed percentage value, matching EditablePercentage's formula.
     /// Used for icon and unmute logic so visual state stays consistent with the label.
     private var displayedPercentage: Int {
-        Int(round(sliderValue * Double(capabilities.maximumGain) * 100))
+        if isObservedAboveMaximum && !isEditing, let observedPercentage {
+            return observedPercentage
+        }
+        return Int(round(sliderValue * Double(controlMaximumGain) * 100))
+    }
+
+    private var observedPercentage: Int? {
+        observedVolume.map { Self.outputPercentage(for: $0, backend: volumeBackend) }
+    }
+
+    private var isObservedAboveMaximum: Bool {
+        Self.isObservedAboveMaximum(
+            observedVolume,
+            maximumSelectableGain: controlMaximumGain
+        )
+    }
+
+    private var controlMaximumGain: Float {
+        Self.controlMaximumGain(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
     }
 
     /// Show muted icon when system muted OR displayed volume is 0%.
@@ -75,7 +98,7 @@ struct DeviceRow: View {
         Self.volumeToSlider(
             0.5,
             backend: volumeBackend,
-            maximumGain: capabilities.maximumGain
+            maximumGain: controlMaximumGain
         )
     }
 
@@ -91,9 +114,11 @@ struct DeviceRow: View {
         device: AudioDevice,
         isDefault: Bool,
         volume: Float,
+        observedVolume: Float?,
         isMuted: Bool,
         volumeBackend: VolumeControlTier = .hardware,
-        capabilities: OutputDeviceCapabilities = .assumedVerifiedStereo,
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float,
         onSetDefault: @escaping () -> Void,
         onVolumeChange: @escaping (Float) -> Void,
         onMuteToggle: @escaping () -> Void,
@@ -120,9 +145,11 @@ struct DeviceRow: View {
         self.device = device
         self.isDefault = isDefault
         self.volume = volume
+        self.observedVolume = observedVolume
         self.isMuted = isMuted
         self.volumeBackend = volumeBackend
         self.capabilities = capabilities
+        self.maximumSelectableGain = maximumSelectableGain
         self.onSetDefault = onSetDefault
         self.onVolumeChange = onVolumeChange
         self.onMuteToggle = onMuteToggle
@@ -149,7 +176,10 @@ struct DeviceRow: View {
             initialValue: Self.volumeToSlider(
                 volume,
                 backend: volumeBackend,
-                maximumGain: capabilities.maximumGain
+                maximumGain: Self.controlMaximumGain(
+                    capabilities: capabilities,
+                    maximumSelectableGain: maximumSelectableGain
+                )
             )
         )
         self._balanceValue = State(initialValue: Double(balance))
@@ -183,19 +213,21 @@ struct DeviceRow: View {
             let newSlider = Self.volumeToSlider(
                 newValue,
                 backend: volumeBackend,
-                maximumGain: capabilities.maximumGain
+                maximumGain: controlMaximumGain
             )
             guard newSlider != sliderValue else { return }
-            isUpdatingSliderFromDevice = true
+            suppressNextSliderWrite = true
             sliderValue = newSlider
         }
-        .onChange(of: capabilities.maximumGain) { _, newMaximum in
-            guard !isEditing else { return }
-            sliderValue = Self.volumeToSlider(
+        .onChange(of: controlMaximumGain) { _, newMaximum in
+            let newSlider = Self.volumeToSlider(
                 volume,
                 backend: volumeBackend,
                 maximumGain: newMaximum
             )
+            guard newSlider != sliderValue else { return }
+            suppressNextSliderWrite = true
+            sliderValue = newSlider
         }
         .onChange(of: balance) { _, newValue in
             let clamped = max(-1, min(1, Double(newValue)))
@@ -219,7 +251,7 @@ struct DeviceRow: View {
                 Text(masterStatusText)
                     .font(.system(size: 10.5))
                     .foregroundStyle(
-                        isBoosted || attenuationNotice != nil
+                        isBoosted || isObservedAboveMaximum || attenuationNotice != nil
                             ? DesignTokens.Colors.systemOrange
                             : DesignTokens.Colors.textSecondary
                     )
@@ -277,13 +309,12 @@ struct DeviceRow: View {
             EditablePercentage(
                 percentage: Binding(
                     get: { displayedPercentage },
-                    set: {
-                        sliderValue = Double($0)
-                            / (Double(capabilities.maximumGain) * 100)
-                    }
+                    set: commitPercentage
                 ),
-                range: 0...Int(capabilities.maximumGain * 100),
-                normalTextColor: isBoosted ? DesignTokens.Colors.systemOrange : nil,
+                range: 0...Int((controlMaximumGain * 100).rounded()),
+                normalTextColor: isBoosted || isObservedAboveMaximum
+                    ? DesignTokens.Colors.systemOrange
+                    : nil,
                 isRowFocused: isFocused,
                 accessibilityName: "Master volume percentage for \(device.name)"
             )
@@ -294,9 +325,12 @@ struct DeviceRow: View {
         LiquidGlassSlider(
             value: $sliderValue,
             unityValue: VolumeMapping.unityMasterSliderFraction(
-                maximumGain: capabilities.maximumGain
+                maximumGain: controlMaximumGain
             ),
-            usesBoostedFill: capabilities.maximumGain > 1,
+            usesBoostedFill: Self.supportsBoost(
+                capabilities: capabilities,
+                maximumSelectableGain: maximumSelectableGain
+            ),
             trackHeight: 8,
             alwaysShowsThumb: true,
             onEditingChanged: { editing in
@@ -305,33 +339,51 @@ struct DeviceRow: View {
         )
         .opacity(showMutedIcon ? 0.5 : 1.0)
         .onChange(of: sliderValue) { _, newValue in
-            if isUpdatingSliderFromDevice {
-                isUpdatingSliderFromDevice = false
+            if suppressNextSliderWrite {
+                suppressNextSliderWrite = false
                 return
             }
-            onVolumeChange(
+            commitUserVolume(
                 Self.sliderToVolume(
                     newValue,
                     backend: volumeBackend,
-                    maximumGain: capabilities.maximumGain
-                )
+                    maximumGain: controlMaximumGain
+                ),
+                sliderFraction: newValue
             )
-            if suppressSliderAutoUnmute {
-                suppressSliderAutoUnmute = false
-                return
-            }
-            if isMuted && newValue > 0 {
-                onMuteToggle()
-            }
         }
         .scrollWheelStep($sliderValue, in: 0.0...1.0)
-        .help(
-            capabilities.maximumGain > 1
-                ? "Master volume for \(device.name), maximum 300 percent"
-                : "Master volume for \(device.name), maximum 100 percent"
-        )
+        .help(Self.masterVolumeHelp(
+            deviceName: device.name,
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        ))
         .accessibilityLabel("Master volume for \(device.name)")
         .accessibilityValue("\(displayedPercentage) percent")
+    }
+
+    func commitPercentage(_ percentage: Int) {
+        let commit = Self.percentageCommit(
+            percentage,
+            backend: volumeBackend,
+            maximumGain: controlMaximumGain
+        )
+        if commit.sliderFraction != sliderValue {
+            suppressNextSliderWrite = true
+            sliderValue = commit.sliderFraction
+        }
+        commitUserVolume(commit.volume, sliderFraction: commit.sliderFraction)
+    }
+
+    private func commitUserVolume(_ volume: Float, sliderFraction: Double) {
+        onVolumeChange(volume)
+        if suppressSliderAutoUnmute {
+            suppressSliderAutoUnmute = false
+            return
+        }
+        if isMuted && sliderFraction > 0 {
+            onMuteToggle()
+        }
     }
 
     private var balanceControl: some View {
@@ -379,16 +431,23 @@ struct DeviceRow: View {
     }
 
     private var masterStatusText: String {
+        if isObservedAboveMaximum, let observedPercentage {
+            let maximum = Self.maximumSelectablePercentage(
+                capabilities: capabilities,
+                maximumSelectableGain: maximumSelectableGain
+            )
+            return "\(observedPercentage)% current · \(maximum)% volume limit"
+        }
         if let attenuationNotice {
             return attenuationNotice
         }
         if isBoosted {
-            return "\(displayedPercentage)% boost · -1 dB limiter"
+            return "\(displayedPercentage)% software gain · -1 dB limiter"
         }
-        if capabilities.maximumGain > 1 {
-            return "Boost up to 300% · -1 dB limiter"
-        }
-        return capabilities.unavailableReason ?? "100% max · boost unavailable"
+        return Self.idleMasterStatus(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
     }
 
     private var balanceAccessibilityValue: String {
@@ -486,6 +545,128 @@ private struct StereoOutputMeter: View {
 }
 
 extension DeviceRow {
+    // MARK: - Boost Presentation
+
+    static func percentageCommit(
+        _ percentage: Int,
+        backend: VolumeControlTier,
+        maximumGain: Float
+    ) -> (sliderFraction: Double, volume: Float) {
+        let maximumGain = normalizedMaximumGain(maximumGain)
+        let sliderFraction = max(
+            0,
+            min(1, Double(percentage) / (Double(maximumGain) * 100))
+        )
+        return (
+            sliderFraction,
+            sliderToVolume(
+                sliderFraction,
+                backend: backend,
+                maximumGain: maximumGain
+            )
+        )
+    }
+
+    static func isObservedAboveMaximum(
+        _ volume: Float?,
+        maximumSelectableGain: Float
+    ) -> Bool {
+        guard let volume, volume.isFinite else { return false }
+        return volume > normalizedMaximumGain(maximumSelectableGain)
+            + SafeOutputSwitchState.volumeTolerance
+    }
+
+    static func outputPercentage(
+        for volume: Float,
+        backend: VolumeControlTier
+    ) -> Int {
+        guard volume.isFinite else { return 0 }
+        let fraction = volumeToSlider(
+            volume,
+            backend: backend,
+            maximumGain: VolumeMapping.maximumMasterGain
+        )
+        return Int((fraction * Double(VolumeMapping.maximumMasterGain) * 100).rounded())
+    }
+
+    static func supportsBoost(
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> Bool {
+        capabilities.supportsBoost
+            && selectableMaximumGain(
+                capabilities: capabilities,
+                maximumSelectableGain: maximumSelectableGain
+            ) > 1
+    }
+
+    static func controlMaximumGain(
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> Float {
+        let maximum = selectableMaximumGain(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
+        return capabilities.supportsBoost ? maximum : min(1, maximum)
+    }
+
+    static func maximumSelectablePercentage(
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> Int {
+        let maximum = controlMaximumGain(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
+        return Int((maximum * 100).rounded())
+    }
+
+    static func masterVolumeHelp(
+        deviceName: String,
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> String {
+        let maximum = maximumSelectablePercentage(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
+        return "Master volume for \(deviceName), maximum \(maximum) percent"
+    }
+
+    static func idleMasterStatus(
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> String {
+        let maximum = maximumSelectablePercentage(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        )
+        if supportsBoost(
+            capabilities: capabilities,
+            maximumSelectableGain: maximumSelectableGain
+        ) {
+            return "Software gain up to \(maximum)% · -1 dB limiter"
+        }
+        if maximum < 100 {
+            return "\(maximum)% volume limit · boost unavailable"
+        }
+        return capabilities.unavailableReason ?? "100% max · boost unavailable"
+    }
+
+    private static func selectableMaximumGain(
+        capabilities: OutputDeviceCapabilities,
+        maximumSelectableGain: Float
+    ) -> Float {
+        let capabilityMaximum = normalizedMaximumGain(capabilities.maximumGain)
+        return min(capabilityMaximum, normalizedMaximumGain(maximumSelectableGain))
+    }
+
+    private static func normalizedMaximumGain(_ maximumGain: Float) -> Float {
+        guard maximumGain.isFinite, maximumGain > 0 else { return 1 }
+        return min(maximumGain, VolumeMapping.maximumMasterGain)
+    }
+
     // MARK: - Volume Mapping
 
     static func volumeToSlider(
@@ -529,7 +710,16 @@ extension DeviceRow {
                 device: MockData.sampleDevices[0],
                 isDefault: true,
                 volume: 0.75,
+                observedVolume: 0.75,
                 isMuted: false,
+                capabilities: OutputDeviceCapabilities(
+                    maximumGain: 3,
+                    supportsBalance: true,
+                    channelCount: 2,
+                    isRouteVerified: true,
+                    unavailableReason: nil
+                ),
+                maximumSelectableGain: 3,
                 onSetDefault: {},
                 onVolumeChange: { _ in },
                 onMuteToggle: {}
@@ -539,7 +729,13 @@ extension DeviceRow {
                 device: MockData.sampleDevices[1],
                 isDefault: false,
                 volume: 1.0,
+                observedVolume: 1.0,
                 isMuted: false,
+                capabilities: .unavailable(
+                    channelCount: MockData.sampleDevices[1].outputTopology.channelCount,
+                    reason: "Route an app here to verify boost"
+                ),
+                maximumSelectableGain: 1,
                 onSetDefault: {},
                 onVolumeChange: { _ in },
                 onMuteToggle: {}
@@ -549,7 +745,13 @@ extension DeviceRow {
                 device: MockData.sampleDevices[2],
                 isDefault: false,
                 volume: 0.5,
+                observedVolume: 0.5,
                 isMuted: true,
+                capabilities: .unavailable(
+                    channelCount: MockData.sampleDevices[2].outputTopology.channelCount,
+                    reason: "Route an app here to verify boost"
+                ),
+                maximumSelectableGain: 1,
                 onSetDefault: {},
                 onVolumeChange: { _ in },
                 onMuteToggle: {}

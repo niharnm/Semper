@@ -47,13 +47,9 @@ struct OutputDeviceCapabilities: Equatable, Sendable {
     let isRouteVerified: Bool
     let unavailableReason: String?
 
-    static let assumedVerifiedStereo = OutputDeviceCapabilities(
-        maximumGain: 3,
-        supportsBalance: true,
-        channelCount: 2,
-        isRouteVerified: true,
-        unavailableReason: nil
-    )
+    var supportsBoost: Bool {
+        isRouteVerified && maximumGain.isFinite && maximumGain > 1
+    }
 
     static func unavailable(
         channelCount: Int,

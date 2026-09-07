@@ -34,7 +34,7 @@ enum VolumeMapping {
     static let unityMasterSliderFraction: Double = 1.0 / Double(maximumMasterGain)
 
     static func unityMasterSliderFraction(maximumGain: Float) -> Double {
-        1.0 / Double(max(1, maximumGain))
+        maximumGain > 1 ? 1.0 / Double(maximumGain) : 1
     }
 
     /// Convert per-app slider position to linear PCM gain using square-law curve.
@@ -80,8 +80,12 @@ enum VolumeMapping {
         tier: VolumeControlTier,
         maximumGain: Float = maximumMasterGain
     ) -> Float {
-        let maximumGain = max(1, maximumGain)
-        let masterScale = max(0, min(1, fraction)) * Double(maximumGain)
+        let maximumGain = max(0, maximumGain)
+        let sliderFraction = max(0, min(1, fraction))
+        if maximumGain <= 1 {
+            return systemGain(forSliderFraction: sliderFraction, tier: tier) * maximumGain
+        }
+        let masterScale = sliderFraction * Double(maximumGain)
         if masterScale <= 1 {
             return systemGain(forSliderFraction: masterScale, tier: tier)
         }
@@ -94,8 +98,15 @@ enum VolumeMapping {
         tier: VolumeControlTier,
         maximumGain: Float = maximumMasterGain
     ) -> Double {
-        let maximumGain = max(1, maximumGain)
+        let maximumGain = max(0, maximumGain)
+        guard maximumGain > 0 else { return 0 }
         let clampedGain = max(0, min(maximumGain, gain))
+        if maximumGain <= 1 {
+            return sliderFraction(
+                forSystemGain: clampedGain / maximumGain,
+                tier: tier
+            )
+        }
         if clampedGain <= 1 {
             return sliderFraction(forSystemGain: clampedGain, tier: tier) / Double(maximumGain)
         }
