@@ -5,6 +5,7 @@ import os
 import plistlib
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,8 @@ class ReleaseContractTests(unittest.TestCase):
             'echo "base_version=$BASE_VERSION"',
             "BASE_VERSION: ${{ needs.verify.outputs.base_version }}",
             '"MARKETING_VERSION=$BASE_VERSION"',
+            'DMG_NAME="Semper.dmg"',
+            'DMG_NAME="$ARTIFACT_STEM.dmg"',
             "draft: true",
             "scripts/notarize-and-log.sh",
             "xcrun stapler staple build/export/Semper.app",
@@ -40,6 +43,8 @@ class ReleaseContractTests(unittest.TestCase):
             "--type open",
             "shasum -a 256",
             "sparkle:edSignature",
+            "scripts/validate-release-appcast.py",
+            "scripts/verify-sparkle-signature.swift",
         )
         for fragment in required_fragments:
             self.assertIn(fragment, workflow)
@@ -57,10 +62,150 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertLess(workflow.index(branch_lookup), workflow.index(feed_lookup))
         self.assertLess(workflow.index(feed_lookup), workflow.index(template_fallback))
 
+    def test_appcast_validation_selects_the_current_release_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            appcast = Path(temporary_directory) / "appcast.xml"
+            archive = Path(temporary_directory) / "Semper.dmg"
+            archive_contents = b"semper-dmg"
+            archive.write_bytes(archive_contents)
+            source = f"""<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Semper Updates</title>
+    <link>https://www.semper.systems/</link>
+    <description>Official Semper release feed.</description>
+    <item>
+      <title>Semper 1.1.0</title>
+      <link>https://www.semper.systems/</link>
+      <sparkle:version>42</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/niharnm/Semper/releases/download/v1.1.0/Semper.dmg" length="{len(archive_contents)}" sparkle:edSignature="new-signature" />
+    </item>
+    <item>
+      <title>Semper 1.0.0</title>
+      <link>https://www.semper.systems/</link>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/niharnm/Semper/releases/download/v1.0.0/Semper.dmg" length="7378898" sparkle:edSignature="old-signature" />
+    </item>
+  </channel>
+</rss>
+"""
+            appcast.write_text(source, encoding="utf-8")
+
+            command = [
+                sys.executable,
+                str(ROOT / "scripts/validate-release-appcast.py"),
+                str(appcast),
+                "niharnm/Semper",
+                "v1.1.0",
+                "Semper.dmg",
+                "",
+                "1.1.0",
+                "42",
+                str(archive),
+            ]
+            result = subprocess.run(
+                command, text=True, capture_output=True, check=False
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "new-signature")
+
+            invalid_cases = {
+                "item link": source.replace(
+                    "<title>Semper 1.1.0</title>\n"
+                    "      <link>https://www.semper.systems/</link>",
+                    "<title>Semper 1.1.0</title>\n"
+                    "      <link>https://invalid.example/</link>",
+                    1,
+                ),
+                "build": source.replace(
+                    "<sparkle:version>42</sparkle:version>",
+                    "<sparkle:version>0</sparkle:version>",
+                    1,
+                ),
+                "version": source.replace(
+                    "<sparkle:shortVersionString>1.1.0"
+                    "</sparkle:shortVersionString>",
+                    "<sparkle:shortVersionString>9.9.9"
+                    "</sparkle:shortVersionString>",
+                    1,
+                ),
+                "nonnumeric length": source.replace(
+                    f'length="{len(archive_contents)}"',
+                    'length="not-a-number"',
+                    1,
+                ),
+                "wrong length": source.replace(
+                    f'length="{len(archive_contents)}"',
+                    f'length="{len(archive_contents) + 1}"',
+                    1,
+                ),
+            }
+            for case, invalid_source in invalid_cases.items():
+                with self.subTest(case=case):
+                    appcast.write_text(invalid_source, encoding="utf-8")
+                    invalid_result = subprocess.run(
+                        command, text=True, capture_output=True, check=False
+                    )
+                    self.assertNotEqual(invalid_result.returncode, 0)
+
+    def test_sparkle_signature_verifier_executes_known_ed25519_vector(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            archive = Path(temporary_directory) / "Semper.dmg"
+            archive.write_bytes(b"")
+            public_key = "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="
+            signature = (
+                "5VZDAMNgrHKQhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc+"
+                "bRr0lv18FlbviRlUUFDjnoQCw=="
+            )
+
+            result = subprocess.run(
+                [
+                    "xcrun",
+                    "swift",
+                    str(ROOT / "scripts/verify-sparkle-signature.swift"),
+                    str(archive),
+                    signature,
+                    public_key,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("signature matches", result.stdout)
+
+            invalid_result = subprocess.run(
+                [
+                    "xcrun",
+                    "swift",
+                    str(ROOT / "scripts/verify-sparkle-signature.swift"),
+                    str(archive),
+                    "A" * 86 + "==",
+                    public_key,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(invalid_result.returncode, 1)
+            self.assertIn("does not match", invalid_result.stderr)
+
     def test_canary_guide_matches_current_release_contract(self) -> None:
         guide = (ROOT / "guide/canary.md").read_text()
 
         self.assertIn("three-integer base version", guide)
+        self.assertIn("Mark a verified Stable release as latest", guide)
+        self.assertIn("update the `niharnm/homebrew-tap` cask version", guide)
+        self.assertIn(
+            "Define `SPARKLE_PRIVATE_ED_KEY` as a repository Actions secret",
+            guide,
+        )
         self.assertNotIn("Until that dependency lands", guide)
         self.assertNotIn("SPARKLE_PUBLIC_ED_KEY", guide)
 

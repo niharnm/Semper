@@ -9,7 +9,7 @@ on:
       version:
         description: Base semantic version for the Canary candidate
         required: true
-        default: "1.0.0"
+        default: "1.1.0"
         type: string
 
 concurrency:
@@ -109,7 +109,11 @@ jobs:
           fi
 
           ARTIFACT_STEM="Semper-${VERSION}-${BUILD_NUMBER}-macOS"
-          DMG_NAME="$ARTIFACT_STEM.dmg"
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            DMG_NAME="$ARTIFACT_STEM.dmg"
+          else
+            DMG_NAME="Semper.dmg"
+          fi
           APPCAST_NAME="$ARTIFACT_STEM-appcast.xml"
           CHECKSUM_NAME="$ARTIFACT_STEM-SHA256SUMS.txt"
 
@@ -349,6 +353,7 @@ jobs:
             echo "Release build must contain a 32-byte Sparkle Ed25519 public key."
             exit 1
           fi
+          echo "SPARKLE_PUBLIC_ED_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
 
       - name: Notarize and staple app
         run: |
@@ -461,41 +466,21 @@ jobs:
           grep -q "sparkle:edSignature" build/feed/appcast.xml
           cp build/feed/appcast.xml "build/release/$APPCAST_NAME"
 
-          python3 - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-          from pathlib import PurePosixPath
-          from urllib.parse import urlparse
-
-          sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
-          root = ET.parse("build/feed/appcast.xml").getroot()
-          expected_name = os.environ["DMG_NAME"]
-          expected_channel = os.environ["SPARKLE_CHANNEL"]
-          matches = []
-          for item in root.findall("./channel/item"):
-              enclosure = item.find("enclosure")
-              if enclosure is None:
-                  continue
-              asset_name = PurePosixPath(urlparse(enclosure.get("url", "")).path).name
-              if asset_name == expected_name:
-                  matches.append((item, enclosure))
-
-          if len(matches) != 1:
-              raise SystemExit(f"Expected one appcast item for {expected_name}, found {len(matches)}")
-
-          item, enclosure = matches[0]
-          if not enclosure.get(f"{{{sparkle}}}edSignature"):
-              raise SystemExit("Generated appcast item is missing an Ed25519 signature")
-          if not enclosure.get("length"):
-              raise SystemExit("Generated appcast item is missing its file length")
-
-          channel = item.find(f"{{{sparkle}}}channel")
-          actual_channel = channel.text if channel is not None else ""
-          if actual_channel != expected_channel:
-              raise SystemExit(
-                  f"Expected Sparkle channel {expected_channel!r}, found {actual_channel!r}"
-              )
-          PY
+          SIGNATURE="$(
+            python3 scripts/validate-release-appcast.py \
+              build/feed/appcast.xml \
+              "$GITHUB_REPOSITORY" \
+              "$RELEASE_TAG" \
+              "$DMG_NAME" \
+              "$SPARKLE_CHANNEL" \
+              "$BASE_VERSION" \
+              "$BUILD_NUMBER" \
+              "build/release/$DMG_NAME"
+          )"
+          xcrun swift scripts/verify-sparkle-signature.swift \
+            "build/release/$DMG_NAME" \
+            "$SIGNATURE" \
+            "$SPARKLE_PUBLIC_ED_KEY"
 
       - name: Upload notarization evidence
         if: always()

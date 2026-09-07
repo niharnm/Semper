@@ -44,8 +44,8 @@ The packaging job:
 2. archives and exports the app, then checks its certificate authority, Team
    ID, hardened runtime, secure timestamp, and nested signatures;
 3. notarizes and staples the app, then runs Gatekeeper assessment;
-4. creates a versioned DMG, signs it, notarizes it separately, staples it, and
-   runs a second Gatekeeper assessment;
+4. creates `Semper.dmg` for Stable or a versioned DMG for Canary, signs it,
+   notarizes it separately, staples it, and runs a second Gatekeeper assessment;
 5. writes and verifies a SHA-256 checksum;
 6. generates a locally staged Sparkle appcast with an Ed25519 signature;
 7. uploads notarization reports as a retained Actions artifact; and
@@ -57,7 +57,7 @@ draft. Those are separate review decisions.
 
 ## Required configuration
 
-Define these secrets on the protected `production-release` environment:
+Define these Apple secrets on the protected `production-release` environment:
 
 - `APPLE_CERTIFICATE_BASE64`
 - `APPLE_CERTIFICATE_PASSWORD`
@@ -66,11 +66,13 @@ Define these secrets on the protected `production-release` environment:
 - `APPLE_TEAM_ID`
 - `CERT_IDENTITY`
 - `KEYCHAIN_PASSWORD`
-- `SPARKLE_PRIVATE_ED_KEY`
 
 `APPLE_ID_PASSWORD` must be an app-specific password. `CERT_IDENTITY` must
-exactly match the imported Developer ID Application identity. The Sparkle
-private key must match the literal public key embedded by
+exactly match the imported Developer ID Application identity.
+
+Define `SPARKLE_PRIVATE_ED_KEY` as a repository Actions secret. The workflow
+reads it only in the protected packaging job. The private key must match the
+literal public key embedded by
 [automatic-updates PR #32](https://github.com/niharnm/Semper/pull/32).
 
 ## Review and publication
@@ -85,12 +87,16 @@ Before publishing a Canary or Stable draft:
 5. Test permissions, per-app volume, routing, mute, sleep and wake, device
    reconnect, and update settings with real audio devices.
 6. Check the retained app and DMG notarization reports in the workflow run.
-7. Inspect the staged appcast and confirm its enclosure names the versioned
-   DMG, includes `sparkle:edSignature`, and uses `canary` only for Canary.
-8. Publish the GitHub draft. Keep Canary marked as a prerelease.
-9. In a separately reviewed update-feed change, replace `appcast.xml` with the
+7. Inspect the staged appcast and confirm its enclosure names the expected DMG,
+   includes `sparkle:edSignature`, and uses `canary` only for Canary.
+8. Publish the GitHub draft. Mark a verified Stable release as latest so
+   `/releases/latest/download/Semper.dmg` resolves to it. Keep Canary marked as
+   a prerelease and non-latest.
+9. For Stable only, update the `niharnm/homebrew-tap` cask version and SHA-256
+   to the published DMG, then run the cask audit. Skip this step for Canary.
+10. In a separately reviewed update-feed change, replace `appcast.xml` with the
    staged appcast only after its GitHub release is public.
-10. Confirm the public feed downloads the exact checksum-verified DMG.
+11. Confirm the public feed downloads the exact checksum-verified DMG.
 
 Never replace a release asset or edit a signed appcast item in place. Publish a
 higher version for every correction.

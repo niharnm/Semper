@@ -193,6 +193,11 @@ update_command = (
 )
 if update_command not in index_source:
     fail("index.html is missing the Terminal update command")
+source_update_requirement = (
+    "Requires Xcode and a Developer ID or Apple Development identity."
+)
+if source_update_requirement not in index_source:
+    fail("index.html must state the source update signing requirement")
 
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
@@ -251,8 +256,26 @@ if homepage_redirect not in vercel_config.get("redirects", []):
     fail("website/vercel.json must redirect /index.html to /")
 
 llms = (WEBSITE / "llms.txt").read_text(encoding="utf-8")
-if "There is no packaged public release yet" not in llms:
+if "A signed stable DMG is available from GitHub Releases and Homebrew." not in llms:
     fail("llms.txt must state the current release status")
+stale_release_claims = (
+    "no packaged public release",
+    "no signed public dmg",
+    "no stable binary release",
+)
+release_status_files = (
+    ROOT / "CONTRIBUTING.md",
+    ROOT / "README.md",
+    ROOT / "ROADMAP.md",
+    ROOT / "SUPPORT.md",
+    WEBSITE / "llms.txt",
+    *sorted(WEBSITE.glob("*.html")),
+)
+for path in release_status_files:
+    source = path.read_text(encoding="utf-8").lower()
+    for stale_claim in stale_release_claims:
+        if stale_claim in source:
+            fail(f"{path.relative_to(ROOT)} contains a stale release claim")
 for canonical in CANONICALS.values():
     if canonical not in llms:
         fail(f"llms.txt is missing an official page: {canonical}")

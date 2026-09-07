@@ -1,8 +1,8 @@
 # Contributing to Semper
 
 Semper welcomes focused pull requests for bug fixes, tests, documentation,
-device compatibility, accessibility, and audio features. The project is
-source-first today, with no packaged public release yet.
+device compatibility, accessibility, and audio features. Signed macOS releases
+are available from GitHub, and development continues on `main`.
 
 ## Find a task
 

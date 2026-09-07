@@ -1,7 +1,7 @@
 # Semper support
 
-Semper does not have a packaged public release yet. Support currently covers
-building and testing the source on macOS 15.4 or later.
+Semper publishes signed macOS releases. Support covers installation and the
+current release, plus building and testing source on macOS 15.4 or later.
 
 ## Ask a question
 
