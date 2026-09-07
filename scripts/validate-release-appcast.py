@@ -16,6 +16,9 @@ def main() -> int:
     parser.add_argument("release_tag")
     parser.add_argument("dmg_name")
     parser.add_argument("sparkle_channel")
+    parser.add_argument("base_version")
+    parser.add_argument("build_number")
+    parser.add_argument("archive", type=Path)
     arguments = parser.parse_args()
 
     root = ElementTree.parse(arguments.appcast).getroot()
@@ -45,11 +48,43 @@ def main() -> int:
         )
 
     item, enclosure = matches[0]
+    item_link = (item.findtext("link") or "").strip()
+    if item_link != "https://www.semper.systems/":
+        raise SystemExit(
+            "Expected appcast item link 'https://www.semper.systems/', "
+            f"found {item_link!r}"
+        )
+
+    version = (item.findtext(f"{{{SPARKLE_NAMESPACE}}}version") or "").strip()
+    if version != arguments.build_number:
+        raise SystemExit(
+            f"Expected Sparkle build {arguments.build_number!r}, found {version!r}"
+        )
+
+    short_version = (
+        item.findtext(f"{{{SPARKLE_NAMESPACE}}}shortVersionString") or ""
+    ).strip()
+    if short_version != arguments.base_version:
+        raise SystemExit(
+            f"Expected Sparkle version {arguments.base_version!r}, found {short_version!r}"
+        )
+
     signature = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature")
     if not signature:
         raise SystemExit("Generated appcast item is missing an Ed25519 signature")
-    if not enclosure.get("length"):
-        raise SystemExit("Generated appcast item is missing its file length")
+
+    length = enclosure.get("length") or ""
+    if not length.isascii() or not length.isdigit():
+        raise SystemExit(
+            f"Generated appcast item has an invalid file length: {length!r}"
+        )
+    if not arguments.archive.is_file():
+        raise SystemExit(f"Release archive does not exist: {arguments.archive}")
+    archive_length = arguments.archive.stat().st_size
+    if int(length) != archive_length:
+        raise SystemExit(
+            f"Expected appcast file length {archive_length}, found {length}"
+        )
 
     channel_element = item.find(f"{{{SPARKLE_NAMESPACE}}}channel")
     actual_channel = channel_element.text if channel_element is not None else ""

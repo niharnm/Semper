@@ -193,6 +193,11 @@ update_command = (
 )
 if update_command not in index_source:
     fail("index.html is missing the Terminal update command")
+source_update_requirement = (
+    "Requires Xcode and a Developer ID or Apple Development identity."
+)
+if source_update_requirement not in index_source:
+    fail("index.html must state the source update signing requirement")
 
 for required_file in ("robots.txt", "sitemap.xml", "llms.txt"):
     if not (WEBSITE / required_file).is_file():
@@ -263,10 +268,8 @@ release_status_files = (
     ROOT / "README.md",
     ROOT / "ROADMAP.md",
     ROOT / "SUPPORT.md",
-    WEBSITE / "about.html",
-    WEBSITE / "index.html",
     WEBSITE / "llms.txt",
-    WEBSITE / "mac-volume-mixer.html",
+    *sorted(WEBSITE.glob("*.html")),
 )
 for path in release_status_files:
     source = path.read_text(encoding="utf-8").lower()

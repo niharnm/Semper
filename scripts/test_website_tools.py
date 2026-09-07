@@ -111,23 +111,46 @@ class WebsiteCheckTests(unittest.TestCase):
             result.stderr,
         )
 
-    def test_stale_release_claim_on_public_page_is_rejected(self) -> None:
-        about = self.root / "website" / "about.html"
-        source = about.read_text(encoding="utf-8")
-        self.assertIn("Semper requires macOS 15.4 or later.", source)
-        about.write_text(
-            source.replace(
-                "Semper requires macOS 15.4 or later.",
-                "There is no signed public DMG or stable release yet.",
-                1,
-            ),
-            encoding="utf-8",
+    def test_stale_release_claim_on_every_public_page_is_rejected(self) -> None:
+        for filename in ("about.html", "privacy.html", "terms.html"):
+            with self.subTest(filename=filename):
+                path = self.root / "website" / filename
+                source = path.read_text(encoding="utf-8")
+                self.assertIn("</body>", source)
+                path.write_text(
+                    source.replace(
+                        "</body>",
+                        "<p>There is no stable binary release yet.</p></body>",
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+
+                result = self.run_check()
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    f"{filename} contains a stale release claim", result.stderr
+                )
+                path.write_text(source, encoding="utf-8")
+
+    def test_homepage_source_update_signing_requirement_is_enforced(self) -> None:
+        index = self.root / "website" / "index.html"
+        requirement = (
+            "Requires Xcode and a Developer ID or Apple Development identity."
+        )
+        source = index.read_text(encoding="utf-8")
+        self.assertIn(requirement, source)
+        index.write_text(
+            source.replace(requirement, "Requires Xcode."), encoding="utf-8"
         )
 
         result = self.run_check()
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("about.html contains a stale release claim", result.stderr)
+        self.assertIn(
+            "must state the source update signing requirement", result.stderr
+        )
 
 
 class IndexNowTests(unittest.TestCase):

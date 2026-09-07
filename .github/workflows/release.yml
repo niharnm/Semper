@@ -472,7 +472,10 @@ jobs:
               "$GITHUB_REPOSITORY" \
               "$RELEASE_TAG" \
               "$DMG_NAME" \
-              "$SPARKLE_CHANNEL"
+              "$SPARKLE_CHANNEL" \
+              "$BASE_VERSION" \
+              "$BUILD_NUMBER" \
+              "build/release/$DMG_NAME"
           )"
           xcrun swift scripts/verify-sparkle-signature.swift \
             "build/release/$DMG_NAME" \
