@@ -44,6 +44,7 @@ class ReleaseContractTests(unittest.TestCase):
             "shasum -a 256",
             "sparkle:edSignature",
             "scripts/validate-release-appcast.py",
+            "scripts/verify-sparkle-signature.swift",
         )
         for fragment in required_fragments:
             self.assertIn(fragment, workflow)
@@ -105,6 +106,7 @@ class ReleaseContractTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "new-signature")
 
     def test_canary_guide_matches_current_release_contract(self) -> None:
         guide = (ROOT / "guide/canary.md").read_text()

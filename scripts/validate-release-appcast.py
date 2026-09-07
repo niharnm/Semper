@@ -45,7 +45,8 @@ def main() -> int:
         )
 
     item, enclosure = matches[0]
-    if not enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature"):
+    signature = enclosure.get(f"{{{SPARKLE_NAMESPACE}}}edSignature")
+    if not signature:
         raise SystemExit("Generated appcast item is missing an Ed25519 signature")
     if not enclosure.get("length"):
         raise SystemExit("Generated appcast item is missing its file length")
@@ -57,6 +58,7 @@ def main() -> int:
             f"Expected Sparkle channel {arguments.sparkle_channel!r}, found {actual_channel!r}"
         )
 
+    print(signature)
     return 0
 
 

@@ -353,6 +353,7 @@ jobs:
             echo "Release build must contain a 32-byte Sparkle Ed25519 public key."
             exit 1
           fi
+          echo "SPARKLE_PUBLIC_ED_KEY=$PUBLIC_KEY" >> "$GITHUB_ENV"
 
       - name: Notarize and staple app
         run: |
@@ -465,12 +466,18 @@ jobs:
           grep -q "sparkle:edSignature" build/feed/appcast.xml
           cp build/feed/appcast.xml "build/release/$APPCAST_NAME"
 
-          python3 scripts/validate-release-appcast.py \
-            build/feed/appcast.xml \
-            "$GITHUB_REPOSITORY" \
-            "$RELEASE_TAG" \
-            "$DMG_NAME" \
-            "$SPARKLE_CHANNEL"
+          SIGNATURE="$(
+            python3 scripts/validate-release-appcast.py \
+              build/feed/appcast.xml \
+              "$GITHUB_REPOSITORY" \
+              "$RELEASE_TAG" \
+              "$DMG_NAME" \
+              "$SPARKLE_CHANNEL"
+          )"
+          xcrun swift scripts/verify-sparkle-signature.swift \
+            "build/release/$DMG_NAME" \
+            "$SIGNATURE" \
+            "$SPARKLE_PUBLIC_ED_KEY"
 
       - name: Upload notarization evidence
         if: always()
