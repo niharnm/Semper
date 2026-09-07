@@ -112,6 +112,17 @@ struct SettingsRootView: View {
                     )
                 }
             }
+
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Label("Quit", systemImage: "power")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityLabel("Quit Semper")
+            .help("Quit Semper")
         }
         .padding(.horizontal, DesignTokens.Spacing.xl)
         .frame(height: 66)
