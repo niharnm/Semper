@@ -205,7 +205,15 @@ actor SceneCoordinator {
     /// Discards the pending journal without restoring anything. This is the
     /// explicit "accept current state" escape hatch; it must come from a
     /// deliberate user decision, never from automatic cleanup.
-    func abandonPendingTransaction(expectedTransactionID: UUID? = nil) throws {
+    func abandonPendingTransaction() throws {
+        try discardPendingTransaction(expectedTransactionID: nil)
+    }
+
+    func abandonPendingTransaction(expectedTransactionID: UUID) throws {
+        try discardPendingTransaction(expectedTransactionID: expectedTransactionID)
+    }
+
+    private func discardPendingTransaction(expectedTransactionID: UUID?) throws {
         guard !operationInProgress else { throw SceneRestoreError.operationInProgress }
         try Task.checkCancellation()
         if let expectedTransactionID {
@@ -817,7 +825,15 @@ actor SceneCoordinator {
     /// transaction is pending. This is also the recovery path after a crash:
     /// `pending` entries are reported untouched and `inFlight` entries are
     /// resolved against snapshot and target.
-    func restore(expectedTransactionID: UUID? = nil) async throws -> SceneRestoreReport? {
+    func restore() async throws -> SceneRestoreReport? {
+        try await restoreTransaction(expectedTransactionID: nil)
+    }
+
+    func restore(expectedTransactionID: UUID) async throws -> SceneRestoreReport? {
+        try await restoreTransaction(expectedTransactionID: expectedTransactionID)
+    }
+
+    private func restoreTransaction(expectedTransactionID: UUID?) async throws -> SceneRestoreReport? {
         guard !operationInProgress else { throw SceneRestoreError.operationInProgress }
         operationInProgress = true
         defer { operationInProgress = false }
