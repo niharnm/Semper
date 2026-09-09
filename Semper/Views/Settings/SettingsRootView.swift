@@ -16,10 +16,12 @@ struct SettingsRootView: View {
     let shortcutsRegistry: ShortcutsRegistry
     @Bindable var sceneManager: SceneManager
     @Bindable var sceneShortcutRegistry: SceneShortcutRegistry
+    @Bindable var awayMode: AwayModeCoordinator
     @ObservedObject var updateManager: UpdateManager
+    @State private var resetError: String?
 
     enum Section: String, Hashable, CaseIterable, Identifiable {
-        case general, audio, scenes, shortcuts, updates, about
+        case general, audio, scenes, away, shortcuts, updates, about
 
         var id: Self { self }
 
@@ -28,6 +30,7 @@ struct SettingsRootView: View {
             case .general: "General"
             case .audio: "Audio"
             case .scenes: "Scenes"
+            case .away: "Away"
             case .shortcuts: "Shortcuts"
             case .updates: "Updates"
             case .about: "About"
@@ -39,6 +42,7 @@ struct SettingsRootView: View {
             case .general: "Choose how Semper starts, looks, and lives in your menu bar"
             case .audio: "Volume, processing, and device behavior"
             case .scenes: "Save and recall audio, display, and Awake settings"
+            case .away: "Privacy curtain, authentication, appearance, and power"
             case .shortcuts: "Media keys, HUD, and global hotkeys"
             case .updates: "Version and automatic update settings"
             case .about: "Version, links, and project information"
@@ -50,6 +54,7 @@ struct SettingsRootView: View {
             case .general: "gearshape"
             case .audio: "speaker.wave.2"
             case .scenes: "circle.grid.2x2"
+            case .away: "eye.slash"
             case .shortcuts: "command"
             case .updates: "arrow.triangle.2.circlepath"
             case .about: "info.circle"
@@ -85,6 +90,17 @@ struct SettingsRootView: View {
         .popupGlassBackground()
         .background(WindowAppearanceBridge(appearance: settings.appSettings.appearance.nsAppearance))
         .background(WindowTitleBridge(title: "\(selection.title) · Semper"))
+        .alert(
+            "Reset Could Not Finish",
+            isPresented: Binding(
+                get: { resetError != nil },
+                set: { if !$0 { resetError = nil } }
+            )
+        ) {
+            Button("OK") { resetError = nil }
+        } message: {
+            Text(resetError ?? "Away Mode data could not be deleted. No settings were reset.")
+        }
     }
 
     private var navigationBar: some View {
@@ -191,10 +207,24 @@ struct SettingsRootView: View {
             GeneralTab(
                 settings: settings,
                 onResetAll: {
-                    callMode.shutdown()
-                    bluetoothHDGuard.shutdown()
-                    audioEngine.handleSettingsReset()
-                    deviceVolumeMonitor.setSystemFollowDefault()
+                    Task { @MainActor in
+                        do {
+                            try await awayMode.resetAwayData()
+                        } catch let error as AwayModeDataError {
+                            resetError = error.message
+                            return
+                        } catch {
+                            resetError = "Away Mode data could not be deleted. No other settings were reset."
+                            return
+                        }
+                        callMode.shutdown()
+                        bluetoothHDGuard.shutdown()
+                        audioEngine.handleSettingsReset()
+                        deviceVolumeMonitor.setSystemFollowDefault()
+                        if !settings.flushSync() {
+                            resetError = "Settings were reset in memory but could not be saved."
+                        }
+                    }
                 }
             )
         case .audio:
@@ -211,6 +241,8 @@ struct SettingsRootView: View {
                 sceneManager: sceneManager,
                 shortcutRegistry: sceneShortcutRegistry
             )
+        case .away:
+            AwayTab(coordinator: awayMode)
         case .shortcuts:
             ShortcutsTab(
                 settings: settings,

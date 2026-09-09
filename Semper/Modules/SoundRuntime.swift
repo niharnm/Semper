@@ -43,7 +43,8 @@ final class SoundRuntime {
 
     init(
         settings: SettingsManager,
-        sharedDDCController: AudioEngine.SharedDDCController? = nil
+        sharedDDCController: AudioEngine.SharedDDCController? = nil,
+        allowsUserInteraction: @escaping @MainActor () -> Bool = { true }
     ) {
         CrashGuard.install()
         let startupCleanup = OrphanedTapCleanup.destroyOrphanedDevices()
@@ -96,7 +97,8 @@ final class SoundRuntime {
         let appShortcutController = AppShortcutController(
             engine: engine,
             commands: commandDispatcher,
-            callMode: callMode
+            callMode: callMode,
+            allowsMutations: allowsUserInteraction
         )
         SemperAppIntentRuntime.install(appShortcutController)
         let bluetoothHDGuard = BluetoothHDGuardCoordinator(
@@ -129,10 +131,11 @@ final class SoundRuntime {
         let popupService = PopupVisibilityService()
         let hud = HUDWindowController(
             settingsManager: settings, mediaKeyStatus: statusService, popupVisibility: popupService)
+        hud.isSuppressed = { !allowsUserInteraction() }
         let feedbackPlayer = VolumeFeedbackPlayer()
 
         hud.volumeWriter = { [weak engine, commandDispatcher] sliderFraction in
-            guard let engine else { return }
+            guard let engine, allowsUserInteraction() else { return }
             let volumeMonitor = engine.deviceVolumeMonitor
             let deviceID = volumeMonitor.defaultDeviceID
             guard deviceID.isValid else { return }
@@ -181,6 +184,7 @@ final class SoundRuntime {
             popupVisibility: popupService,
             mediaKeyStatus: statusService
         )
+        monitor.isInputSuppressed = { !allowsUserInteraction() }
         monitor.feedbackPlayer = feedbackPlayer
 
         let coordinator = MenuBarIconCoordinator(
@@ -214,6 +218,7 @@ final class SoundRuntime {
         monitor.reconcile()
 
         let popupController = MenuBarPopupController()
+        popupController.isPresentationAllowed = allowsUserInteraction
         let resolver = TargetAppResolver(
             ownBundleID: Bundle.main.bundleIdentifier ?? "systems.semper.Semper",
             preferenceProvider: { [settings] in
@@ -230,7 +235,8 @@ final class SoundRuntime {
             resolver: resolver,
             audioEngine: engine,
             audioCommands: commandDispatcher,
-            hud: hud
+            hud: hud,
+            allowsShortcuts: allowsUserInteraction
         )
 
         self.audioEngine = engine

@@ -38,6 +38,7 @@ struct MenuBarPopupView: View {
     var displayService: DisplayControlService? = nil
 
     var awakeService: AwakeService? = nil
+    var awayMode: AwayModeCoordinator? = nil
     var showsModuleSwitcher = true
     var presentation: Presentation = .menuBarPopup
 
@@ -190,6 +191,13 @@ struct MenuBarPopupView: View {
                 }
                 .scrollIndicators(.never)
                 .frame(maxHeight: popupDimensions.maxContentHeight)
+            case .away:
+                if let awayMode {
+                    AwayModuleView(coordinator: awayMode, onOpenSettings: openAwaySettingsWindow)
+                } else {
+                    Text("Open Away in the utility window to set it up.").foregroundStyle(.secondary).padding()
+                }
+                popupFooter
             }
         }
         .frame(width: popupDimensions.width)
@@ -344,7 +352,10 @@ struct MenuBarPopupView: View {
 
     private var moduleSwitcherBar: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            ModuleSwitcher(selection: $selectedModule, isAwakeActive: awakeService?.isActive == true)
+            ModuleSwitcher(
+                selection: $selectedModule,
+                activeModules: activeModules
+            )
 
             Spacer(minLength: 0)
 
@@ -376,6 +387,17 @@ struct MenuBarPopupView: View {
             return "Awake until \(endsAt.formatted(date: .omitted, time: .shortened))"
         }
         return "Awake until turned off"
+    }
+
+    private var activeModules: Set<SemperModule> {
+        var modules: Set<SemperModule> = []
+        if awakeService?.isActive == true {
+            modules.insert(.awake)
+        }
+        if awayMode?.isGuarding == true {
+            modules.insert(.away)
+        }
+        return modules
     }
 
     private var awakeStatusHintShort: String {
@@ -648,6 +670,11 @@ struct MenuBarPopupView: View {
         NSApp.keyWindow?.resignKey()
         NSApp.activate(ignoringOtherApps: true)
         openSettings()
+    }
+
+    private func openAwaySettingsWindow() {
+        UserDefaults.standard.set("away", forKey: "settings.selectedSection")
+        openSettingsWindow()
     }
 
     @discardableResult

@@ -14,6 +14,16 @@ struct MenuBarPopupControllerTests {
         controller.toggle()  // must not crash; logs a debug message and returns
     }
 
+    @Test("toggle is blocked while Away Mode covers the displays")
+    func presentationGate() {
+        let controller = MenuBarPopupController(
+            accessibilityTitle: "SemperTest-NoSuchItem-\(UUID().uuidString)"
+        )
+        controller.isPresentationAllowed = { false }
+
+        controller.toggle()
+    }
+
     @Test("findStatusItem returns nil when no matching status item exists")
     func findReturnsNilWhenNoMatch() {
         let controller = MenuBarPopupController(accessibilityTitle: "SemperTest-NoSuchItem-\(UUID().uuidString)")

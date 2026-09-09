@@ -9,6 +9,16 @@ enum UtilityStopReason: Sendable {
 struct UtilityServiceBinding {
     let start: () async throws -> Void
     let stop: (UtilityStopReason) async throws -> Void
+    let validateStop: (UtilityStopReason) throws -> Void
+
+    init(
+        start: @escaping () async throws -> Void, stop: @escaping (UtilityStopReason) async throws -> Void,
+        validateStop: @escaping (UtilityStopReason) throws -> Void = { _ in }
+    ) {
+        self.start = start
+        self.stop = stop
+        self.validateStop = validateStop
+    }
 }
 
 enum UtilityLifecycleError: LocalizedError {
@@ -125,6 +135,7 @@ final class UtilityLifecycle {
     private func stop(_ id: UtilityModuleID, reason: UtilityStopReason) async throws {
         guard !isShuttingDown else { throw UtilityLifecycleError.shuttingDown }
         guard !stopping.contains(id) else { throw ModuleRegistryError.transitionInProgress(id) }
+        try bindings[id]?.validateStop(reason)
         if reason == .pause { try registry.beginPause(id) } else { try registry.beginRemoval(id) }
         stopping.insert(id)
         let startup = starting[id]
@@ -170,7 +181,7 @@ final class UtilityLifecycle {
             for task in stops { _ = await task.result }
             // Composed sessions restore before their underlying services stop.
             let order: [UtilityModuleID] = [
-                .presentation, .away, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake,
+                .away, .presentation, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake,
             ]
             var retainedServices: [UtilityModuleID: String] = [:]
             for id in order {

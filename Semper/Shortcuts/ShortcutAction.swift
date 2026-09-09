@@ -9,16 +9,20 @@ import KeyboardShortcuts
 /// in `AppSettings.customShortcuts` and must be stable across releases.
 enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     case togglePopup
+    case toggleAwayMode
     case targetAppVolumeUp = "frontmostAppVolumeUp"
     case targetAppVolumeDown = "frontmostAppVolumeDown"
     case targetAppMuteToggle = "frontmostAppMuteToggle"
     case restoreWorkspace
 
-    static var soundActions: [Self] { allCases.filter { $0 != .restoreWorkspace } }
+    static var soundActions: [Self] { allCases.filter { !shellActions.contains($0) } }
+
+    static let shellActions: [Self] = [.restoreWorkspace, .toggleAwayMode]
 
     var displayName: String {
         switch self {
         case .togglePopup: "Toggle Semper Popup"
+        case .toggleAwayMode: "Away Mode"
         case .targetAppVolumeUp: "App Volume Up"
         case .targetAppVolumeDown: "App Volume Down"
         case .targetAppMuteToggle: "App Mute"
@@ -32,7 +36,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     var supportsRepeat: Bool {
         switch self {
         case .targetAppVolumeUp, .targetAppVolumeDown: true
-        case .togglePopup, .targetAppMuteToggle, .restoreWorkspace: false
+        case .togglePopup, .toggleAwayMode, .targetAppMuteToggle, .restoreWorkspace: false
         }
     }
 
@@ -40,6 +44,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     var keyboardShortcutName: KeyboardShortcuts.Name {
         switch self {
         case .togglePopup: KeyboardShortcuts.Name("toggle-popup")
+        case .toggleAwayMode: KeyboardShortcuts.Name("toggle-away-mode")
         case .targetAppVolumeUp: KeyboardShortcuts.Name("frontmost-app-volume-up")
         case .targetAppVolumeDown: KeyboardShortcuts.Name("frontmost-app-volume-down")
         case .targetAppMuteToggle: KeyboardShortcuts.Name("frontmost-app-mute-toggle")

@@ -31,6 +31,45 @@ struct ShortcutsRegistryTests {
         #expect(recorder.toggleCount == 1)
     }
 
+    @Test("Sound does not dispatch the shell-owned Away shortcut")
+    func dispatchAwayMode() {
+        let handler = RecordingAwayShortcutHandler()
+        let registry = makeRegistry(awayHandler: handler)
+
+        #expect(!registry.dispatch(.toggleAwayMode))
+
+        #expect(handler.callCount == 0)
+    }
+
+    @Test("Guarded Away mode suppresses ordinary shortcuts")
+    func guardedAwaySuppressesOrdinaryShortcuts() {
+        let popup = RecordingPopupController()
+        let handler = RecordingAwayShortcutHandler()
+        handler.blocksOrdinaryShortcuts = true
+        let registry = makeRegistry(popupController: popup, awayHandler: handler)
+
+        registry.dispatch(.togglePopup)
+        registry.dispatch(.toggleAwayMode)
+
+        #expect(popup.toggleCount == 0)
+        #expect(handler.callCount == 0)
+    }
+
+    @Test("Sound suppression reads the current owner at dispatch time")
+    func dynamicSuppression() {
+        let popup = RecordingPopupController()
+        let handler = RecordingAwayShortcutHandler()
+        handler.blocksOrdinaryShortcuts = true
+        let registry = makeRegistry(
+            popupController: popup, allowsShortcuts: { !handler.blocksOrdinaryShortcuts })
+        #expect(!registry.dispatch(.togglePopup))
+        handler.blocksOrdinaryShortcuts = false
+        #expect(registry.dispatch(.togglePopup))
+        handler.blocksOrdinaryShortcuts = true
+        #expect(!registry.dispatch(.togglePopup))
+        #expect(popup.toggleCount == 1)
+    }
+
     @Test("dispatch(.targetAppVolumeUp) raises volume on the matched app")
     func dispatchFrontmostVolumeUpHappyPath() {
         let app = makeAudioApp(id: 1, bundleID: "com.test.app")
@@ -258,12 +297,14 @@ struct ShortcutsRegistryTests {
         #expect(ShortcutAction.targetAppVolumeDown.supportsRepeat == true)
         #expect(ShortcutAction.targetAppMuteToggle.supportsRepeat == false)
         #expect(ShortcutAction.togglePopup.supportsRepeat == false)
+        #expect(ShortcutAction.toggleAwayMode.supportsRepeat == false)
     }
 
     @Test("name(for: .togglePopup) is the stable persistence identifier")
     func nameStable() {
         let registry = makeRegistry()
         #expect(registry.name(for: .togglePopup).rawValue == "toggle-popup")
+        #expect(registry.name(for: .toggleAwayMode).rawValue == "toggle-away-mode")
         #expect(registry.name(for: .targetAppVolumeUp).rawValue == "frontmost-app-volume-up")
         #expect(registry.name(for: .targetAppVolumeDown).rawValue == "frontmost-app-volume-down")
         #expect(registry.name(for: .targetAppMuteToggle).rawValue == "frontmost-app-mute-toggle")
@@ -522,7 +563,9 @@ struct ShortcutsRegistryTests {
         resolver: (any TargetAppResolving)? = nil,
         audioEngine: (any AudioEngineDispatching)? = nil,
         audioCommands: (any AudioCommandDispatching)? = nil,
-        hud: (any PerAppHUDPresenting)? = nil
+        hud: (any PerAppHUDPresenting)? = nil,
+        awayHandler: (any AwayShortcutHandling)? = nil,
+        allowsShortcuts: @escaping @MainActor () -> Bool = { true }
     ) -> ShortcutsRegistry {
         let resolvedEngine = audioEngine ?? RecordingAudioEngine(apps: [])
         let resolvedCommands: any AudioCommandDispatching
@@ -556,7 +599,8 @@ struct ShortcutsRegistryTests {
             resolver: resolver ?? StubTargetResolver(target: nil),
             audioEngine: resolvedEngine,
             audioCommands: resolvedCommands,
-            hud: hud ?? RecordingHUDController()
+            hud: hud ?? RecordingHUDController(),
+            awayHandler: awayHandler, allowsShortcuts: allowsShortcuts
         )
     }
 
@@ -582,6 +626,16 @@ struct ShortcutsRegistryTests {
 final class RecordingPopupController: MenuBarPopupControlling {
     var toggleCount = 0
     func toggle() { toggleCount += 1 }
+}
+
+@MainActor
+final class RecordingAwayShortcutHandler: AwayShortcutHandling {
+    var blocksOrdinaryShortcuts = false
+    var callCount = 0
+
+    func handleAwayShortcut() {
+        callCount += 1
+    }
 }
 
 @MainActor

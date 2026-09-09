@@ -25,6 +25,68 @@ struct UtilityLifecycleTests {
         }
     }
 
+    @Test(
+        "Stop admission rejects guarded Away before changing module metadata",
+        arguments: [UtilityStopReason.pause, .removal])
+    func guardedStopPreflight(reason: UtilityStopReason) async throws {
+        try await withLifecycle { registry, lifecycle in
+            try registry.add(.away)
+            var guarded = true
+            var stops = 0
+            try lifecycle.register(
+                .away,
+                binding: .init(
+                    start: {}, stop: { _ in stops += 1 },
+                    validateStop: { _ in
+                        if guarded { throw LifecycleTestError.stop }
+                    }))
+            try await lifecycle.start(.away)
+            let before = registry.state(for: .away)
+            await #expect(throws: LifecycleTestError.stop) {
+                if reason == .pause { try await lifecycle.pause(.away) } else { try await lifecycle.remove(.away) }
+            }
+            #expect(registry.state(for: .away) == before)
+            #expect(!registry.pausedModuleIDs.contains(.away))
+            #expect(lifecycle.stopping.isEmpty)
+            #expect(lifecycle.failures.isEmpty)
+            #expect(stops == 0)
+            guarded = false
+            try await lifecycle.pause(.away)
+            #expect(stops == 1)
+        }
+    }
+
+    @Test("Shutdown releases Away admission before Presentation restoration")
+    func awayReleasesBeforePresentationRestore() async throws {
+        try await withLifecycle { _, lifecycle in
+            let gate = MutationAdmissionGate()
+            let awayPermit = try gate.acquire(owner: .awayMode, mode: .exclusive)
+            var events: [String] = []
+            try lifecycle.register(
+                .away,
+                binding: .init(
+                    start: {},
+                    stop: { _ in
+                        #expect(gate.release(awayPermit))
+                        events.append("Away released")
+                    }))
+            try lifecycle.register(
+                .presentation,
+                binding: .init(
+                    start: {},
+                    stop: { _ in
+                        let restorePermit = try gate.acquire(owner: .scene, mode: .shared)
+                        defer { gate.release(restorePermit) }
+                        events.append("Scene restored")
+                    }))
+            await lifecycle.shutdown()
+            #expect(events == ["Away released", "Scene restored"])
+            #expect(lifecycle.failures.isEmpty)
+            #expect(gate.activeExclusiveOwner == nil)
+            #expect(gate.activeSharedPermitCount == 0)
+        }
+    }
+
     @Test("Concurrent callers share startup and do not return before ready")
     func concurrentStarts() async throws {
         try await withLifecycle { registry, lifecycle in
@@ -437,7 +499,7 @@ struct UtilityLifecycleTests {
             await first.value
             await second.value
             await lifecycle.shutdown()
-            #expect(order == [.presentation, .away, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake])
+            #expect(order == [.away, .presentation, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake])
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.start(.awake) }
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.pause(.awake) }
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.remove(.awake) }

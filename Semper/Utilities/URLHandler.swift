@@ -25,17 +25,20 @@ final class URLHandler {
     private let audioCommands: any AudioCommandDispatching
     private let sceneCommands: (any SceneCommandHandling)?
     private let checkForUpdates: () -> Void
+    private let allowsMutations: @MainActor () -> Bool
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "URLHandler")
 
     init(
         audioEngine: any URLHandlerEngine,
         audioCommands: any AudioCommandDispatching,
         sceneCommands: (any SceneCommandHandling)? = nil,
+        allowsMutations: @escaping @MainActor () -> Bool = { true },
         checkForUpdates: @escaping () -> Void = {}
     ) {
         self.audioEngine = audioEngine
         self.audioCommands = audioCommands
         self.sceneCommands = sceneCommands
+        self.allowsMutations = allowsMutations
         self.checkForUpdates = checkForUpdates
     }
     
@@ -50,6 +53,11 @@ final class URLHandler {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let host = components?.host
         let queryItems = components?.queryItems ?? []
+
+        if Self.mutationHosts.contains(host), !allowsMutations() {
+            logger.notice("Ignored URL mutation while Away Mode is active")
+            return
+        }
       
         switch host {
         // Volume actions
@@ -424,4 +432,15 @@ final class URLHandler {
         default: return nil
         }
     }
+
+    private static let mutationHosts: Set<String?> = [
+        "set-volumes",
+        "step-volume",
+        "set-mute",
+        "toggle-mute",
+        "set-device",
+        "apply-scene",
+        "restore-scene",
+        "reset",
+    ]
 }

@@ -1,6 +1,28 @@
 extension UtilityModuleDescriptor {
     static let integratedCatalog: [Self] = catalog.map { descriptor in
         switch descriptor.id {
+        case .away:
+            return .init(
+                id: .away, title: descriptor.title, summary: descriptor.summary,
+                symbolName: descriptor.symbolName,
+                disclosure: .init(
+                    permissionReasons: [
+                        .init(name: "Accessibility", reason: "Filters ordinary input while the curtain is active."),
+                        .init(
+                            name: "Input Monitoring", reason: "May also be required if macOS denies the input filter."),
+                        .init(
+                            name: "Mac authentication",
+                            reason: "Authorizes exit when selected, PIN changes, and Reset All Settings."),
+                    ],
+                    runningBackgroundPolicy:
+                        "An active session covers connected displays, filters input, and holds its own Awake request. Session timers and display changes are observed while needed.",
+                    localDataPolicy:
+                        "Appearance settings and managed photos stay on this Mac. A salted PIN verifier is kept in the device-only Keychain. Removing Away keeps this data; Reset All Settings deletes it after authentication.",
+                    conflicts: ["Other utility changes wait while Away is guarded or finishing cleanup."],
+                    hardwareRequirements: [
+                        "Away is a privacy curtain, not the macOS Lock Screen. Its awake request does not prevent lid-close sleep or manual Sleep."
+                    ]
+                ))
         case .displays:
             return .init(
                 id: .displays, title: descriptor.title, summary: descriptor.summary,

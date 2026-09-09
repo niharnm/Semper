@@ -232,7 +232,9 @@ struct UtilityShellView: View {
 
     @ViewBuilder
     private func module(_ id: UtilityModuleID) -> some View {
-        if id == .presentation, let controller = runtime.presentation, controller.phase == .recoveryRequired {
+        if id == .away, runtime.awayCleanupResult != nil, runtime.awayCleanupResult != .complete {
+            AwayCleanupView(runtime: runtime)
+        } else if id == .presentation, let controller = runtime.presentation, controller.phase == .recoveryRequired {
             PresentationView(runtime: runtime, controller: controller)
         } else if id == .scenes, let scenes = runtime.scenes, scenes.hasPendingRestore,
             runtime.presentation?.reservation == nil,
@@ -270,6 +272,16 @@ struct UtilityShellView: View {
                 }
             case .awake:
                 if let awake = runtime.awake { AwakeModuleView(awake: awake) } else { startModule(id) }
+            case .away:
+                if let away = runtime.usableAway {
+                    AwayModuleView(coordinator: away) {
+                        runtime.requestAwaySettings()
+                        openSettings()
+                    }
+                    .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
             case .workspace:
                 if let workspace = runtime.workspace {
                     VStack(alignment: .leading, spacing: 0) {
@@ -331,8 +343,6 @@ struct UtilityShellView: View {
                 } else {
                     startModule(id)
                 }
-            default:
-                startModule(id)
             }
         }
     }
@@ -360,16 +370,24 @@ struct UtilityShellView: View {
 
 struct UtilitySettingsView: View {
     @Bindable var runtime: UtilityRuntime
+    @State private var resetInProgress = false
+    @State private var resetError: String?
 
     var body: some View {
-        TabView {
-            GeneralTab(settings: runtime.settings, onResetAll: runtime.resetSoundSettings)
+        TabView(selection: $runtime.settingsTab) {
+            GeneralTab(settings: runtime.settings, onResetAll: resetAllSettings)
+                .disabled(resetInProgress || runtime.lifecycle.isShuttingDown || runtime.mutationDisabledReason != nil)
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(UtilitySettingsTab.general)
             ModuleLibraryView(
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
                 pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason
             )
             .tabItem { Label("Modules", systemImage: "square.grid.2x2") }
+            .tag(UtilitySettingsTab.modules)
+            awaySettings
+                .tabItem { Label("Away", systemImage: "eye.slash.fill") }
+                .tag(UtilitySettingsTab.away)
             VStack(alignment: .leading, spacing: 16) {
                 Text("Search Semper actions").font(.headline)
                 KeyboardShortcuts.Recorder(
@@ -380,6 +398,13 @@ struct UtilitySettingsView: View {
                 Text("Opens Workspace Restore preparation. Preview and Restore remain separate actions.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let conflict = runtime.workspaceShortcutConflict {
+                    Text(conflict).font(.caption).foregroundStyle(.orange)
+                }
+                KeyboardShortcuts.Recorder(
+                    "Away Mode", name: UtilityRuntime.awayShortcut, onChange: runtime.recordAwayShortcut)
+                Text("Starts the countdown or requests authentication to leave Away.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let conflict = runtime.awayShortcutConflict {
                     Text(conflict).font(.caption).foregroundStyle(.orange)
                 }
                 if let sound = runtime.usableSound {
@@ -393,36 +418,127 @@ struct UtilitySettingsView: View {
                         Text(reason).foregroundStyle(.orange)
                     }
                 }
-            }.padding(24).tabItem { Label("Shortcuts", systemImage: "command") }
+            }
+            .padding(24)
+            .disabled(runtime.lifecycle.isShuttingDown || runtime.mutationDisabledReason != nil)
+            .tabItem { Label("Shortcuts", systemImage: "command") }
+            .tag(UtilitySettingsTab.shortcuts)
             if let sound = runtime.usableSound {
                 AudioTab(
                     settings: runtime.settings, audioEngine: sound.audioEngine, audioCommands: sound.audioCommands,
                     callMode: sound.callMode, bluetoothHDGuard: sound.bluetoothHDGuard,
                     deviceVolumeMonitor: sound.deviceVolumeMonitor
                 )
+                .disabled(runtime.lifecycle.isShuttingDown || runtime.mutationDisabledReason != nil)
                 .tabItem { Label("Sound", systemImage: "speaker.wave.2") }
+                .tag(UtilitySettingsTab.sound)
             } else if case .failed(let reason) = runtime.registry.state(for: .sound)?.runtime {
                 ContentUnavailableView(
                     "Sound needs attention", systemImage: "exclamationmark.triangle",
                     description: Text(reason)
                 )
                 .tabItem { Label("Sound", systemImage: "speaker.wave.2") }
+                .tag(UtilitySettingsTab.sound)
             }
             if runtime.registry.state(for: .scenes)?.presence == .added,
                 !runtime.registry.pausedModuleIDs.contains(.scenes),
                 let scenes = runtime.scenes, let shortcuts = runtime.sceneShortcuts
             {
                 ScenesTab(sceneManager: scenes, shortcutRegistry: shortcuts)
-                    .disabled(runtime.lifecycle.stopping.contains(.scenes) || runtime.lifecycle.isShuttingDown)
+                    .disabled(
+                        runtime.lifecycle.stopping.contains(.scenes) || runtime.lifecycle.isShuttingDown
+                            || runtime.mutationDisabledReason != nil
+                    )
                     .tabItem { Label("Scenes", systemImage: "square.stack.3d.up") }
+                    .tag(UtilitySettingsTab.scenes)
             }
-            UpdatesTab(updateManager: runtime.updateManager).tabItem {
-                Label("Updates", systemImage: "arrow.triangle.2.circlepath")
-            }
-            AboutTab().tabItem { Label("About", systemImage: "info.circle") }
+            UpdatesTab(updateManager: runtime.updateManager)
+                .disabled(runtime.lifecycle.isShuttingDown || runtime.mutationDisabledReason != nil)
+                .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+                .tag(UtilitySettingsTab.updates)
+            AboutTab()
+                .tabItem { Label("About", systemImage: "info.circle") }
+                .tag(UtilitySettingsTab.about)
         }
         .frame(width: 860, height: 620)
-        .disabled(runtime.mutationDisabledReason != nil)
         .preferredColorScheme(runtime.settings.appSettings.appearance.swiftUIColorScheme)
+        .alert(
+            "Reset Could Not Finish",
+            isPresented: Binding(get: { resetError != nil }, set: { if !$0 { resetError = nil } })
+        ) {
+            Button("OK") { resetError = nil }
+        } message: {
+            if let resetError { Text(resetError) }
+        }
+    }
+
+    @ViewBuilder
+    private var awaySettings: some View {
+        if runtime.awayCleanupResult != nil, runtime.awayCleanupResult != .complete {
+            AwayCleanupView(runtime: runtime)
+        } else if let away = runtime.usableAway {
+            AwayTab(coordinator: away)
+                .disabled(
+                    runtime.lifecycle.stopping.contains(.away) || runtime.lifecycle.isShuttingDown
+                        || runtime.mutationDisabledReason != nil)
+        } else {
+            VStack(spacing: 14) {
+                Text("Away settings").font(.title2)
+                if runtime.registry.state(for: .away)?.presence != .added
+                    || runtime.registry.pausedModuleIDs.contains(.away)
+                {
+                    Text("Add or resume Away in Modules to open its settings.").foregroundStyle(.secondary)
+                    Button("Manage Modules") { runtime.settingsTab = .modules }
+                } else {
+                    Text("Open Away to configure its curtain and authentication.").foregroundStyle(.secondary)
+                    Button("Open Away Settings") {
+                        Task {
+                            do { _ = try await runtime.ensureAway() } catch {
+                                runtime.message = error.localizedDescription
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(runtime.lifecycle.isShuttingDown || runtime.mutationDisabledReason != nil)
+                }
+                if let message = runtime.message { Text(message).foregroundStyle(.orange) }
+            }
+            .padding(24)
+        }
+    }
+
+    private func resetAllSettings() {
+        guard !resetInProgress else { return }
+        resetInProgress = true
+        resetError = nil
+        Task {
+            if !(await runtime.resetAllSettings()) { resetError = runtime.message }
+            resetInProgress = false
+        }
+    }
+}
+
+private struct AwayCleanupView: View {
+    @Bindable var runtime: UtilityRuntime
+    @State private var retrying = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Away cleanup needs attention", systemImage: "exclamationmark.triangle")
+                .font(.title2)
+            Text(runtime.lifecycle.failures[.away] ?? "Retry to finish releasing Away resources.")
+                .foregroundStyle(.secondary)
+            Button("Retry Cleanup") {
+                retrying = true
+                Task {
+                    _ = await runtime.retryAwayCleanup()
+                    retrying = false
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(retrying)
+            if retrying { ProgressView().controlSize(.small) }
+        }
+        .padding(24)
     }
 }

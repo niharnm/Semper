@@ -31,7 +31,7 @@ struct GeneralTab: View {
             Button("Reset", role: .destructive) { onResetAll() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This cannot be undone.")
+            Text("This deletes saved volumes, EQ, device routes, the Away Mode PIN, and the managed Away photo. This cannot be undone.")
         }
     }
 
@@ -111,7 +111,7 @@ struct GeneralTab: View {
         SettingsSection("Reset", subtitle: "Back to defaults") {
             SettingsRow(
                 "Reset Semper",
-                description: "Clear saved volumes, EQ, and device routes"
+                description: "Clear saved settings, the Away PIN, and its managed photo"
             ) {
                 Button(role: .destructive) {
                     showResetConfirmation = true

@@ -16,6 +16,7 @@ extension SceneManager: SceneShortcutManaging {}
 final class SceneShortcutRegistry {
     private let settings: SettingsManager
     private let sceneManager: any SceneShortcutManaging
+    private let allowsShortcuts: () -> Bool
     private var registeredSceneIDs = Set<UUID>()
     private var didStart = false
     private var isShutDown = false
@@ -24,9 +25,14 @@ final class SceneShortcutRegistry {
     private(set) var conflicts: [UUID: String] = [:]
     private(set) var persistenceErrors: [UUID: String] = [:]
 
-    init(settings: SettingsManager, sceneManager: any SceneShortcutManaging) {
+    init(
+        settings: SettingsManager,
+        sceneManager: any SceneShortcutManaging,
+        allowsShortcuts: @escaping () -> Bool = { true }
+    ) {
         self.settings = settings
         self.sceneManager = sceneManager
+        self.allowsShortcuts = allowsShortcuts
     }
 
     func name(for sceneID: UUID) -> KeyboardShortcuts.Name {
@@ -108,12 +114,13 @@ final class SceneShortcutRegistry {
     }
 
     private func beginShortcut(for sceneID: UUID) -> Task<Void, Never>? {
-        guard !isShutDown, !Task.isCancelled else { return nil }
+        guard !isShutDown, !Task.isCancelled, allowsShortcuts() else { return nil }
         let id = UUID()
         let task = Task { @MainActor in
             defer { self.tasks[id] = nil }
             do {
                 try Task.checkCancellation()
+                guard self.allowsShortcuts() else { return }
                 _ = try await self.sceneManager.applyScene(id: sceneID)
             } catch {
                 if !self.isShutDown { self.sceneManager.reportSceneCommandFailure(error.localizedDescription) }

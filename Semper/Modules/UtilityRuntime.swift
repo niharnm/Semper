@@ -2,15 +2,24 @@ import AppKit
 import Foundation
 import KeyboardShortcuts
 import Observation
+import SwiftUI
 
 enum UtilityDestination: Hashable {
     case home, modules
     case module(UtilityModuleID)
 }
 
+enum UtilitySettingsTab: Hashable {
+    case general, modules, shortcuts, away, sound, scenes, updates, about
+}
+
 @Observable
 @MainActor
 final class UtilityRuntime {
+    typealias AwayFactory =
+        @MainActor (
+            SettingsManager, MutationAdmissionGate, @escaping AwayModeCoordinator.AwakeServiceProvider
+        ) throws -> AwayModeCoordinator
     let settings: SettingsManager
     let registry: ModuleRegistry
     let lifecycle: UtilityLifecycle
@@ -29,13 +38,21 @@ final class UtilityRuntime {
     private(set) var displays: DisplayControlService?
     private(set) var sceneShortcuts: SceneShortcutRegistry?
     private(set) var presentation: PresentationController?
+    private(set) var away: AwayModeCoordinator?
+    private(set) var awayCleanupResult: AwayModeCleanupResult?
+    private(set) var awayShortcutConflict: String?
+    var onAuthenticatedAwayQuit: (() -> Void)?
+    var onWillGuardAway: (() -> Void)?
+    var settingsTab: UtilitySettingsTab = .general
     var destination: UtilityDestination = .home
     var searchText = ""
     private(set) var searchFocusRequest = UUID()
     var onOpenDetail: (() -> Void)?
     var message: String?
     @ObservationIgnored private let soundFactory:
-        @MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime
+        (@MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime)?
+    @ObservationIgnored private let awayFactory: AwayFactory?
+    @ObservationIgnored private var isResettingSettings = false
     @ObservationIgnored private let displayFactory:
         @MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService
     @ObservationIgnored private let awakeFactory: @MainActor () throws -> AwakeService
@@ -56,10 +73,10 @@ final class UtilityRuntime {
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var stoppingModules: Set<UtilityModuleID> = []
     @ObservationIgnored private var shortcutsStarted = false
-    @ObservationIgnored private var workspaceShortcutRegistered = false
-    @ObservationIgnored private var workspaceShortcutGeneration = UUID()
+    @ObservationIgnored private var shellShortcutRegistrations: [ShortcutAction: UUID] = [:]
     @ObservationIgnored private var shortcutObservationGeneration = UUID()
-    @ObservationIgnored private var workspaceShortcutTasks: [UUID: Task<UtilityCommandResult, Never>] = [:]
+    @ObservationIgnored private var shellShortcutTasks:
+        [UUID: (action: ShortcutAction, task: Task<UtilityCommandResult, Never>)] = [:]
     @ObservationIgnored private let shellIcon: MenuBarIconCoordinator
     #if !APP_STORE
         private let ddc: DDCController
@@ -67,6 +84,30 @@ final class UtilityRuntime {
 
     static let searchShortcut = ShortcutAction.searchShortcut
     static let workspaceRestoreShortcut = ShortcutAction.restoreWorkspace.keyboardShortcutName
+    static let awayShortcut = ShortcutAction.toggleAwayMode.keyboardShortcutName
+
+    var usableAway: AwayModeCoordinator? {
+        guard awayCleanupResult == nil, isModuleUsable(.away) else { return nil }
+        return away
+    }
+
+    func requestAwaySettings() { settingsTab = .away }
+
+    func ensureAway() async throws -> AwayModeCoordinator {
+        try await start(.away)
+        guard let away = usableAway else { throw UtilityLifecycleError.unavailable("Away is unavailable.") }
+        return away
+    }
+
+    func retryAwayCleanup() async -> Bool {
+        guard awayCleanupResult != nil else { return true }
+        if shutdownRequested {
+            await shutdown()
+        } else {
+            do { try await pause(.away) } catch { message = error.localizedDescription; return false }
+        }
+        return awayCleanupResult == nil && away == nil
+    }
 
     var usableSound: SoundRuntime? {
         guard let sound, !sound.isShutDown,
@@ -101,10 +142,7 @@ final class UtilityRuntime {
         settings: SettingsManager = SettingsManager(managesLaunchAtLogin: true),
         defaults: UserDefaults = .standard,
         updateManager: UpdateManager? = nil,
-        soundFactory: @escaping @MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime =
-            {
-                SoundRuntime(settings: $0, sharedDDCController: $1)
-            },
+        soundFactory: (@MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime)? = nil,
         awakeFactory: (@MainActor () throws -> AwakeService)? = nil,
         workspaceFactory: @escaping @MainActor () throws -> WorkspaceService = { WorkspaceService() },
         shelfFactory: @escaping @MainActor () throws -> ShelfService = { ShelfService() },
@@ -112,10 +150,13 @@ final class UtilityRuntime {
         sceneLibraryStore: (any SceneLibraryStoring)? = nil,
         sceneJournalStore: (any SceneJournalStoring)? = nil,
         displayFactory:
-            (@MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService)? = nil
+            (@MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService)? =
+            nil,
+        awayFactory: AwayFactory? = nil
     ) throws {
         self.settings = settings
         self.soundFactory = soundFactory
+        self.awayFactory = awayFactory
         self.displayFactory = displayFactory ?? { controller, admission in
             #if APP_STORE
                 return DisplayControlService()
@@ -158,6 +199,7 @@ final class UtilityRuntime {
         try installServices()
         try installActions()
         registry.finishActionRegistration()
+        self.updateManager.shouldDeferRelaunch = { [weak self] in self?.away?.isGuarding == true }
     }
 
     func startShellShortcuts() {
@@ -165,42 +207,56 @@ final class UtilityRuntime {
         shortcutsStarted = true
         if sound == nil { shellIcon.start() }
         KeyboardShortcuts.onKeyDown(for: Self.searchShortcut) { [weak self] in
-            guard let self, !self.shutdownRequested, self.shortcutsStarted else { return }
+            guard let self, !self.shutdownRequested, self.shortcutsStarted, self.away?.blocksOrdinaryShortcuts != true
+            else { return }
             self.requestSearchFocus()
             self.onOpenDetail?()
         }
-        observeWorkspaceShortcut()
+        observeShellShortcuts()
     }
 
     func recordSearchShortcut(_: KeyboardShortcuts.Shortcut?) {
         guard !shutdownRequested else { return }
         sound?.shortcutsRegistry.syncRegistrations()
-        syncWorkspaceShortcut()
+        syncShellShortcuts()
         sceneShortcuts?.sync()
         if shortcutsStarted { KeyboardShortcuts.enable(Self.searchShortcut) }
     }
 
     func recordWorkspaceRestoreShortcut(_ shortcut: KeyboardShortcuts.Shortcut?) {
+        recordShellShortcut(shortcut, action: .restoreWorkspace)
+    }
+
+    func recordAwayShortcut(_ shortcut: KeyboardShortcuts.Shortcut?) {
+        recordShellShortcut(shortcut, action: .toggleAwayMode)
+    }
+
+    private func recordShellShortcut(_ shortcut: KeyboardShortcuts.Shortcut?, action: ShortcutAction) {
         guard !shutdownRequested else { return }
-        let action = ShortcutAction.restoreWorkspace
         let recorded = shortcut.map(ShortcutCodable.from)
-        let conflict = recorded.flatMap { workspaceShortcutConflictDescription(for: $0, checkingScenes: true) }
-        if let conflict {
-            syncWorkspaceShortcut()
-            workspaceShortcutConflict = conflict
+        if let conflict = recorded.flatMap({ shellShortcutConflict(for: action, shortcut: $0, recording: true) }) {
+            syncShellShortcuts()
+            setShellShortcutConflict(conflict, action: action)
             return
         }
         settings.appSettings.customShortcuts[action.rawValue] = recorded
-        syncWorkspaceShortcut()
+        syncShellShortcuts()
         sceneShortcuts?.sync()
     }
 
-    private func workspaceShortcutConflictDescription(for shortcut: ShortcutCodable, checkingScenes: Bool) -> String? {
+    private func shellShortcutConflict(for action: ShortcutAction, shortcut: ShortcutCodable, recording: Bool)
+        -> String?
+    {
         if ShortcutAction.conflictsWithSearch(shortcut) { return "Already used by Search Semper." }
-        if let action = ShortcutAction.restoreWorkspace.conflictingAction(with: shortcut, settings: settings) {
-            return "Already used by \(action.displayName)."
+        let candidates =
+            recording
+            ? ShortcutAction.allCases
+            : ShortcutAction.soundActions
+                + (action == .toggleAwayMode ? [.restoreWorkspace] : [])
+        if let owner = candidates.first(where: { $0 != action && $0.assignedShortcut(in: settings) == shortcut }) {
+            return "Already used by \(owner.displayName)."
         }
-        if checkingScenes,
+        if recording,
             let scene = scenes?.scenes.first(where: {
                 $0.shortcut == SceneShortcut(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
             })
@@ -210,19 +266,27 @@ final class UtilityRuntime {
         return nil
     }
 
-    private var workspaceShortcutAvailable: Bool {
-        shortcutsStarted && !shutdownRequested && !stoppingModules.contains(.workspace)
-            && registry.state(for: .workspace)?.presence == .added
-            && !registry.pausedModuleIDs.contains(.workspace)
-            && registry.state(for: .workspace)?.runtime != .removing
+    private func setShellShortcutConflict(_ conflict: String?, action: ShortcutAction) {
+        if action == .restoreWorkspace { workspaceShortcutConflict = conflict } else { awayShortcutConflict = conflict }
     }
 
-    private func observeWorkspaceShortcut() {
+    private func shellShortcutModule(_ action: ShortcutAction) -> UtilityModuleID {
+        action == .restoreWorkspace ? .workspace : .away
+    }
+
+    private func shellShortcutAvailable(_ action: ShortcutAction) -> Bool {
+        let module = shellShortcutModule(action)
+        return shortcutsStarted && !shutdownRequested && !stoppingModules.contains(module)
+            && !lifecycle.stopping.contains(module) && registry.state(for: module)?.presence == .added
+            && !registry.pausedModuleIDs.contains(module) && registry.state(for: module)?.runtime != .removing
+    }
+
+    private func observeShellShortcuts() {
         guard shortcutsStarted, !shutdownRequested else { return }
         let generation = UUID()
         shortcutObservationGeneration = generation
         withObservationTracking {
-            _ = registry.state(for: .workspace)
+            for action in ShortcutAction.shellActions { _ = registry.state(for: shellShortcutModule(action)) }
             _ = registry.pausedModuleIDs
             _ = settings.appSettings.customShortcuts
         } onChange: { [weak self] in
@@ -230,89 +294,95 @@ final class UtilityRuntime {
                 guard let self, self.shortcutObservationGeneration == generation,
                     self.shortcutsStarted, !self.shutdownRequested
                 else { return }
-                self.observeWorkspaceShortcut()
+                self.observeShellShortcuts()
             }
         }
-        syncWorkspaceShortcut()
+        syncShellShortcuts()
         sceneShortcuts?.sync()
     }
 
-    private func syncWorkspaceShortcut() {
-        let assigned = settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue]
-        workspaceShortcutConflict = assigned.flatMap {
-            workspaceShortcutConflictDescription(for: $0, checkingScenes: false)
-        }
-        let enabled = workspaceShortcutAvailable && workspaceShortcutConflict == nil && assigned != nil
-        let desired = workspaceShortcutConflict == nil ? assigned?.keyboardShortcut : nil
-        guard
-            workspaceShortcutRegistered != enabled
-                || KeyboardShortcuts.getShortcut(for: Self.workspaceRestoreShortcut) != desired
-        else { return }
-        stopWorkspaceShortcut()
-        let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
-        ShortcutAction.preservingOtherRegistrations(
-            excluding: [Self.workspaceRestoreShortcut], additionalNames: sceneNames
-        ) {
-            KeyboardShortcuts.setShortcut(desired, for: Self.workspaceRestoreShortcut)
-            if enabled {
-                workspaceShortcutRegistered = true
-                let generation = workspaceShortcutGeneration
-                KeyboardShortcuts.onKeyDown(for: Self.workspaceRestoreShortcut) { [weak self] in
-                    guard let self, self.workspaceShortcutGeneration == generation else { return }
-                    _ = self.beginWorkspaceRestoreShortcut()
+    private func syncShellShortcuts() {
+        for action in ShortcutAction.shellActions {
+            let name = action.keyboardShortcutName
+            let assigned = settings.appSettings.customShortcuts[action.rawValue]
+            let conflict = assigned.flatMap { shellShortcutConflict(for: action, shortcut: $0, recording: false) }
+            setShellShortcutConflict(conflict, action: action)
+            let enabled = shellShortcutAvailable(action) && conflict == nil && assigned != nil
+            let desired = conflict == nil ? assigned?.keyboardShortcut : nil
+            guard
+                (shellShortcutRegistrations[action] != nil) != enabled
+                    || KeyboardShortcuts.getShortcut(for: name) != desired
+            else { continue }
+            stopShellShortcut(action)
+            let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
+            ShortcutAction.preservingOtherRegistrations(excluding: [name], additionalNames: sceneNames) {
+                KeyboardShortcuts.setShortcut(desired, for: name)
+                if enabled {
+                    let generation = UUID()
+                    shellShortcutRegistrations[action] = generation
+                    KeyboardShortcuts.onKeyDown(for: name) { [weak self] in
+                        guard let self, self.shellShortcutRegistrations[action] == generation else { return }
+                        _ = self.beginShellShortcut(action)
+                    }
+                } else {
+                    KeyboardShortcuts.disable(name)
                 }
-            } else {
-                KeyboardShortcuts.disable(Self.workspaceRestoreShortcut)
             }
         }
     }
 
-    private func stopWorkspaceShortcut() {
-        workspaceShortcutGeneration = UUID()
-        workspaceShortcutRegistered = false
+    private func stopShellShortcut(_ action: ShortcutAction) {
+        shellShortcutRegistrations[action] = nil
         let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
         ShortcutAction.preservingOtherRegistrations(
-            excluding: [Self.workspaceRestoreShortcut], additionalNames: sceneNames
+            excluding: [action.keyboardShortcutName], additionalNames: sceneNames
         ) {
-            KeyboardShortcuts.removeHandler(for: Self.workspaceRestoreShortcut)
+            KeyboardShortcuts.removeHandler(for: action.keyboardShortcutName)
         }
-        for task in workspaceShortcutTasks.values { task.cancel() }
+        for entry in shellShortcutTasks.values where entry.action == action { entry.task.cancel() }
     }
 
-    private func drainWorkspaceShortcut() async {
-        let pending = Array(workspaceShortcutTasks.values)
-        for task in pending { _ = await task.value }
+    private func drainShellShortcuts(for module: UtilityModuleID? = nil) async {
+        let pending = shellShortcutTasks.values.filter { module == nil || shellShortcutModule($0.action) == module }
+        for entry in pending { _ = await entry.task.value }
     }
 
-    private func beginWorkspaceRestoreShortcut() -> Task<UtilityCommandResult, Never>? {
-        guard workspaceShortcutRegistered, workspaceShortcutAvailable,
-            let assigned = settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue],
-            workspaceShortcutConflictDescription(for: assigned, checkingScenes: false) == nil,
-            workspaceShortcutTasks.isEmpty
+    private func beginShellShortcut(_ action: ShortcutAction) -> Task<UtilityCommandResult, Never>? {
+        guard let generation = shellShortcutRegistrations[action], shellShortcutAvailable(action),
+            let assigned = settings.appSettings.customShortcuts[action.rawValue],
+            shellShortcutConflict(for: action, shortcut: assigned, recording: false) == nil,
+            !shellShortcutTasks.values.contains(where: { $0.action == action })
         else { return nil }
         let id = UUID()
-        let generation = workspaceShortcutGeneration
         let task = Task { @MainActor [weak self] in
             guard let self else { return UtilityCommandResult.cancelled }
-            defer { self.workspaceShortcutTasks[id] = nil }
-            guard !Task.isCancelled, self.workspaceShortcutGeneration == generation,
-                self.workspaceShortcutAvailable
+            defer { self.shellShortcutTasks[id] = nil }
+            guard !Task.isCancelled, self.shellShortcutRegistrations[action] == generation,
+                self.shellShortcutAvailable(action)
             else { return .cancelled }
-            let result = await self.commands.execute(.init(rawValue: WorkspaceCommand.restore.rawValue))
-            guard !Task.isCancelled, !self.shutdownRequested else { return .cancelled }
+            let command = action == .restoreWorkspace ? WorkspaceCommand.restore.rawValue : "away.toggle"
+            let result = await self.commands.execute(.init(rawValue: command))
+            guard !self.shutdownRequested else { return .cancelled }
             switch result {
             case .unavailable(let reason), .failed(let reason), .confirmationRequired(let reason): self.message = reason
             case .completed, .accepted, .cancelled: break
             }
             return result
         }
-        workspaceShortcutTasks[id] = task
+        shellShortcutTasks[id] = (action, task)
         return task
     }
 
-    // Shares the registered callback path without synthesizing a system key event.
     func performWorkspaceRestoreShortcut() async -> UtilityCommandResult {
-        guard let task = beginWorkspaceRestoreShortcut() else { return .cancelled }
+        await performShellShortcut(.restoreWorkspace)
+    }
+
+    func performAwayShortcut() async -> UtilityCommandResult {
+        await performShellShortcut(.toggleAwayMode)
+    }
+
+    private func performShellShortcut(_ action: ShortcutAction) async -> UtilityCommandResult {
+        guard let task = beginShellShortcut(action) else { return .cancelled }
         return await withTaskCancellationHandler {
             await task.value
         } onCancel: {
@@ -328,6 +398,46 @@ final class UtilityRuntime {
     func requestSearchFocus() {
         destination = .home
         searchFocusRequest = UUID()
+    }
+
+    func resetAllSettings() async -> Bool {
+        guard !shutdownRequested else {
+            message = "Semper is shutting down. Finish cleanup before resetting settings."
+            return false
+        }
+        guard !isResettingSettings else { return false }
+        isResettingSettings = true
+        defer { isResettingSettings = false }
+        do {
+            let permit = try acquireUtilityPermit(.sound)
+            defer { if let permit { mutationAdmission.release(permit) } }
+            try requirePresentationDependencyCanStop(.sound)
+            try await requireSceneDependencyCanStop(.sound)
+            guard sound == nil || usableSound != nil else {
+                throw UtilityLifecycleError.unavailable("Finish Sound cleanup before resetting settings.")
+            }
+            let coordinator = try createAwayIfNeeded()
+            try await coordinator.resetAwayData()
+            try await requireSceneDependencyCanStop(.sound)
+            try Task.checkCancellation()
+            guard !shutdownRequested, away === coordinator, awayCleanupResult == nil else { throw CancellationError() }
+            try requirePresentationDependencyCanStop(.sound)
+            guard sound == nil || usableSound != nil else {
+                throw UtilityLifecycleError.unavailable("Finish Sound cleanup before resetting settings.")
+            }
+            resetSoundSettings()
+            sound?.shortcutsRegistry.clearAllShortcuts()
+            for action in ShortcutAction.shellActions {
+                settings.appSettings.customShortcuts[action.rawValue] = nil
+            }
+            syncShellShortcuts()
+            sceneShortcuts?.sync()
+            guard settings.flushSync() else { throw AwayModeDataError.persistenceFailed }
+            return true
+        } catch {
+            message = (error as? AwayModeDataError)?.message ?? error.localizedDescription
+            return false
+        }
     }
 
     func resetSoundSettings() {
@@ -415,17 +525,20 @@ final class UtilityRuntime {
 
     func shutdown() async {
         shutdownRequested = true
+        _ = away?.shutdown()
         statusObserver.stopAll()
         shortcutObservationGeneration = UUID()
-        stopWorkspaceShortcut()
-        await drainWorkspaceShortcut()
+        for action in ShortcutAction.shellActions { stopShellShortcut(action) }
+        await drainShellShortcuts()
         SemperAppIntentRuntime.uninstallActivation(owner: self)
         SemperSceneAppIntentRuntime.uninstallActivation(owner: self)
         if let scenes { SemperSceneAppIntentRuntime.uninstall(scenes) }
         sound?.stopUserEntryPoints()
         shellIcon.stop()
         if shortcutsStarted {
-            ShortcutAction.preservingOtherRegistrations(excluding: [Self.searchShortcut, Self.workspaceRestoreShortcut])
+            ShortcutAction.preservingOtherRegistrations(
+                excluding: [Self.searchShortcut] + ShortcutAction.shellActions.map(\.keyboardShortcutName)
+            )
             {
                 KeyboardShortcuts.removeHandler(for: Self.searchShortcut)
             }
@@ -442,6 +555,7 @@ final class UtilityRuntime {
 
     func pause(_ module: UtilityModuleID) async throws {
         guard !shutdownRequested else { throw UtilityLifecycleError.shuttingDown }
+        if module == .away { try validateAwayStop() }
         let permit = try acquireUtilityPermit(module)
         defer { if let permit { mutationAdmission.release(permit) } }
         try requirePresentationDependencyCanStop(module)
@@ -453,18 +567,19 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
-            if module == .workspace { syncWorkspaceShortcut() }
+            if [.workspace, .away].contains(module) { syncShellShortcuts() }
         }
-        if module == .workspace {
-            stopWorkspaceShortcut()
-            await drainWorkspaceShortcut()
+        for action in ShortcutAction.shellActions where shellShortcutModule(action) == module {
+            stopShellShortcut(action)
         }
+        await drainShellShortcuts(for: module)
         await commands.cancelAndDrain(module: module)
         try await lifecycle.pause(module)
     }
 
     func remove(_ module: UtilityModuleID) async throws {
         guard !shutdownRequested else { throw UtilityLifecycleError.shuttingDown }
+        if module == .away { try validateAwayStop() }
         let permit = try acquireUtilityPermit(module)
         defer { if let permit { mutationAdmission.release(permit) } }
         try requirePresentationDependencyCanStop(module)
@@ -477,12 +592,12 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
-            if module == .workspace { syncWorkspaceShortcut() }
+            if [.workspace, .away].contains(module) { syncShellShortcuts() }
         }
-        if module == .workspace {
-            stopWorkspaceShortcut()
-            await drainWorkspaceShortcut()
+        for action in ShortcutAction.shellActions where shellShortcutModule(action) == module {
+            stopShellShortcut(action)
         }
+        await drainShellShortcuts(for: module)
         await commands.cancelAndDrain(module: module)
         try await lifecycle.remove(module)
         if destination == .module(module) { destination = .home }
@@ -490,6 +605,19 @@ final class UtilityRuntime {
 
     func summary(for module: UtilityModuleID) -> String {
         switch module {
+        case .away:
+            if let result = awayCleanupResult { return awayCleanupMessage(result) }
+            guard let away else { return "Open Away to prepare a privacy curtain." }
+            if let reason = away.lastErrorMessage { return reason }
+            switch away.state {
+            case .inactive: return away.preferences.disclosureCompleted ? "Ready to start Away" : "Away setup required"
+            case .countdown(let seconds): return "Starting Away in \(seconds) seconds"
+            case .arming: return "Preparing the privacy curtain"
+            case .guarded: return "Away is active"
+            case .authenticating: return "Waiting for authentication"
+            case .degraded(let reason): return reason
+            case .disarming: return "Ending Away"
+            }
         case .sound:
             guard let sound = usableSound else { return "Open Sound to start audio controls." }
             let output =
@@ -548,12 +676,100 @@ final class UtilityRuntime {
             case .restoring: return "Restoring the previous setup"
             case .recoveryRequired: return "Recovery needs attention"
             }
-        default:
-            return registry.state(for: module)?.runtime.displayText ?? "Stopped"
+        }
+    }
+
+    private func makeSound(sharedDDCController: AudioEngine.SharedDDCController?) throws -> SoundRuntime {
+        if let soundFactory { return try soundFactory(settings, sharedDDCController) }
+        return SoundRuntime(
+            settings: settings, sharedDDCController: sharedDDCController,
+            allowsUserInteraction: { [weak self] in
+                guard let self else { return false }
+                return !self.shutdownRequested && self.away?.blocksOrdinaryShortcuts != true
+            })
+    }
+
+    private func createAwayIfNeeded() throws -> AwayModeCoordinator {
+        guard !shutdownRequested, awayCleanupResult == nil else {
+            throw UtilityLifecycleError.unavailable("Finish Away cleanup before opening Away again.")
+        }
+        if let away { return away }
+        let provider: AwayModeCoordinator.AwakeServiceProvider = { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try self.ensureAwakeService()
+        }
+        let coordinator =
+            try awayFactory?(settings, mutationAdmission, provider)
+            ?? AwayModeCoordinator(
+                settings: settings, awakeServiceProvider: provider, mutationAdmission: mutationAdmission)
+        away = coordinator
+        coordinator.makeCurtainContent = { [weak coordinator] screen, primary in
+            guard let coordinator else { throw AwayWindowFailure.contentCreationFailed }
+            return NSHostingView(
+                rootView: AwayCurtainView(coordinator: coordinator, screen: screen, isPrimary: primary))
+        }
+        coordinator.onWillGuard = { [weak self, weak coordinator] in
+            guard let self, let coordinator, self.away === coordinator, !self.shutdownRequested else { return }
+            self.sound?.menuBarPopupController.dismiss()
+            self.sound?.hudController.hide()
+            self.onWillGuardAway?()
+        }
+        coordinator.onDidDisarm = { [weak self, weak coordinator] in
+            guard let self, let coordinator, self.away === coordinator, !self.shutdownRequested else { return }
+            self.updateManager.resumeDeferredInstallation()
+        }
+        coordinator.onAuthenticatedQuit = { [weak self, weak coordinator] in
+            guard let self, let coordinator, self.away === coordinator, !self.shutdownRequested else { return }
+            self.onAuthenticatedAwayQuit?()
+        }
+        return coordinator
+    }
+
+    private func validateAwayStop() throws {
+        guard away?.isGuarding != true else {
+            throw UtilityLifecycleError.unavailable("Authenticate to exit Away before pausing or removing it.")
+        }
+        _ = away?.shutdown()
+    }
+
+    private func stopAway() async throws {
+        guard let coordinator = away else { return }
+        let result = await coordinator.shutdownAndDrain()
+        guard result == .complete else {
+            awayCleanupResult = result
+            throw UtilityCleanupDeferral(reason: awayCleanupMessage(result), retaining: [.awake])
+        }
+        coordinator.onAuthenticatedQuit = nil
+        coordinator.onWillGuard = nil
+        coordinator.onDidDisarm = nil
+        coordinator.makeCurtainContent = nil
+        away = nil
+        awayCleanupResult = nil
+    }
+
+    private func awayCleanupMessage(_ result: AwayModeCleanupResult) -> String {
+        switch result {
+        case .complete: "Away cleanup finished."
+        case .ownedWorkPending: "Away is still finishing its owned work. Retry cleanup."
+        case .powerAssertionPending: "Away could not release its awake request. Retry cleanup."
+        case .mutationAdmissionPending: "Away could not release its utility reservation. Retry cleanup."
         }
     }
 
     private func installServices() throws {
+        try lifecycle.register(
+            .away,
+            binding: .init(
+                start: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    _ = try self.createAwayIfNeeded()
+                },
+                stop: { [weak self] reason in
+                    guard let self else { return }
+                    if reason != .termination { try self.validateAwayStop() }
+                    try await self.stopAway()
+                },
+                validateStop: { [weak self] _ in try self?.validateAwayStop() }))
         try lifecycle.register(
             .sound,
             binding: UtilityServiceBinding(
@@ -561,9 +777,9 @@ final class UtilityRuntime {
                     guard let self else { throw CancellationError() }
                     self.shellIcon.stop()
                     #if !APP_STORE
-                        self.sound = try self.soundFactory(self.settings, self.ddc)
+                        self.sound = try self.makeSound(sharedDDCController: self.ddc)
                     #else
-                        self.sound = try self.soundFactory(self.settings, nil)
+                        self.sound = try self.makeSound(sharedDDCController: nil)
                     #endif
                     if let sound = self.sound {
                         try sound.audioEngine.installMutationAdmission(self.mutationAdmission)
@@ -575,7 +791,7 @@ final class UtilityRuntime {
                         self.audioSceneAdapter = AudioSceneAdapter(
                             engine: sound.audioEngine, commands: sound.audioCommands)
                         sound.shortcutsRegistry.onShortcutsChanged = { [weak self] in
-                            self?.syncWorkspaceShortcut()
+                            self?.syncShellShortcuts()
                             self?.sceneShortcuts?.sync()
                         }
                     }
@@ -629,6 +845,10 @@ final class UtilityRuntime {
                 },
                 stop: { [weak self] reason in
                     guard let self, let awake = self.awake else { return }
+                    if self.away?.isGuarding == true || self.awayCleanupResult != nil {
+                        throw UtilityCleanupDeferral(
+                            reason: "Finish Away cleanup before stopping Awake.", retaining: [.awake])
+                    }
                     try self.requirePresentationDependencyCanStop(.awake)
                     try await self.requireSceneDependencyCanStop(.awake)
                     if awake.hasPendingAssertionCleanup, !awake.retryPendingAssertionCleanup() {
@@ -718,7 +938,9 @@ final class UtilityRuntime {
                     guard let self else { throw CancellationError() }
                     let manager = try await self.ensureSceneManager()
                     try manager.resume()
-                    let shortcuts = SceneShortcutRegistry(settings: self.settings, sceneManager: manager)
+                    let shortcuts = SceneShortcutRegistry(
+                        settings: self.settings, sceneManager: manager,
+                        allowsShortcuts: { [weak self] in self?.away?.blocksOrdinaryShortcuts != true })
                     self.sceneShortcuts = shortcuts
                     manager.onScenesChanged = { [weak self] in self?.sceneShortcuts?.sync() }
                     shortcuts.start()
@@ -783,6 +1005,22 @@ final class UtilityRuntime {
 
     private func installActions() throws {
         var actions: [UtilityActionHandler] = []
+        actions.append(
+            .init(
+                descriptor: .init(
+                    id: .init(rawValue: "away.toggle"), module: .away, title: "Toggle Away Mode",
+                    keywords: ["curtain", "privacy", "authenticate"], symbolName: "eye.slash.fill"),
+                disabledReason: { [weak self] in
+                    self?.awayCleanupResult.map { self?.awayCleanupMessage($0) ?? "Retry Away cleanup." }
+                },
+                performOutcome: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    let coordinator = try await self.ensureAway()
+                    try Task.checkCancellation()
+                    coordinator.handleAwayShortcut()
+                    if let reason = coordinator.lastErrorMessage { throw UtilityLifecycleError.unavailable(reason) }
+                    return coordinator.state == .inactive ? .completed : .accepted
+                }))
         actions += SoundUtilityActions.handlers(
             start: { [weak self] in
                 guard let self else { throw CancellationError() }
@@ -805,7 +1043,7 @@ final class UtilityRuntime {
                 return sound.audioCommands.dispatch(command, context: context)
             })
         for module in registry.modules
-        where [.sound, .awake, .workspace, .scenes, .displays, .presentation].contains(module.id) {
+        where [.sound, .awake, .workspace, .scenes, .displays, .presentation, .away].contains(module.id) {
             actions.append(
                 UtilityActionHandler(
                     descriptor: .init(
@@ -1179,6 +1417,19 @@ final class UtilityRuntime {
         default: return
         }
         switch module {
+        case .away:
+            guard let away else { return }
+            statusObserver.observe(module: module) {
+                let state: ModuleRuntimeState
+                if let reason = away.lastErrorMessage {
+                    state = .limited(reason: reason)
+                } else if case .degraded(let reason) = away.state {
+                    state = .limited(reason: reason)
+                } else {
+                    state = away.state == .inactive ? .ready : .active
+                }
+                return .init(runtime: state, permission: away.hasEventAccess ? .granted : .notDetermined)
+            }
         case .sound:
             guard let sound else { return }
             var wasGranted =
@@ -1305,7 +1556,6 @@ final class UtilityRuntime {
                 }
                 return .init(runtime: runtime, permission: .notRequired)
             }
-        default: break
         }
     }
 }

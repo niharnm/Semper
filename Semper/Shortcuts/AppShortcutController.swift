@@ -35,6 +35,7 @@ enum AppShortcutExecutionError: LocalizedError, Equatable {
     case undoUnavailable
     case undoStale
     case undoFailed
+    case awayModeActive
 
     var errorDescription: String? {
         switch self {
@@ -62,6 +63,8 @@ enum AppShortcutExecutionError: LocalizedError, Equatable {
             "The audio setting changed again, so Semper did not undo it."
         case .undoFailed:
             "Semper could not restore every audio setting."
+        case .awayModeActive:
+            "End Away Mode in Semper before running this shortcut."
         }
     }
 }
@@ -77,6 +80,7 @@ final class AppShortcutController {
     private let activeCallSession: () -> CallModeSession?
     private let startCallMode: (String, String) -> Void
     private let endCallMode: () -> Void
+    private let allowsMutations: @MainActor () -> Bool
 
     init(
         activeApplications: @escaping () -> [AudioApp],
@@ -87,7 +91,8 @@ final class AppShortcutController {
         callModeEnabled: @escaping () -> Bool,
         activeCallSession: @escaping () -> CallModeSession?,
         startCallMode: @escaping (String, String) -> Void,
-        endCallMode: @escaping () -> Void
+        endCallMode: @escaping () -> Void,
+        allowsMutations: @escaping @MainActor () -> Bool = { true }
     ) {
         self.activeApplications = activeApplications
         self.pinnedApplications = pinnedApplications
@@ -98,12 +103,14 @@ final class AppShortcutController {
         self.activeCallSession = activeCallSession
         self.startCallMode = startCallMode
         self.endCallMode = endCallMode
+        self.allowsMutations = allowsMutations
     }
 
     convenience init(
         engine: AudioEngine,
         commands: any AudioCommandDispatching,
-        callMode: CallModeCoordinator
+        callMode: CallModeCoordinator,
+        allowsMutations: @escaping @MainActor () -> Bool = { true }
     ) {
         self.init(
             activeApplications: { [weak engine] in engine?.apps ?? [] },
@@ -122,7 +129,8 @@ final class AppShortcutController {
             startCallMode: { [weak callMode] identifier, name in
                 callMode?.start(applicationIdentifier: identifier, displayName: name)
             },
-            endCallMode: { [weak callMode] in callMode?.end() }
+            endCallMode: { [weak callMode] in callMode?.end() },
+            allowsMutations: allowsMutations
         )
     }
 
@@ -159,6 +167,7 @@ final class AppShortcutController {
         applicationIdentifier: String,
         percent: Double
     ) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         guard percent.isFinite, (0...100).contains(percent) else {
             throw AppShortcutExecutionError.invalidValue("Volume must be between 0 and 100 percent.")
         }
@@ -176,6 +185,7 @@ final class AppShortcutController {
         applicationIdentifier: String,
         muted: Bool
     ) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         let application = try requireApplication(applicationIdentifier)
         return try execute(
             .setAppMute(target: .persisted(application.identifier), muted: muted),
@@ -187,6 +197,7 @@ final class AppShortcutController {
         applicationIdentifier: String,
         outputUID: String
     ) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         let application = try requireApplication(applicationIdentifier)
         let output = try requireOutput(outputUID)
         return try execute(
@@ -198,6 +209,7 @@ final class AppShortcutController {
     func followDefaultOutput(
         applicationIdentifier: String
     ) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         let application = try requireApplication(applicationIdentifier)
         return try execute(
             .setAppDevice(target: .persisted(application.identifier), deviceUID: nil),
@@ -206,6 +218,7 @@ final class AppShortcutController {
     }
 
     func switchDefaultOutput(outputUID: String) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         let output = try requireOutput(outputUID)
         return try execute(
             .setDefaultOutput(deviceUID: output.uid),
@@ -214,6 +227,7 @@ final class AppShortcutController {
     }
 
     func setAudioProcessingMode(_ mode: AudioProcessingMode) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         let message = mode == .bypassed
             ? "Bypassed Semper audio processing."
             : "Requested Semper audio processing."
@@ -221,6 +235,7 @@ final class AppShortcutController {
     }
 
     func startCallMode(applicationIdentifier: String) throws -> AppShortcutExecution {
+        try requireMutationsAllowed()
         guard callModeEnabled() else {
             throw AppShortcutExecutionError.callModeDisabled
         }
@@ -246,6 +261,12 @@ final class AppShortcutController {
     }
 
     func endCallModeSession() -> AppShortcutExecution {
+        guard allowsMutations() else {
+            return AppShortcutExecution(
+                status: .unchanged,
+                message: "End Away Mode in Semper before running this shortcut."
+            )
+        }
         guard let session = activeCallSession() else {
             return AppShortcutExecution(
                 status: .unchanged,
@@ -260,7 +281,8 @@ final class AppShortcutController {
     }
 
     func undoLastChange() throws -> AppShortcutExecution {
-        switch undoCommand(.appIntent) {
+        try requireMutationsAllowed()
+        return switch undoCommand(.appIntent) {
         case .restored:
             AppShortcutExecution(
                 status: .applied,
@@ -313,6 +335,10 @@ final class AppShortcutController {
             throw AppShortcutExecutionError.deviceUnavailable(uid)
         }
         return output
+    }
+
+    private func requireMutationsAllowed() throws {
+        guard allowsMutations() else { throw AppShortcutExecutionError.awayModeActive }
     }
 
     static func error(for rejection: AudioCommandRejection) -> AppShortcutExecutionError {

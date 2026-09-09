@@ -28,7 +28,15 @@ End, duration expiry, cancellation, and startup failure restore in reverse order
 
 While Presentation owns a preview or recovery, its dependency services cannot be removed. Workspace selection, binding, preview, and direct mutation actions cannot invalidate its reserved plan. **Keep Current Setup** is an explicit confirmation that accepts current settings and gives up this session's recovery. If cleanup fails afterward, every retry retains that choice for this session. Automatic cleanup never chooses it. Window receipts are process-local, so unfinished window recovery cannot be resumed after quitting.
 
-Away holds exclusive mutation admission through authentication and cleanup. Scenes, Presentation, and direct control writes use the shared admission boundary. A queued hardware write keeps its admission until the owned work finishes.
+## Away
+
+Away opens independently of Sound and the manual Awake module. Its detail view and Settings pane use the same coordinator. Adding Away or browsing Settings does not create it; Open Away, Open Away Settings, and the Away action prepare it explicitly. Its shortcut is unassigned by default and remains independent of Sound and Workspace shortcuts.
+
+Away holds exclusive mutation admission through authentication and cleanup. Scenes, Presentation, and direct control writes use the shared admission boundary. A queued hardware write keeps its admission until the owned work finishes. Pausing or removing a guarded Away session requires authentication to exit first. A countdown can be cancelled without entering the guarded state.
+
+Ordinary Quit authenticates before cleanup begins. After authorization, Quit awaits Away and the other utilities. Incomplete cleanup retains the coordinator and its Awake owner for an explicit retry. Choosing Keep Open clears that Quit authorization. System logout, shutdown, restart, and quit-all requests still await cleanup but do not require Away authentication.
+
+Reset All Settings authenticates before deleting Away PIN or photo data, then resets the other settings. A failed authentication or cleanup leaves an error visible. Away cleanup recovery remains available from its detail view and Settings after ordinary controls have stopped.
 
 ## Commands
 
@@ -43,5 +51,7 @@ Up to four favorites are stored by action identifier. Pausing preserves favorite
 ## Verification scope
 
 The test app entry in Debug bypasses runtime construction and the process lock. Registry, command, and lifecycle tests use injected closures and temporary stores. They do not require audio capture, power assertions, window movement, or storage ejection.
+
+The explicit DEBUG Away UI-test launch path uses a separate fixture before normal runtime construction. It uses temporary settings and photo storage, fake input, power, PIN, and authentication providers, and the canonical Away views. It awaits coordinator cleanup and flushes settings before deleting temporary resources. These tests do not cover ordinary app startup or native permissions and hardware.
 
 Compilation and controlled fixtures do not establish hardware, permission, accessibility, signed-install, update, or notarization readiness. Those checks remain separate release gates.

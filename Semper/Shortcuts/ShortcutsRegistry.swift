@@ -22,6 +22,12 @@ protocol PerAppHUDPresenting: AnyObject {
     func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?)
 }
 
+@MainActor
+protocol AwayShortcutHandling: AnyObject {
+    var blocksOrdinaryShortcuts: Bool { get }
+    func handleAwayShortcut()
+}
+
 nonisolated struct ShortcutTargetAppOption: Identifiable, Equatable, Sendable {
     let bundleID: String
     let displayName: String
@@ -60,6 +66,8 @@ final class ShortcutsRegistry {
     private let audioEngine: any AudioEngineDispatching
     private let audioCommands: any AudioCommandDispatching
     private let hud: any PerAppHUDPresenting
+    private let allowsShortcuts: @MainActor () -> Bool
+    private weak var awayHandler: (any AwayShortcutHandling)?
     private var didStart = false
     private var isStopped = false
     private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
@@ -79,7 +87,9 @@ final class ShortcutsRegistry {
         resolver: any TargetAppResolving,
         audioEngine: any AudioEngineDispatching,
         audioCommands: any AudioCommandDispatching,
-        hud: any PerAppHUDPresenting
+        hud: any PerAppHUDPresenting,
+        awayHandler: (any AwayShortcutHandling)? = nil,
+        allowsShortcuts: @escaping @MainActor () -> Bool = { true }
     ) {
         self.settings = settings
         self.popupController = popupController
@@ -87,6 +97,8 @@ final class ShortcutsRegistry {
         self.audioEngine = audioEngine
         self.audioCommands = audioCommands
         self.hud = hud
+        self.awayHandler = awayHandler
+        self.allowsShortcuts = allowsShortcuts
     }
 
     /// Stable `KeyboardShortcuts.Name` per action. The raw string is part of
@@ -135,11 +147,13 @@ final class ShortcutsRegistry {
     /// drive it directly without faking a global key event.
     @discardableResult
     func dispatch(_ action: ShortcutAction) -> Bool {
-        guard !isStopped else { return false }
+        guard !isStopped, allowsShortcuts(), awayHandler?.blocksOrdinaryShortcuts != true else { return false }
         switch action {
         case .togglePopup:
             popupController.toggle()
             return true
+        case .toggleAwayMode:
+            return false
         case .targetAppVolumeUp:
             return adjustTargetVolume(direction: +1)
         case .targetAppVolumeDown:

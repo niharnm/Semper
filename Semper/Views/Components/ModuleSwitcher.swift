@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ModuleSwitcher: View {
     @Binding var selection: SemperModule
-    let isAwakeActive: Bool
+    let activeModules: Set<SemperModule>
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var segmentNamespace
@@ -41,7 +41,7 @@ struct ModuleSwitcher: View {
                     .symbolRenderingMode(.hierarchical)
                 Text(module.displayName)
                     .font(.system(size: 10.5, weight: .semibold))
-                if module == .awake && isAwakeActive {
+                if activeModules.contains(module) {
                     Circle()
                         .fill(DesignTokens.Colors.systemGreen)
                         .frame(width: 5, height: 5)
@@ -67,16 +67,25 @@ struct ModuleSwitcher: View {
         .buttonStyle(.plain)
         .help("Show \(module.displayName)")
         .accessibilityLabel("\(module.displayName) module")
-        .accessibilityValue(module == .awake ? (isAwakeActive ? "On" : "Off") : "")
+        .accessibilityValue(activityAccessibilityValue(for: module))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private func activityAccessibilityValue(for module: SemperModule) -> String {
+        switch module {
+        case .awake, .away:
+            activeModules.contains(module) ? "On" : "Off"
+        case .home, .sound, .displays:
+            ""
+        }
     }
 }
 
 #Preview("Module Switcher") {
     ComponentPreviewContainer {
         VStack(spacing: DesignTokens.Spacing.lg) {
-            ModuleSwitcher(selection: .constant(.sound), isAwakeActive: false)
-            ModuleSwitcher(selection: .constant(.awake), isAwakeActive: true)
+            ModuleSwitcher(selection: .constant(.sound), activeModules: [])
+            ModuleSwitcher(selection: .constant(.awake), activeModules: [.awake])
         }
         .frame(width: 200)
     }

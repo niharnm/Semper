@@ -72,7 +72,9 @@ struct UtilityModuleDescriptor: Identifiable, Equatable, Sendable {
         .init(
             id: .scenes, title: "Scenes", summary: "Apply saved utility settings together.",
             symbolName: "square.stack.3d.up.fill"),
-        .init(id: .away, title: "Away", summary: "Cover your screens with a privacy curtain.", symbolName: "lock.shield.fill"),
+        .init(
+            id: .away, title: "Away", summary: "Cover your screens with a privacy curtain.",
+            symbolName: "eye.slash.fill"),
         .init(
             id: .presentation, title: "Presentation", summary: "Prepare a timed presentation session.",
             symbolName: "play.rectangle.fill",

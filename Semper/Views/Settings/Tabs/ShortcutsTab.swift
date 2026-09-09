@@ -312,6 +312,7 @@ struct ShortcutsTab: View {
     private func systemImage(for action: ShortcutAction) -> String {
         switch action {
         case .togglePopup: "macwindow.on.rectangle"
+        case .toggleAwayMode: "eye.slash.fill"
         case .targetAppVolumeUp: "speaker.wave.3.fill"
         case .targetAppVolumeDown: "speaker.wave.1.fill"
         case .targetAppMuteToggle: "speaker.slash.fill"
@@ -339,6 +340,7 @@ struct ShortcutsTab: View {
     private func description(for action: ShortcutAction) -> String {
         switch action {
         case .togglePopup: "Show or hide the menu bar popup"
+        case .toggleAwayMode: "Start the countdown or authenticate to exit"
         case .targetAppVolumeUp: "Raise the selected target app's volume"
         case .targetAppVolumeDown: "Lower the selected target app's volume"
         case .targetAppMuteToggle: "Mute or unmute the selected target app"
