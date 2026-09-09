@@ -319,6 +319,62 @@ struct PresentationControllerTests {
         #expect(fixture.backend.activeIDs.isEmpty)
     }
 
+    @Test("Stop and shutdown retry failed Scene acceptance without restoring", arguments: [false, true])
+    func keepCurrentSurvivesSceneAcceptanceFailure(shuttingDown: Bool) async throws {
+        let fixture = PresentationFixture()
+        defer { fixture.awake.shutdown() }
+        try await fixture.prepare()
+        try await fixture.controller.start()
+        fixture.sceneKeepFailuresRemaining = 1
+
+        await #expect(throws: PresentationError.self) { try await fixture.controller.keepCurrent() }
+
+        #expect(fixture.controller.phase == .recoveryRequired)
+        #expect(fixture.controller.reservation == fixture.token)
+        #expect(fixture.pendingTransaction?.id == fixture.transactionID)
+        #expect(fixture.sceneKeepAttempts == [fixture.transactionID])
+        #expect(fixture.workspace.reservedToken == nil)
+        #expect(fixture.backend.activeIDs.isEmpty)
+        if shuttingDown { try await fixture.controller.shutdown() }
+        else { try await fixture.controller.stop() }
+
+        #expect(fixture.sceneKeepAttempts == [fixture.transactionID, fixture.transactionID])
+        #expect(fixture.keptIDs == [fixture.transactionID])
+        #expect(fixture.restoredIDs.isEmpty)
+        #expect(fixture.workspace.reversedIDs.isEmpty)
+        #expect(fixture.sceneTokens.allSatisfy { $0 == fixture.token })
+        #expect(fixture.pendingTransaction == nil)
+        #expect(fixture.controller.reservation == nil)
+        #expect(fixture.controller.message == "Kept the current setup and ended Presentation.")
+    }
+
+    @Test("A later reservation restores normally after Keep Current recovery succeeds")
+    func newReservationDoesNotInheritKeepCurrent() async throws {
+        let fixture = PresentationFixture()
+        defer { fixture.awake.shutdown() }
+        try await fixture.prepare()
+        try await fixture.controller.start()
+        fixture.sceneKeepFailuresRemaining = 1
+        await #expect(throws: PresentationError.self) { try await fixture.controller.keepCurrent() }
+        try await fixture.controller.stop()
+        let acceptedID = fixture.transactionID
+        #expect(fixture.keptIDs == [acceptedID])
+        #expect(fixture.restoredIDs.isEmpty)
+
+        fixture.token = UUID()
+        fixture.transactionID = UUID()
+        try await fixture.prepare()
+        try await fixture.controller.start()
+        try await fixture.controller.stop()
+
+        #expect(fixture.keptIDs == [acceptedID])
+        #expect(fixture.sceneKeepAttempts == [acceptedID, acceptedID])
+        #expect(fixture.restoredIDs == [fixture.transactionID])
+        #expect(fixture.workspace.reversedIDs == [fixture.workspace.appliedReceipt.operationID])
+        #expect(fixture.pendingTransaction == nil)
+        #expect(fixture.controller.reservation == nil)
+    }
+
     @Test("Scene recovery failure retains its reservation and required modules")
     func sceneFailureRetainsOwnership() async throws {
         let fixture = PresentationFixture()
@@ -472,8 +528,8 @@ struct PresentationControllerTests {
 @MainActor
 private final class PresentationFixture {
     enum Failure: Error { case rejected, foreignTransaction }
-    let token = UUID()
-    let transactionID = UUID()
+    var token = UUID()
+    var transactionID = UUID()
     let trace = PresentationTrace()
     let clock = PresentationClock()
     let backend = PresentationPowerBackend()
@@ -488,6 +544,7 @@ private final class PresentationFixture {
     var applyFailsAfterWriting = false
     var restoreFails = false
     var sceneReleaseFails = false
+    var sceneKeepFailuresRemaining = 0
     var foreignTransactionAppeared = false
     var reserveGate: PresentationGate?
     var sceneApplyGate: PresentationGate?
@@ -495,6 +552,7 @@ private final class PresentationFixture {
     var pendingTransaction: SceneTransaction?
     var restoredIDs: [UUID] = []
     var keptIDs: [UUID] = []
+    var sceneKeepAttempts: [UUID] = []
     var sceneTokens: [UUID] = []
     var restoreWasCancelled: [Bool] = []
     lazy var controller = PresentationController(dependencies: dependencies, now: { [clock] in clock.current })
@@ -588,6 +646,11 @@ private final class PresentationFixture {
                 try requireToken(token)
                 guard !foreignTransactionAppeared, pendingTransaction?.id == transactionID else { throw Failure.foreignTransaction }
                 trace.events.append(.sceneKeep)
+                sceneKeepAttempts.append(transactionID)
+                if sceneKeepFailuresRemaining > 0 {
+                    sceneKeepFailuresRemaining -= 1
+                    throw Failure.rejected
+                }
                 keptIDs.append(transactionID)
                 pendingTransaction = nil
             },

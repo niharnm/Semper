@@ -91,6 +91,7 @@ final class PresentationController {
     @ObservationIgnored private var stopTask: Task<Void, Error>?
     @ObservationIgnored private var expiry: Task<Void, Never>?
     @ObservationIgnored private var shutDown = false
+    @ObservationIgnored private var keepCurrentRequested = false
 
     init(dependencies: PresentationDependencies, now: @escaping @MainActor () -> Date = Date.init) {
         self.dependencies = dependencies
@@ -200,7 +201,7 @@ final class PresentationController {
             if let pending { _ = await pending.result }
             self.isBusy = true
             defer { self.isBusy = false }
-            try await self.cleanup(keepingCurrent: false)
+            try await self.cleanup()
         }
         stopTask = task
         defer { stopTask = nil }
@@ -211,7 +212,10 @@ final class PresentationController {
         guard !isBusy, stopTask == nil, reservation != nil else { throw PresentationError.busy }
         expiry?.cancel()
         expiry = nil
-        try await perform { try await self.cleanup(keepingCurrent: true) }
+        try await perform {
+            self.keepCurrentRequested = true
+            try await self.cleanup()
+        }
     }
 
     func shutdown() async throws {
@@ -246,7 +250,7 @@ final class PresentationController {
 
     private func recoverAfterFailure() async {
         let failure = message
-        let task = Task { @MainActor in try await self.cleanup(keepingCurrent: false) }
+        let task = Task { @MainActor in try await self.cleanup() }
         do {
             try await task.value
             message = failure
@@ -255,7 +259,7 @@ final class PresentationController {
         }
     }
 
-    private func cleanup(keepingCurrent: Bool) async throws {
+    private func cleanup() async throws {
         expiry?.cancel()
         expiry = nil
         guard let token = reservation else {
@@ -263,6 +267,7 @@ final class PresentationController {
             deadline = nil
             return
         }
+        let keepingCurrent = keepCurrentRequested
         phase = .restoring
         var failures: [String] = []
         if workspaceReserved, let workspace, let receipt = workspaceReceipt, receipt.needsRecovery, !keepingCurrent {
@@ -310,6 +315,7 @@ final class PresentationController {
             do {
                 try await dependencies.release(token)
                 reservation = nil
+                keepCurrentRequested = false
                 workspace = nil
                 phase = .idle
                 deadline = nil

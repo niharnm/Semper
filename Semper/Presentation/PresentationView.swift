@@ -223,7 +223,7 @@ struct PresentationView: View {
                         .buttonStyle(.borderedProminent).disabled(!controller.canStart)
                     Button("Edit Selection") { run { try await controller.stop() } }
                 } else {
-                    Button(controller.phase == .recoveryRequired ? "Retry Restore" : "End and Restore") {
+                    Button(controller.phase == .recoveryRequired ? "Retry Cleanup" : "End and Restore") {
                         run { try await controller.stop() }
                     }
                     Button("Keep Current Setup…") { confirmation = true }
