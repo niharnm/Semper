@@ -4,14 +4,18 @@ Semper is one menu bar app with nine utility modules. This page is the shared
 record of what each module does, where it stands, and what remains before
 release. It changes in the same commit as the work that changes a status.
 
-Snapshot: `main` at fb9a3d5, 2026-09-09. Latest downloadable release: v1.0.0,
-published 2026-08-26, containing Sound only.
+Snapshot: `main` at db697a7, 2026-09-09. Interaction-fix source was staged at
+`8d6d3c0` on the same date; those fixes reach `main` only when that change set
+is merged. Latest downloadable release: v1.0.0, published 2026-08-26,
+containing Sound only.
 
 ## States
 
 - **Released**: included in a published signed release users can download.
 - **Integrated**: merged on `main` in the shared shell with automated tests.
   Not included in the public binary release; native acceptance remains separate.
+- **Implemented in this change set**: present in the staged source snapshot.
+  This state alone does not establish inclusion on `main` or in a public release.
 - **Planned**: agreed scope with no implementation on `main`.
 
 ## Modules
@@ -28,14 +32,24 @@ published 2026-08-26, containing Sound only.
 | Away | Cover every display with a privacy curtain that requires authentication to exit | Integrated | Shared gates, plus input-filter permission, authentication, and multi-display checks | [Source](../Semper/Away), [guide](module-shell.md#away) |
 | Presentation | Run a timed session that applies selected display, sound, and window targets | Integrated | Shared gates, plus a full session with reverse-order recovery on hardware | [Source](../Semper/Presentation), [guide](module-shell.md#presentation) |
 
+## Interaction fixes in this change set
+
+These fixes are implemented at the staged revision above. Their integration
+requires that change set to be merged into `main`; native acceptance and the
+shared release gates remain separate.
+
+| Fix | State | Remaining native verification | Guide |
+| --- | --- | --- | --- |
+| Presentation preparation/start cancellation | Implemented in this change set | Visible cancellation and Escape during preparation/start, pending-work drainage, recovery and retry controls | [Presentation controls](presentation-controls.md) |
+| File Shelf Choose Files | Implemented in this change set | Native picker focus, selection and cancellation, keyboard navigation and Command-O routing in compact and detail views | [File selection](shelf-file-selection.md) |
+
 ## Next increments
 
-These changes are not on the snapshot of `main` above and are not released.
+These changes are not included in this change set or the `main` snapshot above
+and are not released.
 
 | Increment | State | Acceptance before integration |
 | --- | --- | --- |
-| Presentation preparation/start cancellation | Draft [PR #102](https://github.com/niharnm/Semper/pull/102) | Visible cancellation, owned-work cleanup, recovery and failure tests, then native interaction checks |
-| File Shelf Choose Files | Planned | Keyboard-accessible native selection using the existing import path; cancelled selection leaves the shelf unchanged |
 | Window Layout | Planned | Manual halves, maximize, center and previous-placement restore using [Workspace helpers](../Semper/Workspace); verify target identity, constrained windows and later manual changes |
 | File Shelf Resize Image Copy | Planned | Separate local JPEG/PNG copy; correct dimensions, orientation, color and transparency; original unchanged; explicit metadata policy, save failures and cancellation |
 
