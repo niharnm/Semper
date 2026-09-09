@@ -473,6 +473,7 @@ final class UtilityRuntime {
                 start: { [weak self] in
                     guard let self else { throw CancellationError() }
                     if self.storage == nil { self.storage = try self.storageFactory() }
+                    try self.storage?.installMutationAdmission(self.mutationAdmission)
                     self.storage?.start()
                     guard self.storage?.state == .running else {
                         throw UtilityLifecycleError.unavailable(

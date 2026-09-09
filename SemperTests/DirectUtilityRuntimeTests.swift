@@ -59,6 +59,29 @@ struct DirectUtilityRuntimeTests {
         }
     }
 
+    @Test("Safe Eject receives the shared gate before direct or batch mutation")
+    func storageUsesSharedAdmission() async throws {
+        try await withRuntime { runtime, probe in
+            let volume = SafeEjectVolume(
+                id: .init(bsdName: "testdisk1", registryID: 1, volumeUUID: "test-volume",
+                    mountURL: probe.directory.appendingPathComponent("TestVolume")),
+                name: "Test volume", deviceID: .init(bsdName: "testdisk", registryID: 2),
+                isInternal: false, isRemovable: true, isEjectable: true, isRoot: false)
+            probe.storageBackend.volumes = [volume]
+            try await runtime.start(.storage)
+            let storage = try #require(runtime.storage)
+            let confirmation = try storage.prepareBatch().get()
+            #expect(confirmation.eligible == [volume])
+            let permit = try runtime.mutationAdmission.acquire(owner: .awayMode, mode: .exclusive)
+            #expect(await storage.eject(volume) == .refused(.operationInProgress))
+            await #expect(throws: SafeEjectFailure.operationInProgress) {
+                try await storage.ejectBatch(confirmationID: confirmation.id).get()
+            }
+            #expect(probe.storageBackend.unmountCalls == 0)
+            #expect(runtime.mutationAdmission.release(permit))
+        }
+    }
+
     @Test("Reserved Workspace pause and termination remain incomplete until recovery finishes")
     func reservedWorkspaceShutdown() async throws {
         try await withRuntime { runtime, probe in
@@ -373,6 +396,8 @@ private final class DirectRuntimeProbe {
 @MainActor
 private final class DirectRuntimeStorageBackend: SafeEjectBackend {
     var inventoryFails = false
+    var volumes: [SafeEjectVolume] = []
+    private(set) var unmountCalls = 0
     private(set) var drains = 0
     private var handler: (@MainActor (SafeEjectSystemEvent) -> Void)?
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws { handler = onEvent }
@@ -384,9 +409,12 @@ private final class DirectRuntimeStorageBackend: SafeEjectBackend {
     func cancelPendingOperation() {}
     func inventory() throws -> SafeEjectInventory {
         if inventoryFails { throw SafeEjectFailure.unavailable }
-        return .init(volumes: [], hasUnidentifiedLocalVolumes: false)
+        return .init(volumes: volumes, hasUnidentifiedLocalVolumes: false)
     }
-    func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> { .failure(.unsupported) }
+    func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> {
+        unmountCalls += 1
+        return .failure(.unsupported)
+    }
     func ejectDevice(containing volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> {
         .failure(.unsupported)
     }

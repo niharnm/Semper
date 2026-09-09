@@ -378,7 +378,7 @@ struct SafeEjectServiceTests {
         _ = await iterator.next()
         #expect(cache.value == SafeEjectAPFSTopology(containers: []))
         cache.stop()
-        await cache.drain()
+        if case .failure(let failure) = await cache.drain() { Issue.record(failure, "Cleanup failed") }
         continuation.finish()
     }
 
@@ -401,7 +401,7 @@ struct SafeEjectServiceTests {
         cache.stop()
         await reader.waitForCancellation(2)
         await reader.resolve(2)
-        await cache.drain()
+        if case .failure(let failure) = await cache.drain() { Issue.record(failure, "Cleanup failed") }
         #expect(await reader.count == 2)
         #expect(cache.value == nil)
     }
@@ -424,7 +424,7 @@ struct SafeEjectServiceTests {
         cache.stop()
         var drained = false
         let drain = Task {
-            await cache.drain()
+            if case .failure(let failure) = await cache.drain() { Issue.record(failure, "Cleanup failed") }
             drained = true
         }
         #expect(!drained)
@@ -511,7 +511,7 @@ struct SafeEjectServiceTests {
             try await cache.drain().get()
             Issue.record("Failed cleanup must reach the owner")
         } catch {
-            #expect(error as? SafeEjectFailure == .cleanupPending)
+            #expect(error == .cleanupPending)
         }
         #expect(await reader.count == 1)
         continuation.finish()
@@ -557,7 +557,7 @@ struct SafeEjectServiceTests {
             try await cache.drain().get()
             Issue.record("Cleanup is still retained")
         } catch {
-            #expect(error as? SafeEjectFailure == .cleanupPending)
+            #expect(error == .cleanupPending)
         }
         cache.start {}
         #expect(cache.cleanupFailure == .cleanupPending)
@@ -586,7 +586,7 @@ struct SafeEjectServiceTests {
                 try await service.waitForCleanup().get()
                 Issue.record("The shell must receive pending cleanup")
             } catch {
-                #expect(error as? SafeEjectFailure == .cleanupPending)
+                #expect(error == .cleanupPending)
             }
             #expect(service.cleanupFailure == .cleanupPending)
             service.start()
@@ -642,7 +642,7 @@ struct SafeEjectServiceTests {
                 try result.get()
                 Issue.record("Each waiter must receive the same cleanup failure")
             } catch {
-                #expect(error as? SafeEjectFailure == .cleanupPending)
+                #expect(error == .cleanupPending)
             }
         }
         #expect(service.cleanupFailure == .cleanupPending)
@@ -757,7 +757,7 @@ struct SafeEjectServiceTests {
             try result.get()
             Issue.record("Shutdown must expose the replacement reader's cleanup failure")
         } catch {
-            #expect(error as? SafeEjectFailure == .cleanupPending)
+            #expect(error == .cleanupPending)
         }
         #expect(service.cleanupFailure == .cleanupPending)
         #expect(backend.drainCalls == 2)
