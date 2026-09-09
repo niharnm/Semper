@@ -4,6 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import ImageIO
+import Synchronization
 import Testing
 import UniformTypeIdentifiers
 
@@ -339,6 +340,10 @@ struct ShelfImageCopyTests {
             #expect(try Data(contentsOf: existing) == marker)
             #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).sorted() == before)
         }
+        #expect(throws: ShelfImageCopyFailure.invalidDestination) {
+            try copier.writeCopy(plan, size: .pixels1024, to: f.url("invalid\0.png"))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).sorted() == before)
     }
 
     @Test("Unsupported, corrupt, animated PNG, and excessive encoded input are rejected")
@@ -469,21 +474,36 @@ struct ShelfImageCopyTests {
         #expect(try digest(input) == original)
     }
 
+    private func fileOperations(_ root: URL) -> ShelfImageFileOperations {
+        var operations = ShelfImageFileOperations.native
+        operations.makePrivateDirectory = { _ in
+            let directory = root.appendingPathComponent("private-\(UUID())")
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+            return directory
+        }
+        return operations
+    }
+
+    private func ownedFile(_ root: URL, operations: ShelfImageFileOperations? = nil) throws -> ShelfImageFileOwner {
+        let owner = try ShelfImageFileOwner(
+            destination: root.appendingPathComponent("copy.png"),
+            operations: operations ?? fileOperations(root))
+        let file = FileHandle(fileDescriptor: owner.stageDescriptor, closeOnDealloc: false)
+        try file.write(contentsOf: Data("owned temporary image".utf8))
+        return owner
+    }
+
     @Test("Cleanup retains failures and refuses a replacement at the recorded temporary path")
     func cleanupRetainsIdentity() throws {
         let f = try Fixture()
         defer { f.remove() }
-        let temporary = f.url(".semper-image-copy-\(UUID()).tmp")
-        let retained = f.url("retained-owned-copy.tmp")
-        let original = Data("owned temporary image".utf8)
-        try original.write(to: temporary)
-        var info = stat()
-        try #require(lstat(temporary.path, &info) == 0)
-        var parentInfo = stat()
-        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
-        let token = ShelfImageTemporaryCopy(
-            url: temporary, device: info.st_dev, inode: info.st_ino,
-            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
+        let owner = try ownedFile(f.root)
+        let token = owner.temporaryCopy
+        let temporary = token.url
+        let retained = temporary.deletingLastPathComponent().appendingPathComponent("retained.tmp")
+        let original = try Data(contentsOf: temporary)
         let copier = NativeShelfImageCopier()
         try FileManager.default.moveItem(at: temporary, to: retained)
         let replacement = Data("replacement file".utf8)
@@ -496,9 +516,9 @@ struct ShelfImageCopyTests {
         try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: temporary.path)
         defer {
             if FileManager.default.fileExists(atPath: temporary.path) {
-                do {
-                    try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: temporary.path)
-                } catch { Issue.record(error) }
+                do { try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: temporary.path) } catch {
+                    Issue.record(error)
+                }
             }
         }
         #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
@@ -509,54 +529,297 @@ struct ShelfImageCopyTests {
         try copier.removeTemporaryCopy(token)
     }
 
-    @Test(
-        "Cleanup retains a renamed or replaced parent until its original directory returns", arguments: [false, true])
+    @Test("Cleanup retains a renamed or replaced private parent until it returns", arguments: [false, true])
     func cleanupRetainsUnavailableParent(replaced: Bool) throws {
         let f = try Fixture()
         defer { f.remove() }
-        let parent = f.url("destination")
-        let moved = f.url("moved-destination")
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
-        let temporary = parent.appendingPathComponent(".semper-image-copy-\(UUID()).tmp")
-        let original = Data("owned temporary image".utf8)
-        try original.write(to: temporary)
-        var info = stat()
-        try #require(lstat(temporary.path, &info) == 0)
-        var parentInfo = stat()
-        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
-        let token = ShelfImageTemporaryCopy(
-            url: temporary, device: info.st_dev, inode: info.st_ino,
-            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
+        let owner = try ownedFile(f.root)
+        let token = owner.temporaryCopy
+        let parent = token.url.deletingLastPathComponent()
+        let moved = f.url("moved-private-directory")
+        let original = try Data(contentsOf: token.url)
         let copier = NativeShelfImageCopier()
         try FileManager.default.moveItem(at: parent, to: moved)
         if replaced { try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false) }
         #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
-        #expect(try Data(contentsOf: moved.appendingPathComponent(temporary.lastPathComponent)) == original)
+        #expect(try Data(contentsOf: moved.appendingPathComponent(token.url.lastPathComponent)) == original)
         if replaced {
             #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
             try FileManager.default.removeItem(at: parent)
         }
         try FileManager.default.moveItem(at: moved, to: parent)
         try copier.removeTemporaryCopy(token)
-        #expect(!FileManager.default.fileExists(atPath: temporary.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
     }
 
-    @Test("Cleanup accepts a missing child in its available original parent")
+    @Test("Cleanup accepts a missing child in its available original private parent")
     func cleanupAcceptsMissingChild() throws {
         let f = try Fixture()
         defer { f.remove() }
-        let temporary = f.url(".semper-image-copy-\(UUID()).tmp")
-        try Data("owned temporary image".utf8).write(to: temporary)
-        var info = stat()
-        try #require(lstat(temporary.path, &info) == 0)
-        var parentInfo = stat()
-        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
-        let token = ShelfImageTemporaryCopy(
-            url: temporary, device: info.st_dev, inode: info.st_ino,
-            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
-        try FileManager.default.removeItem(at: temporary)
+        let owner = try ownedFile(f.root)
+        let token = owner.temporaryCopy
+        try FileManager.default.removeItem(at: token.url)
         try NativeShelfImageCopier().removeTemporaryCopy(token)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: token.url.deletingLastPathComponent().path).isEmpty)
+    }
+
+    @Test("A blocked mismatch restore retains one claim and never deletes replacement bytes")
+    func blockedClaimRestore() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let injected = Mutex(false)
+        var operations = fileOperations(f.root)
+        operations.checkpoint = { checkpoint, context in
+            if checkpoint == .beforeRestore,
+                injected.withLock({ value in
+                    if value { return false }
+                    value = true
+                    return true
+                })
+            {
+                try Data("occupied restore".utf8).write(to: context.stage)
+            }
+        }
+        let owner = try ownedFile(f.root, operations: operations)
+        let token = owner.temporaryCopy
+        let stage = token.url
+        let directory = stage.deletingLastPathComponent()
+        let retained = directory.appendingPathComponent("retained.tmp")
+        try FileManager.default.moveItem(at: stage, to: retained)
+        let replacement = Data("replacement bytes".utf8)
+        try replacement.write(to: stage)
+        let copier = NativeShelfImageCopier()
+        #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
+        let claim = directory.appendingPathComponent("cleanup-claim.tmp")
+        #expect(try Data(contentsOf: claim) == replacement)
+        #expect(try Data(contentsOf: stage) == Data("occupied restore".utf8))
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == names)
+        #expect(token.recoveryLocations.contains(claim.resolvingSymlinksInPath()))
+        try FileManager.default.removeItem(at: stage)
+        #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
+        #expect(try Data(contentsOf: stage) == replacement)
+        try FileManager.default.removeItem(at: stage)
+        try FileManager.default.moveItem(at: retained, to: stage)
+        try copier.removeTemporaryCopy(token)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test("Descriptor publication preserves the verified image when its staging name changes")
+    func descriptorPublicationIgnoresStageReplacement() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let calls = Mutex(0)
+        let context = Mutex<ShelfImageFileContext?>(nil)
+        var operations = fileOperations(f.root)
+        operations.clone = { source, directory, name in
+            calls.withLock { $0 += 1 }
+            try ShelfImageFileOperations.native.clone(source, directory, name)
+        }
+        operations.checkpoint = { checkpoint, value in
+            if checkpoint == .beforePublication {
+                context.withLock { $0 = value }
+                try FileManager.default.moveItem(
+                    at: value.stage,
+                    to: value.stage.deletingLastPathComponent().appendingPathComponent("retained.tmp"))
+                try Data("replacement bytes".utf8).write(to: value.stage)
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        var recovery: ShelfImagePublishedCopy?
+        do {
+            _ = try copier.writeCopy(plan, size: .pixels1024, to: output)
+            Issue.record("Expected retained cleanup")
+        } catch ShelfImageCopyFailure.publicationUncertain(let token) { recovery = token }
+        let token = try #require(recovery)
+        #expect(try decoded(output).width == 16)
+        let paths = try #require(context.withLock { $0 })
+        #expect(try Data(contentsOf: paths.stage) == Data("replacement bytes".utf8))
+        #expect(
+            token.recoveryLocations.contains(
+                paths.stage.deletingLastPathComponent().appendingPathComponent("retained.tmp").standardizedFileURL))
+        try FileManager.default.removeItem(at: paths.stage)
+        try FileManager.default.moveItem(
+            at: paths.stage.deletingLastPathComponent().appendingPathComponent("retained.tmp"),
+            to: paths.stage)
+        let receipt = try copier.recoverPublishedCopy(token)
+        #expect(receipt.url == output)
+        #expect(calls.withLock { $0 } == 1)
+    }
+
+    @Test("Unsupported cloning creates no destination and cleans the private image")
+    func cloneRefusal() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let context = Mutex<ShelfImageFileContext?>(nil)
+        var operations = fileOperations(f.root)
+        operations.clone = { _, _, _ in throw ShelfImageCopyFailure.cloningUnsupported }
+        operations.checkpoint = { checkpoint, value in
+            if checkpoint == .beforePublication { context.withLock { $0 = value } }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        #expect(throws: ShelfImageCopyFailure.cloningUnsupported) {
+            try copier.writeCopy(plan, size: .pixels1024, to: output)
+        }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        let paths = try #require(context.withLock { $0 })
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: paths.stage.deletingLastPathComponent().path).isEmpty)
+    }
+
+    @Test("A changed destination parent is refused before publication")
+    func changedParentBeforePublication() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let parent = f.url("destination")
+        let moved = f.url("moved")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        var operations = fileOperations(f.root)
+        operations.checkpoint = { checkpoint, _ in
+            if checkpoint == .beforePublication {
+                try FileManager.default.moveItem(at: parent, to: moved)
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        #expect(throws: ShelfImageCopyFailure.destinationChanged) {
+            try copier.writeCopy(plan, size: .pixels1024, to: parent.appendingPathComponent("copy.png"))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: moved.path).isEmpty)
+    }
+
+    @Test("A moved destination produces its verified actual URL and preserves the replacement folder")
+    func movedParentReceipt() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let parent = f.url("destination")
+        let moved = f.url("moved")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        var operations = fileOperations(f.root)
+        operations.checkpoint = { checkpoint, _ in
+            if checkpoint == .afterPublication {
+                try FileManager.default.moveItem(at: parent, to: moved)
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+                try Data("replacement destination".utf8).write(to: parent.appendingPathComponent("copy.png"))
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let receipt = try copier.writeCopy(plan, size: .pixels1024, to: parent.appendingPathComponent("copy.png"))
+        #expect(receipt.url == moved.appendingPathComponent("copy.png"))
+        #expect(try decoded(receipt.url).width == 16)
+        #expect(try Data(contentsOf: parent.appendingPathComponent("copy.png")) == Data("replacement destination".utf8))
+    }
+
+    @Test("Unknown published location recovers without cloning or deleting the published copy")
+    func uncertainPublicationRecovers() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let failPath = Mutex(true)
+        let clones = Mutex(0)
+        var operations = fileOperations(f.root)
+        operations.path = { descriptor in
+            if failPath.withLock({ $0 }) { throw ShelfImageCopyFailure.destinationChanged }
+            return try ShelfImageFileOperations.native.path(descriptor)
+        }
+        operations.clone = { source, parent, name in
+            clones.withLock { $0 += 1 }
+            try ShelfImageFileOperations.native.clone(source, parent, name)
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        var recovery: ShelfImagePublishedCopy?
+        do {
+            _ = try copier.writeCopy(plan, size: .pixels1024, to: output)
+            Issue.record("Expected location recovery")
+        } catch ShelfImageCopyFailure.publicationUncertain(let token) { recovery = token }
+        let token = try #require(recovery)
+        let original = try digest(output)
+        #expect(throws: ShelfImageCopyFailure.publicationUncertain(token)) { try copier.recoverPublishedCopy(token) }
+        #expect(try digest(output) == original)
+        failPath.withLock { $0 = false }
+        #expect(try copier.recoverPublishedCopy(token).url == output)
+        #expect(clones.withLock { $0 } == 1)
+        #expect(try digest(output) == original)
+        let moved = f.url("moved-copy.png")
+        try FileManager.default.moveItem(at: output, to: moved)
+        #expect(try copier.recoverPublishedCopy(token).url == moved)
+        #expect(clones.withLock { $0 } == 1)
+        #expect(try digest(moved) == original)
+    }
+
+    @Test("Cancellation at the publication boundary cleans staging without creating a copy")
+    func cancellationAtPublication() async throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let original = try digest(input)
+        let context = Mutex<ShelfImageFileContext?>(nil)
+        let clones = Mutex(0)
+        var operations = fileOperations(f.root)
+        operations.clone = { _, _, _ in clones.withLock { $0 += 1 } }
+        operations.checkpoint = { checkpoint, value in
+            if checkpoint == .beforePublication {
+                context.withLock { $0 = value }
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        let task = Task.detached { try copier.writeCopy(plan, size: .pixels1024, to: output) }
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancelled publication")
+        } catch ShelfFailure.cancelled {}
+        #expect(clones.withLock { $0 } == 0)
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        #expect(try digest(input) == original)
+        let paths = try #require(context.withLock { $0 })
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: paths.stage.deletingLastPathComponent().path).isEmpty)
+    }
+    @Test("An initial identity failure stops writing and cleans only through the retained descriptor")
+    func initialIdentityFailure() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let context = Mutex<ShelfImageFileContext?>(nil)
+        var operations = fileOperations(f.root)
+        operations.checkpoint = { checkpoint, value in
+            if checkpoint == .beforeStageIdentity {
+                context.withLock { $0 = value }
+                throw ShelfImageCopyFailure.writeFailed
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        #expect(throws: ShelfImageCopyFailure.writeFailed) { try copier.writeCopy(plan, size: .pixels1024, to: output) }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        let paths = try #require(context.withLock { $0 })
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: paths.stage.deletingLastPathComponent().path).isEmpty)
     }
 
 }

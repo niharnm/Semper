@@ -50,18 +50,12 @@ nonisolated struct ShelfImageCopyReceipt: Sendable {
     let dimensions: ShelfImageDimensions
 }
 
-nonisolated struct ShelfImageTemporaryCopy: Equatable, Sendable {
-    let url: URL
-    let device: Int32
-    let inode: UInt64
-    let parentDevice: Int32
-    let parentInode: UInt64
-}
-
 nonisolated enum ShelfImageCopyFailure: Error, Equatable, LocalizedError, Sendable {
     case unsupported, animated, invalidImage, tooLarge, changedSource, colorProfile, transparency
     case destinationExists, invalidDestination, writeFailed, verificationFailed, invalidTemporaryCopy
     case cleanupFailed(ShelfImageTemporaryCopy)
+    case cloningUnsupported, destinationChanged
+    case publicationUncertain(ShelfImagePublishedCopy)
 
     var errorDescription: String? {
         switch self {
@@ -77,7 +71,12 @@ nonisolated enum ShelfImageCopyFailure: Error, Equatable, LocalizedError, Sendab
         case .writeFailed: "The resized copy could not be written. Check folder access and available disk space."
         case .verificationFailed: "The resized copy did not pass verification. No copy was saved."
         case .invalidTemporaryCopy: "The temporary image path is not owned by Resize a Copy."
-        case .cleanupFailed: "A temporary image could not be removed. Retry cleanup before resizing another image."
+        case .cleanupFailed: "Temporary image cleanup needs recovery. Retry recovery before resizing another image."
+        case .cloningUnsupported:
+            "This location does not support Resize a Copy. Choose another location."
+        case .destinationChanged: "The destination folder changed. Choose the save location again."
+        case .publicationUncertain:
+            "A copy was created, but its location or temporary cleanup needs recovery. Do not save again."
         }
     }
 }
@@ -87,11 +86,13 @@ nonisolated protocol ShelfImageCopying: Sendable {
     func writeCopy(_ plan: ShelfImageCopyPlan, size: ShelfImageCopySize, to destination: URL) throws
         -> ShelfImageCopyReceipt
     func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws
+    func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt
 }
 
 nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
-    private static let temporaryPrefix = ".semper-image-copy-"
-    private static let temporarySuffix = ".tmp"
+    let fileOperations: ShelfImageFileOperations
+
+    init(fileOperations: ShelfImageFileOperations = .native) { self.fileOperations = fileOperations }
 
     func inspect(_ source: URL, access: any ShelfFileAccess) throws -> ShelfImageCopyPlan {
         try Self.checkCancellation()
@@ -178,38 +179,13 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
             [plan.format.fileExtension, plan.format == .jpeg ? "jpeg" : "png"].contains(
                 destination.pathExtension.lowercased())
         else { throw ShelfImageCopyFailure.invalidDestination }
-        let directory = destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
         let destinationName = destination.lastPathComponent
         guard !destinationName.isEmpty, !destinationName.contains("\0"), destinationName != ".", destinationName != ".."
         else { throw ShelfImageCopyFailure.invalidDestination }
-        let directoryFD = directory.withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        }
-        guard directoryFD >= 0 else { throw ShelfImageCopyFailure.invalidDestination }
-        defer { close(directoryFD) }
-        var parent = stat()
-        guard fstat(directoryFD, &parent) == 0, parent.st_mode & S_IFMT == S_IFDIR else {
-            throw ShelfImageCopyFailure.invalidDestination
-        }
-        var existing = stat()
-        let exists = fstatat(directoryFD, destinationName, &existing, AT_SYMLINK_NOFOLLOW)
-        guard exists != 0 else { throw ShelfImageCopyFailure.destinationExists }
-        guard errno == ENOENT else { throw ShelfImageCopyFailure.invalidDestination }
-        let name = Self.temporaryPrefix + UUID().uuidString + Self.temporarySuffix
-        let temporary = directory.appendingPathComponent(name)
-        let descriptor = openat(directoryFD, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
-        guard descriptor >= 0 else { throw ShelfImageCopyFailure.writeFailed }
-        defer { close(descriptor) }
-        var created = stat()
-        guard fstat(descriptor, &created) == 0 else {
-            throw ShelfImageCopyFailure.cleanupFailed(
-                .init(url: temporary, device: 0, inode: 0, parentDevice: parent.st_dev, parentInode: parent.st_ino))
-        }
-        let owned = ShelfImageTemporaryCopy(
-            url: temporary, device: created.st_dev, inode: created.st_ino,
-            parentDevice: parent.st_dev, parentInode: parent.st_ino)
+        let owner = try ShelfImageFileOwner(destination: destination, operations: fileOperations)
+        let descriptor = owner.stageDescriptor
         do {
+            try owner.validateForWriting()
             try autoreleasepool {
                 let source = try Self.imageSource(plan.encoded)
                 let image = try Self.thumbnail(source, plan.dimensions, size)
@@ -241,63 +217,22 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
             let encoded = try Self.readBounded(output)
             try autoreleasepool { try Self.verifyOutput(encoded, plan: plan, size: size) }
             try Self.checkCancellation()
-            guard try Self.verifyTemporaryIdentity(owned, directoryFD: directoryFD, name: name) else {
-                throw ShelfImageCopyFailure.writeFailed
-            }
-            guard renameatx_np(directoryFD, name, directoryFD, destinationName, UInt32(RENAME_EXCL)) == 0 else {
-                throw errno == EEXIST ? ShelfImageCopyFailure.destinationExists : ShelfImageCopyFailure.writeFailed
-            }
-            return ShelfImageCopyReceipt(url: destination, dimensions: plan.outputDimensions(for: size))
+            return try owner.publish(encoded: encoded, dimensions: plan.outputDimensions(for: size))
         } catch {
-            do {
-                if try Self.verifyTemporaryIdentity(owned, directoryFD: directoryFD, name: name),
-                    unlinkat(directoryFD, name, 0) != 0, errno != ENOENT
-                {
-                    throw ShelfImageCopyFailure.cleanupFailed(owned)
-                }
-            } catch {
-                throw ShelfImageCopyFailure.cleanupFailed(owned)
-            }
+            if owner.hasPublished { throw ShelfImageCopyFailure.publicationUncertain(owner.publishedCopy) }
+            try owner.cleanUp()
             throw error
         }
     }
 
     func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws {
-        let url = temporary.url
-        let name = url.lastPathComponent
-        guard url.isFileURL, name.hasPrefix(Self.temporaryPrefix), name.hasSuffix(Self.temporarySuffix),
-            UUID(uuidString: String(name.dropFirst(Self.temporaryPrefix.count).dropLast(Self.temporarySuffix.count)))
-                != nil
-        else { throw ShelfImageCopyFailure.invalidTemporaryCopy }
-        let directoryFD = url.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path in
-            guard let path else { return Int32(-1) }
-            return open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        }
-        guard directoryFD >= 0 else { throw ShelfImageCopyFailure.cleanupFailed(temporary) }
-        defer { close(directoryFD) }
-        guard try Self.verifyTemporaryIdentity(temporary, directoryFD: directoryFD, name: name) else { return }
-        guard unlinkat(directoryFD, name, 0) == 0 else {
-            throw ShelfImageCopyFailure.cleanupFailed(temporary)
-        }
+        guard let owner = temporary.owner else { throw ShelfImageCopyFailure.invalidTemporaryCopy }
+        try owner.cleanUp()
     }
 
-    @discardableResult
-    private static func verifyTemporaryIdentity(_ temporary: ShelfImageTemporaryCopy, directoryFD: Int32, name: String)
-        throws -> Bool
-    {
-        var parent = stat()
-        guard fstat(directoryFD, &parent) == 0, parent.st_mode & S_IFMT == S_IFDIR,
-            temporary.parentInode != 0, parent.st_dev == temporary.parentDevice, parent.st_ino == temporary.parentInode
-        else { throw ShelfImageCopyFailure.cleanupFailed(temporary) }
-        var current = stat()
-        guard fstatat(directoryFD, name, &current, AT_SYMLINK_NOFOLLOW) == 0 else {
-            if errno == ENOENT { return false }
-            throw ShelfImageCopyFailure.cleanupFailed(temporary)
-        }
-        guard temporary.inode != 0, current.st_mode & S_IFMT == S_IFREG, current.st_nlink == 1,
-            current.st_dev == temporary.device, current.st_ino == temporary.inode
-        else { throw ShelfImageCopyFailure.cleanupFailed(temporary) }
-        return true
+    func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt {
+        guard let owner = published.owner else { throw ShelfImageCopyFailure.publicationUncertain(published) }
+        return try owner.recoverPublication()
     }
 
     private static func readBounded(_ file: FileHandle) throws -> Data {

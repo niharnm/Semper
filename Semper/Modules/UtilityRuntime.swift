@@ -907,12 +907,13 @@ final class UtilityRuntime {
                 },
                 stop: { [weak self] reason in
                     guard let self, let shelf = self.shelf else { return }
-                    if reason == .pause {
-                        await shelf.pause()
-                    } else {
-                        await shelf.shutdown()
-                        self.shelf = nil
+                    let result = reason == .pause ? await shelf.pause() : await shelf.shutdown()
+                    if case .failure(let failure) = result {
+                        throw UtilityCleanupDeferral(
+                            reason: shelf.imageCopy.message ?? shelf.message ?? failure.localizedDescription,
+                            retaining: [.shelf])
                     }
+                    if reason != .pause { self.shelf = nil }
                 }))
         try lifecycle.register(
             .storage,

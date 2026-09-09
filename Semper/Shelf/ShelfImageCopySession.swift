@@ -52,9 +52,21 @@ final class ShelfImageCopySession {
 
     var isActive: Bool { request != nil || isWorking || needsCleanup }
     var needsCleanup: Bool { pendingCleanup != nil }
+    var recoveryLocations: [URL] {
+        switch pendingCleanup?.copy {
+        case .temporary(let stage): stage.recoveryLocations
+        case .published(let copy): copy.recoveryLocations
+        case nil: []
+        }
+    }
+
+    private enum PendingCopy: Sendable {
+        case temporary(ShelfImageTemporaryCopy)
+        case published(ShelfImagePublishedCopy)
+    }
 
     private struct PendingCleanup {
-        let stage: ShelfImageTemporaryCopy
+        let copy: PendingCopy
         let destination: URL
         let scoped: Bool
     }
@@ -178,10 +190,18 @@ final class ShelfImageCopySession {
             if scoped { access.end(destination) }
             self.receipt = receipt
         case .failure(let error):
-            if let failure = error as? ShelfImageCopyFailure, case .cleanupFailed(let stage) = failure {
-                pendingCleanup = PendingCleanup(stage: stage, destination: destination, scoped: scoped)
-                message = failure.localizedDescription
-                return
+            if let failure = error as? ShelfImageCopyFailure {
+                let recovery: PendingCopy?
+                switch failure {
+                case .cleanupFailed(let stage): recovery = .temporary(stage)
+                case .publicationUncertain(let copy): recovery = .published(copy)
+                default: recovery = nil
+                }
+                if let recovery {
+                    pendingCleanup = PendingCleanup(copy: recovery, destination: destination, scoped: scoped)
+                    message = failure.localizedDescription
+                    return
+                }
             }
             if scoped { access.end(destination) }
             if !Task.isCancelled, !cancellationRequested { report(error) }
@@ -197,15 +217,24 @@ final class ShelfImageCopySession {
     private func retryCleanup() async -> Result<Void, ShelfFailure> {
         guard let pendingCleanup else { return .success(()) }
         let copier = copier
-        let stage = pendingCleanup.stage
-        let worker = Task.detached(priority: .utility) { try copier.removeTemporaryCopy(stage) }
+        let copy = pendingCleanup.copy
+        let worker = Task<ShelfImageCopyReceipt?, Error>.detached(priority: .utility) {
+            switch copy {
+            case .temporary(let stage):
+                try copier.removeTemporaryCopy(stage)
+                return nil
+            case .published(let published):
+                return try copier.recoverPublishedCopy(published)
+            }
+        }
         switch await worker.result {
-        case .success:
+        case .success(let receipt):
+            if let receipt { self.receipt = receipt }
             if pendingCleanup.scoped { access.end(pendingCleanup.destination) }
             self.pendingCleanup = nil
             return .success(())
-        case .failure:
-            message = ShelfImageCopyFailure.cleanupFailed(stage).localizedDescription
+        case .failure(let error):
+            message = error.localizedDescription
             return .failure(.storeWrite)
         }
     }

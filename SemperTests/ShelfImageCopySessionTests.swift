@@ -88,19 +88,33 @@ nonisolated private final class ImageSessionCopier: ShelfImageCopying, @unchecke
     private var writeCount = 0
     private var removed: [ShelfImageTemporaryCopy] = []
     private var cleanupFailure = false
+    private var recoveryFailure = true
+    private var recoveryCount = 0
     let failWrite: Bool
+    let uncertainPublication: Bool
+    let recoveredOutput: URL
     var writes: Int { lock.withLock { writeCount } }
+    var recoveries: Int { lock.withLock { recoveryCount } }
     var cleanupTokens: [ShelfImageTemporaryCopy] { lock.withLock { removed } }
     var failCleanup: Bool {
         get { lock.withLock { cleanupFailure } }
         set { lock.withLock { cleanupFailure = newValue } }
     }
+    var failRecovery: Bool {
+        get { lock.withLock { recoveryFailure } }
+        set { lock.withLock { recoveryFailure = newValue } }
+    }
 
-    init(plan: ShelfImageCopyPlan, root: URL, holdInspect: Bool, holdWrite: Bool, failWrite: Bool) {
+    init(
+        plan: ShelfImageCopyPlan, root: URL, holdInspect: Bool, holdWrite: Bool, failWrite: Bool,
+        uncertainPublication: Bool
+    ) {
         self.plan = plan
         inspection = ImageSessionGate(held: holdInspect)
         writing = ImageSessionGate(held: holdWrite)
         self.failWrite = failWrite
+        self.uncertainPublication = uncertainPublication
+        recoveredOutput = root.appendingPathComponent("relocated-copy.png")
         temporary = ShelfImageTemporaryCopy(
             url: root.appendingPathComponent(".semper-image-copy-\(UUID()).tmp"), device: 7, inode: 11,
             parentDevice: 7, parentInode: 13)
@@ -122,8 +136,19 @@ nonisolated private final class ImageSessionCopier: ShelfImageCopying, @unchecke
             try Data("owned stage".utf8).write(to: temporary.url)
             throw ShelfImageCopyFailure.cleanupFailed(temporary)
         }
+        if uncertainPublication {
+            try Data("published copy".utf8).write(to: recoveredOutput)
+            throw ShelfImageCopyFailure.publicationUncertain(
+                ShelfImagePublishedCopy(requestedURL: destination, dimensions: plan.outputDimensions(for: size)))
+        }
         try Data("published copy".utf8).write(to: destination)
         return ShelfImageCopyReceipt(url: destination, dimensions: plan.outputDimensions(for: size))
+    }
+
+    func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt {
+        lock.withLock { recoveryCount += 1 }
+        if failRecovery { throw ShelfImageCopyFailure.publicationUncertain(published) }
+        return ShelfImageCopyReceipt(url: recoveredOutput, dimensions: published.dimensions)
     }
 
     func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws {
@@ -185,6 +210,38 @@ private final class ImageSessionIdle {
     }
 }
 
+nonisolated private final class ImageSessionClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Date(timeIntervalSince1970: 1_800_000_000)
+    func now() -> Date { lock.withLock { value } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { value.addTimeInterval(seconds) } }
+}
+
+@MainActor
+private final class ImageExpiryScheduler {
+    private(set) var delays: [TimeInterval] = []
+    private var releases: [ImageSessionSignal] = []
+    private var observers: [(Int, ImageSessionSignal)] = []
+
+    func wait(_ delay: TimeInterval) async throws {
+        try Task.checkCancellation()
+        let release = ImageSessionSignal()
+        delays.append(delay)
+        releases.append(release)
+        for (count, signal) in observers where delays.count >= count { signal.resolve() }
+        guard await release.wait(), !Task.isCancelled else { throw CancellationError() }
+    }
+
+    func scheduled(_ count: Int) async -> Bool {
+        if delays.count >= count { return true }
+        let signal = ImageSessionSignal()
+        observers.append((count, signal))
+        return await signal.wait()
+    }
+
+    func fire(_ index: Int) { releases[index].resolve() }
+}
+
 @Suite("Shelf image copy session", .serialized, .timeLimit(.minutes(1)))
 @MainActor
 struct ShelfImageCopySessionTests {
@@ -201,6 +258,11 @@ struct ShelfImageCopySessionTests {
 
     private func withFixture(
         holdInspect: Bool = false, holdWrite: Bool = false, failWrite: Bool = false,
+        uncertainPublication: Bool = false,
+        now: @escaping @Sendable () -> Date = { Date() },
+        waitForExpiry: @escaping @Sendable (TimeInterval) async throws -> Void = {
+            try await Task.sleep(for: .seconds($0))
+        },
         body: (Fixture) async throws -> Void
     ) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("shelf-image-session-\(UUID())")
@@ -225,13 +287,14 @@ struct ShelfImageCopySessionTests {
         let access = ImageSessionAccess()
         let plan = try NativeShelfImageCopier().inspect(source, access: access)
         let copier = ImageSessionCopier(
-            plan: plan, root: root, holdInspect: holdInspect, holdWrite: holdWrite, failWrite: failWrite)
+            plan: plan, root: root, holdInspect: holdInspect, holdWrite: holdWrite, failWrite: failWrite,
+            uncertainPublication: uncertainPublication)
         let chooser = ImageSessionChooser()
         chooser.destination = output
         let session = ShelfImageCopySession(access: access, copier: copier, destinationChooser: chooser)
         let service = ShelfService(
             store: ShelfStore(root: root.appendingPathComponent("store")),
-            access: access, imageCopy: session)
+            access: access, now: now, waitForExpiry: waitForExpiry, imageCopy: session)
         service.start()
         let fixture = Fixture(
             root: root, source: source, output: output, access: access,
@@ -250,6 +313,7 @@ struct ShelfImageCopySessionTests {
         f.copier.inspection.release()
         f.copier.writing.release()
         f.copier.failCleanup = false
+        f.copier.failRecovery = false
         f.chooser.release.resolve()
         await f.service.shutdown()
         if case .failure(let error) = await f.session.cancel() { Issue.record(error) }
@@ -411,7 +475,73 @@ struct ShelfImageCopySessionTests {
         }
     }
 
+    @Test("Uncertain publication retains its scope and recovers the actual URL without publishing again")
+    func publicationRecovery() async throws {
+        try await withFixture(uncertainPublication: true) { f in
+            let request = try await begin(f)
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            #expect(f.session.needsCleanup && f.session.receipt == nil)
+            #expect(f.session.message?.contains("A copy was created") == true)
+            #expect(f.access.active(f.output) == 1)
+            #expect(!f.session.save(size: .pixels2048))
+            if case .failure(let failure) = await f.session.cancel(requestID: request.id) {
+                #expect(failure == .storeWrite)
+            } else {
+                Issue.record("Unverified publication was treated as recovered")
+            }
+            #expect(f.session.request?.id == request.id && f.session.needsCleanup)
+            #expect(f.session.receipt == nil && f.access.active(f.output) == 1)
+            #expect(f.copier.writes == 1 && f.copier.recoveries == 1)
+            f.copier.failRecovery = false
+            try await f.session.cancel(requestID: request.id).get()
+            #expect(f.session.receipt?.url == f.copier.recoveredOutput)
+            #expect(!f.session.isActive && !f.session.needsCleanup && f.access.balanced)
+            #expect(f.copier.writes == 1 && f.copier.recoveries == 2)
+            #expect(f.copier.cleanupTokens.isEmpty)
+            #expect(!FileManager.default.fileExists(atPath: f.output.path))
+            #expect(try Data(contentsOf: f.copier.recoveredOutput) == Data("published copy".utf8))
+        }
+    }
+
     nonisolated enum StopAction: CaseIterable, Sendable { case clear, pause, remove, shutdown }
+    nonisolated enum RetainedStopAction: CaseIterable, Sendable { case pause, shutdown }
+
+    @Test(
+        "Failed image cleanup retains Shelf state until a stop retry succeeds", arguments: RetainedStopAction.allCases)
+    func serviceRetainsFailedStop(action: RetainedStopAction) async throws {
+        try await withFixture(failWrite: true) { f in
+            try f.service.addFile(f.source)
+            let item = try #require(f.service.items.first)
+            let request = try #require(f.service.prepareImageCopy(item))
+            try #require(await ImageSessionIdle(f.session).wait())
+            f.copier.failCleanup = true
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            let result = action == .pause ? await f.service.pause() : await f.service.shutdown()
+            if case .failure(let failure) = result {
+                #expect(failure == .storeWrite)
+            } else {
+                Issue.record("Stop succeeded despite retained image cleanup")
+            }
+            #expect(f.service.stopFailure == .storeWrite)
+            #expect(f.service.isRunning && !f.service.isStopping)
+            #expect(f.service.items.map(\.id) == [item.id])
+            #expect(f.access.active(f.source) == 1 && f.access.active(f.output) == 1)
+            #expect(f.session.needsCleanup && f.copier.cleanupTokens.count == 1)
+            if case .success = await f.service.cancelImageCopy(requestID: request.id, retryCleanup: false) {
+                Issue.record("Sheet dismissal cleared failed stop recovery")
+            }
+            #expect(f.session.needsCleanup && f.copier.cleanupTokens.count == 1)
+            f.copier.failCleanup = false
+            let retry = action == .pause ? await f.service.pause() : await f.service.shutdown()
+            try retry.get()
+            #expect(f.service.stopFailure == nil && !f.service.isRunning)
+            #expect(f.access.balanced && !f.session.needsCleanup)
+            #expect(f.service.items.count == (action == .pause ? 1 : 0))
+            #expect(f.copier.cleanupTokens.count == 2)
+        }
+    }
 
     @Test("Shelf lifecycle waits for held inspection before releasing the source", arguments: StopAction.allCases)
     func serviceDrain(action: StopAction) async throws {
@@ -489,4 +619,95 @@ struct ShelfImageCopySessionTests {
             #expect(f.copier.cleanupTokens.isEmpty)
         }
     }
+
+    @Test("Failed image cleanup waits for explicit retry while unrelated items continue to expire")
+    func failedCleanupSuspendsOnlyItsExpiry() async throws {
+        let clock = ImageSessionClock()
+        let scheduler = ImageExpiryScheduler()
+        try await withFixture(failWrite: true, now: clock.now, waitForExpiry: scheduler.wait) {
+            f in
+            f.service.setDefaultExpiry(.fifteenMinutes)
+            try f.service.addFile(f.source)
+            let item = try #require(f.service.items.first)
+            f.service.setDefaultExpiry(.oneHour)
+            try f.service.addText("unrelated expiring item")
+            try #require(await scheduler.scheduled(1))
+            #expect(scheduler.delays == [900])
+            let request = try #require(f.service.prepareImageCopy(item))
+            try #require(await ImageSessionIdle(f.session).wait())
+            f.copier.failCleanup = true
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            clock.advance(900)
+            scheduler.fire(0)
+            try #require(await scheduler.scheduled(2))
+            #expect(f.copier.cleanupTokens == [f.copier.temporary])
+            #expect(scheduler.delays == [900, 2700])
+            #expect(f.session.needsCleanup && f.service.items.count == 2)
+            clock.advance(2700)
+            scheduler.fire(1)
+            while f.service.items.count == 2, !Task.isCancelled { await Task.yield() }
+            try #require(f.service.items.map(\.id) == [item.id])
+            await f.service.expireItems()
+            #expect(f.copier.cleanupTokens.count == 1)
+            #expect(scheduler.delays.count == 2)
+            f.copier.failCleanup = false
+            try await f.service.cancelImageCopy(requestID: request.id).get()
+            try #require(await scheduler.scheduled(3))
+            #expect(scheduler.delays == [900, 2700, 0])
+            scheduler.fire(2)
+            while !f.service.items.isEmpty, !Task.isCancelled { await Task.yield() }
+            #expect(f.service.items.isEmpty)
+            #expect(f.copier.cleanupTokens.count == 2)
+            #expect(!f.session.needsCleanup && f.access.balanced)
+        }
+    }
+
+    @Test("A stale cancellation cannot release a newer image request's expiry block")
+    func staleCancellationPreservesExpiryBlock() async throws {
+        let clock = ImageSessionClock()
+        let scheduler = ImageExpiryScheduler()
+        try await withFixture(failWrite: true, now: clock.now, waitForExpiry: scheduler.wait) {
+            f in
+            f.service.setDefaultExpiry(.fifteenMinutes)
+            try f.service.addFile(f.source)
+            let item = try #require(f.service.items.first)
+            try #require(await scheduler.scheduled(1))
+            let first = try #require(f.service.prepareImageCopy(item))
+            try #require(await ImageSessionIdle(f.session).wait())
+            f.copier.failCleanup = true
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            clock.advance(900)
+            await f.service.expireItems()
+            #expect(f.copier.cleanupTokens.count == 1)
+            f.copier.failCleanup = false
+            try await f.service.cancelImageCopy(requestID: first.id).get()
+            try #require(await scheduler.scheduled(2))
+
+            let second = try #require(f.service.prepareImageCopy(item))
+            try #require(await ImageSessionIdle(f.session).wait())
+            f.copier.failCleanup = true
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            if case .success = await f.service.cancelImageCopy(requestID: second.id) {
+                Issue.record("New request cleanup succeeded despite the fixture refusal")
+            }
+            #expect(f.copier.cleanupTokens.count == 3)
+            try await f.service.cancelImageCopy(requestID: first.id).get()
+            await f.service.expireItems()
+            #expect(f.session.request?.id == second.id && f.session.needsCleanup)
+            #expect(f.copier.cleanupTokens.count == 3)
+            #expect(f.service.items.map(\.id) == [item.id])
+            #expect(scheduler.delays == [900, 0])
+            f.copier.failCleanup = false
+            try await f.service.cancelImageCopy(requestID: second.id).get()
+            try #require(await scheduler.scheduled(3))
+            scheduler.fire(2)
+            while !f.service.items.isEmpty, !Task.isCancelled { await Task.yield() }
+            #expect(f.service.items.isEmpty && f.access.balanced)
+            #expect(f.copier.cleanupTokens.count == 4)
+        }
+    }
+
 }

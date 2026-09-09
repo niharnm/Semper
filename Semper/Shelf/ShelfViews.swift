@@ -43,7 +43,7 @@ struct ShelfCompactView: View {
                 }
                 if service.items.count > 3 { Button("View all \(service.items.count) items", action: openDetail) }
             }
-            ShelfImageCleanupView(session: service.imageCopy)
+            ShelfImageCleanupView(service: service)
             if service.importCount > 0 {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -124,7 +124,7 @@ struct ShelfDetailView: View {
                     Button("Dismiss") { service.dismissMessage() }
                 }.font(.callout).foregroundStyle(.orange)
             }
-            ShelfImageCleanupView(session: service.imageCopy)
+            ShelfImageCleanupView(service: service)
             if service.importCount > 0 {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -183,8 +183,8 @@ struct ShelfDetailView: View {
             }.padding().frame(minWidth: 540, minHeight: 380)
         }
         .sheet(item: $resizeRequest) { request in
-            ShelfImageCopyView(session: service.imageCopy, request: request)
-                .onDisappear { Task { await service.imageCopy.cancel(requestID: request.id) } }
+            ShelfImageCopyView(service: service, request: request)
+                .onDisappear { Task { await service.cancelImageCopy(requestID: request.id, retryCleanup: false) } }
         }
         .onChange(of: service.imageCopy.request?.id) { _, id in
             if resizeRequest?.id != id { resizeRequest = nil }

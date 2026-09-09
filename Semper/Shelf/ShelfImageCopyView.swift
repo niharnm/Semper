@@ -1,17 +1,18 @@
 import SwiftUI
 
 struct ShelfImageCleanupView: View {
-    let session: ShelfImageCopySession
+    let service: ShelfService
+    private var session: ShelfImageCopySession { service.imageCopy }
 
     var body: some View {
         if session.needsCleanup {
             HStack(alignment: .top) {
-                Label("A temporary resized image still needs cleanup.", systemImage: "exclamationmark.circle")
+                Label("An image operation needs recovery.", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.orange)
                 Spacer()
                 Button("Retry Cleanup") {
                     guard session.needsCleanup, let requestID = session.request?.id else { return }
-                    Task { await session.cancel(requestID: requestID) }
+                    Task { await service.cancelImageCopy(requestID: requestID) }
                 }
                 .disabled(session.isWorking)
             }.font(.callout)
@@ -20,7 +21,8 @@ struct ShelfImageCleanupView: View {
 }
 
 struct ShelfImageCopyView: View {
-    let session: ShelfImageCopySession
+    let service: ShelfService
+    private var session: ShelfImageCopySession { service.imageCopy }
     let request: ShelfImageCopyRequest
     @State private var size: ShelfImageCopySize = .pixels1024
 
@@ -44,7 +46,7 @@ struct ShelfImageCopyView: View {
                     }
                 }
                 .pickerStyle(.radioGroup)
-                .disabled(session.isWorking)
+                .disabled(session.isWorking || session.needsCleanup)
                 Text(
                     "Smaller images keep their dimensions. The copy keeps its format, orientation, color profile, and PNG transparency."
                 )
@@ -60,16 +62,22 @@ struct ShelfImageCopyView: View {
                     Text(session.plan == nil ? "Reading image…" : "Saving copy…")
                 }.font(.callout)
             }
+            if !session.recoveryLocations.isEmpty {
+                Text("Locations to check").font(.caption).foregroundStyle(.secondary)
+                ForEach(session.recoveryLocations, id: \.self) { url in
+                    Text(url.path).font(.caption).textSelection(.enabled)
+                }
+            }
             if let message = session.message {
                 Label(message, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
             }
             HStack {
                 Spacer()
-                Button(session.receipt == nil ? "Cancel" : "Done") {
-                    Task { await session.cancel(requestID: request.id) }
+                Button(session.needsCleanup ? "Retry Cleanup" : session.receipt == nil ? "Cancel" : "Done") {
+                    Task { await service.cancelImageCopy(requestID: request.id) }
                 }
-                .keyboardShortcut(.cancelAction)
+                .keyboardShortcut(session.needsCleanup ? nil : .cancelAction)
                 if session.plan != nil && session.receipt == nil {
                     Button("Save Copy…") {
                         if session.request?.id == request.id { session.save(size: size) }

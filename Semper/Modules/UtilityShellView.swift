@@ -104,7 +104,7 @@ struct UtilityShellView: View {
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
                 pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason)
         case .module(let id):
-            module(id).disabled(id != .away && runtime.mutationDisabledReason != nil)
+            module(id).disabled(moduleInteractionDisabled(for: id))
         }
     }
 
@@ -128,7 +128,10 @@ struct UtilityShellView: View {
                         UtilityActionList(commands: runtime.commands, actions: runtime.registry.favoriteActions)
                     }
                     ForEach(runtime.registry.addedModules) { module in
-                        if compact, module.id == .shelf,
+                        if compact, module.id == .shelf, shelfStopRecoveryRoute != nil {
+                            ShelfStopRecoveryView(runtime: runtime)
+                                .disabled(moduleInteractionDisabled(for: .shelf))
+                        } else if compact, module.id == .shelf,
                             !runtime.registry.pausedModuleIDs.contains(.shelf),
                             !runtime.lifecycle.stopping.contains(.shelf), !runtime.lifecycle.isShuttingDown,
                             let shelf = runtime.shelf, shelf.isRunning
@@ -230,6 +233,15 @@ struct UtilityShellView: View {
         return .module(.scenes)
     }
 
+    var shelfStopRecoveryRoute: ShelfStopRecoveryRoute? {
+        ShelfStopRecoveryRoute.current(in: runtime)
+    }
+
+    func moduleInteractionDisabled(for id: UtilityModuleID) -> Bool {
+        if id == .shelf, shelfStopRecoveryRoute != nil { return false }
+        return id != .away && runtime.mutationDisabledReason != nil
+    }
+
     @ViewBuilder
     private func module(_ id: UtilityModuleID) -> some View {
         if id == .away, runtime.awayCleanupResult != nil, runtime.awayCleanupResult != .complete {
@@ -241,6 +253,8 @@ struct UtilityShellView: View {
             runtime.sceneShortcuts == nil || runtime.lifecycle.isShuttingDown
         {
             SceneRecoveryView(manager: scenes)
+        } else if id == .shelf, shelfStopRecoveryRoute != nil {
+            ShelfStopRecoveryView(runtime: runtime)
         } else if runtime.registry.pausedModuleIDs.contains(id) {
             ContentUnavailableView {
                 Label("Module paused", systemImage: "pause.circle")
@@ -519,6 +533,62 @@ struct UtilitySettingsView: View {
             if !(await runtime.resetAllSettings()) { resetError = runtime.message }
             resetInProgress = false
         }
+    }
+}
+
+nonisolated enum ShelfStopRecoveryRoute: Equatable, Sendable {
+    case pause, shutdown
+
+    @MainActor
+    static func current(in runtime: UtilityRuntime) -> Self? {
+        guard runtime.shelf?.stopFailure != nil else { return nil }
+        return runtime.lifecycle.isShuttingDown ? .shutdown : .pause
+    }
+
+    @MainActor
+    static func retry(in runtime: UtilityRuntime) async throws {
+        switch current(in: runtime) {
+        case .pause: try await runtime.pause(.shelf)
+        case .shutdown: await runtime.shutdown()
+        case nil: return
+        }
+    }
+}
+
+private struct ShelfStopRecoveryView: View {
+    @Bindable var runtime: UtilityRuntime
+    @State private var retrying = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("File Shelf cleanup needs attention", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+            Text(
+                runtime.shelf?.imageCopy.message ?? runtime.shelf?.stopFailure?.localizedDescription
+                    ?? "Retry cleanup to finish stopping File Shelf."
+            )
+            .foregroundStyle(.secondary)
+            if let session = runtime.shelf?.imageCopy {
+                ForEach(session.recoveryLocations, id: \.self) { location in
+                    Text(location.path).font(.callout).textSelection(.enabled)
+                }
+            }
+            Text("Shelf items are retained until cleanup finishes.").font(.callout)
+            Button("Retry Cleanup") {
+                guard !retrying else { return }
+                retrying = true
+                Task {
+                    do { try await ShelfStopRecoveryRoute.retry(in: runtime) } catch {
+                        runtime.message = error.localizedDescription
+                    }
+                    retrying = false
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(retrying || runtime.shelf?.isStopping == true || runtime.lifecycle.stopping.contains(.shelf))
+            if retrying { ProgressView().controlSize(.small) }
+        }
+        .padding(24)
     }
 }
 
