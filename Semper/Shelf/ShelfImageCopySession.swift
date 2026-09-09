@@ -49,9 +49,14 @@ final class ShelfImageCopySession {
     private(set) var isWorking = false
     private(set) var message: String?
     private(set) var receipt: ShelfImageCopyReceipt?
+    private(set) var needsReceiptAcknowledgement = false
 
     var isActive: Bool { request != nil || isWorking || needsCleanup }
     var needsCleanup: Bool { pendingCleanup != nil }
+    var hasUnverifiedPublishedCopy: Bool {
+        if case .published = pendingCleanup?.copy { return true }
+        return false
+    }
     var recoveryLocations: [URL] {
         switch pendingCleanup?.copy {
         case .temporary(let stage): stage.recoveryLocations
@@ -132,13 +137,13 @@ final class ShelfImageCopySession {
         let currentWork = work
         let cancellation = Task { @MainActor in
             await currentWork?.value
-            let result = await self.retryCleanup()
+            var result = await self.retryCleanup()
             if case .success = result {
-                self.activeID = nil
-                self.request = nil
-                self.plan = nil
-                self.message = nil
-                self.cancellationRequested = false
+                if self.needsReceiptAcknowledgement {
+                    result = .failure(.recoveredCopyNeedsAcknowledgement)
+                } else {
+                    self.finishRequest()
+                }
             }
             self.cancellation = nil
             self.isWorking = false
@@ -149,6 +154,54 @@ final class ShelfImageCopySession {
         destinationChooser.cancel()
         isWorking = true
         return await cancellation.value
+    }
+
+    @discardableResult
+    func acknowledgeRecoveredReceipt(requestID: UUID) -> Bool {
+        guard activeID == requestID, needsReceiptAcknowledgement, receipt != nil,
+            work == nil, cancellation == nil, !isWorking, !needsCleanup
+        else { return false }
+        finishRequest()
+        return true
+    }
+
+    func acknowledgeUnverifiedCopy(requestID: UUID) async -> Result<Void, ShelfFailure> {
+        guard activeID == requestID else { return .failure(.cancelled) }
+        if let cancellation { return await cancellation.value }
+        guard work == nil, !isWorking, let pendingCleanup, case .published(let published) = pendingCleanup.copy
+        else { return .failure(.cancelled) }
+        let copier = copier
+        let cancellation = Task { @MainActor in
+            let worker = Task.detached(priority: .utility) { try copier.acknowledgeUnverifiedCopy(published) }
+            let result: Result<Void, ShelfFailure>
+            switch await worker.result {
+            case .success:
+                if pendingCleanup.scoped { self.access.end(pendingCleanup.destination) }
+                self.pendingCleanup = nil
+                self.receipt = nil
+                self.finishRequest()
+                result = .success(())
+            case .failure(let error):
+                self.message = error.localizedDescription
+                result = .failure(.storeWrite)
+            }
+            self.cancellation = nil
+            self.isWorking = false
+            return result
+        }
+        self.cancellation = cancellation
+        cancellationRequested = true
+        isWorking = true
+        return await cancellation.value
+    }
+
+    private func finishRequest() {
+        needsReceiptAcknowledgement = false
+        activeID = nil
+        request = nil
+        plan = nil
+        message = nil
+        cancellationRequested = false
     }
 
     private func inspect(_ source: URL, requestID: UUID) async {
@@ -229,7 +282,11 @@ final class ShelfImageCopySession {
         }
         switch await worker.result {
         case .success(let receipt):
-            if let receipt { self.receipt = receipt }
+            if let receipt {
+                self.receipt = receipt
+                needsReceiptAcknowledgement = true
+                message = nil
+            }
             if pendingCleanup.scoped { access.end(pendingCleanup.destination) }
             self.pendingCleanup = nil
             return .success(())

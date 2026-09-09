@@ -1,3 +1,4 @@
+import Foundation
 import KeyboardShortcuts
 import SwiftUI
 
@@ -553,6 +554,24 @@ nonisolated enum ShelfStopRecoveryRoute: Equatable, Sendable {
         case nil: return
         }
     }
+
+    @MainActor
+    static func acknowledgeRecoveredCopy(in runtime: UtilityRuntime, requestID: UUID) async throws {
+        guard current(in: runtime) != nil,
+            runtime.shelf?.acknowledgeImageCopyReceipt(requestID: requestID) == true
+        else { return }
+        try await retry(in: runtime)
+    }
+
+    @MainActor
+    static func acknowledgeUnverifiedCopy(in runtime: UtilityRuntime, requestID: UUID) async throws {
+        guard current(in: runtime) != nil, let service = runtime.shelf,
+            service.imageCopy.request?.id == requestID, service.imageCopy.hasUnverifiedPublishedCopy
+        else { return }
+        try await service.acknowledgeUnverifiedImageCopy(requestID: requestID).get()
+        guard runtime.shelf === service, service.imageCopy.request == nil else { return }
+        try await retry(in: runtime)
+    }
 }
 
 private struct ShelfStopRecoveryView: View {
@@ -560,6 +579,9 @@ private struct ShelfStopRecoveryView: View {
     @State private var retrying = false
 
     var body: some View {
+        let acknowledgementRequest =
+            runtime.shelf?.imageCopy.needsReceiptAcknowledgement == true
+            ? runtime.shelf?.imageCopy.request : nil
         VStack(alignment: .leading, spacing: 14) {
             Label("File Shelf cleanup needs attention", systemImage: "exclamationmark.triangle")
                 .font(.headline)
@@ -569,16 +591,28 @@ private struct ShelfStopRecoveryView: View {
             )
             .foregroundStyle(.secondary)
             if let session = runtime.shelf?.imageCopy {
-                ForEach(session.recoveryLocations, id: \.self) { location in
-                    Text(location.path).font(.callout).textSelection(.enabled)
+                if session.needsReceiptAcknowledgement, let receipt = session.receipt {
+                    Label("Copy recovered", systemImage: "checkmark.circle").foregroundStyle(.green)
+                    Text(receipt.url.path).font(.callout).textSelection(.enabled)
+                } else {
+                    ForEach(session.recoveryLocations, id: \.self) { location in
+                        Text(location.path).font(.callout).textSelection(.enabled)
+                    }
                 }
             }
             Text("Shelf items are retained until cleanup finishes.").font(.callout)
-            Button("Retry Cleanup") {
+            Button(acknowledgementRequest == nil ? "Retry Cleanup" : "Done") {
                 guard !retrying else { return }
                 retrying = true
                 Task {
-                    do { try await ShelfStopRecoveryRoute.retry(in: runtime) } catch {
+                    do {
+                        if let acknowledgementRequest {
+                            try await ShelfStopRecoveryRoute.acknowledgeRecoveredCopy(
+                                in: runtime, requestID: acknowledgementRequest.id)
+                        } else {
+                            try await ShelfStopRecoveryRoute.retry(in: runtime)
+                        }
+                    } catch {
                         runtime.message = error.localizedDescription
                     }
                     retrying = false
@@ -586,6 +620,28 @@ private struct ShelfStopRecoveryView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(retrying || runtime.shelf?.isStopping == true || runtime.lifecycle.stopping.contains(.shelf))
+            if let session = runtime.shelf?.imageCopy, session.hasUnverifiedPublishedCopy,
+                let request = session.request
+            {
+                ShelfUnverifiedCopyExplanation()
+                Button("Finish Without Verification") {
+                    guard !retrying else { return }
+                    retrying = true
+                    Task {
+                        do {
+                            try await ShelfStopRecoveryRoute.acknowledgeUnverifiedCopy(
+                                in: runtime, requestID: request.id)
+                        } catch {
+                            runtime.message = error.localizedDescription
+                        }
+                        retrying = false
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(
+                    retrying || session.isWorking || runtime.shelf?.isStopping == true
+                        || runtime.lifecycle.stopping.contains(.shelf))
+            }
             if retrying { ProgressView().controlSize(.small) }
         }
         .padding(24)

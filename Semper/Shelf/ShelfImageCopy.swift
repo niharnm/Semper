@@ -87,6 +87,7 @@ nonisolated protocol ShelfImageCopying: Sendable {
         -> ShelfImageCopyReceipt
     func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws
     func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt
+    func acknowledgeUnverifiedCopy(_ published: ShelfImagePublishedCopy) throws
 }
 
 nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
@@ -233,6 +234,13 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
     func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt {
         guard let owner = published.owner else { throw ShelfImageCopyFailure.publicationUncertain(published) }
         return try owner.recoverPublication()
+    }
+
+    func acknowledgeUnverifiedCopy(_ published: ShelfImagePublishedCopy) throws {
+        guard let owner = published.owner else { throw ShelfImageCopyFailure.publicationUncertain(published) }
+        do { try owner.acknowledgeUnverifiedCopy() } catch {
+            throw ShelfImageCopyFailure.publicationUncertain(published)
+        }
     }
 
     private static func readBounded(_ file: FileHandle) throws -> Data {

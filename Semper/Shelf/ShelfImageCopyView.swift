@@ -1,20 +1,49 @@
 import SwiftUI
 
+struct ShelfUnverifiedCopyExplanation: View {
+    var body: some View {
+        Text(
+            "No saved location can be confirmed. Any existing copy stays unchanged. Private temporary files must still be cleaned up."
+        )
+        .font(.callout).foregroundStyle(.secondary)
+    }
+}
+
 struct ShelfImageCleanupView: View {
     let service: ShelfService
     private var session: ShelfImageCopySession { service.imageCopy }
 
     var body: some View {
-        if session.needsCleanup {
+        if session.needsReceiptAcknowledgement, let receipt = session.receipt, let request = session.request {
             HStack(alignment: .top) {
-                Label("An image operation needs recovery.", systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
-                Spacer()
-                Button("Retry Cleanup") {
-                    guard session.needsCleanup, let requestID = session.request?.id else { return }
-                    Task { await service.cancelImageCopy(requestID: requestID) }
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Copy recovered", systemImage: "checkmark.circle").foregroundStyle(.green)
+                    Text(receipt.url.path).textSelection(.enabled)
                 }
-                .disabled(session.isWorking)
+                Spacer()
+                Button("Done") { service.acknowledgeImageCopyReceipt(requestID: request.id) }
+                    .disabled(session.isWorking)
+            }.font(.callout)
+        } else if session.needsCleanup {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    Label("An image operation needs recovery.", systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("Retry Cleanup") {
+                        guard session.needsCleanup, let requestID = session.request?.id else { return }
+                        Task { await service.cancelImageCopy(requestID: requestID) }
+                    }
+                    .disabled(session.isWorking)
+                }
+                if session.hasUnverifiedPublishedCopy, let request = session.request {
+                    ShelfUnverifiedCopyExplanation()
+                    Button("Finish Without Verification") {
+                        Task { await service.acknowledgeUnverifiedImageCopy(requestID: request.id) }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(session.isWorking)
+                }
             }.font(.callout)
         }
     }
@@ -62,7 +91,7 @@ struct ShelfImageCopyView: View {
                     Text(session.plan == nil ? "Reading image…" : "Saving copy…")
                 }.font(.callout)
             }
-            if !session.recoveryLocations.isEmpty {
+            if !session.needsReceiptAcknowledgement, !session.recoveryLocations.isEmpty {
                 Text("Locations to check").font(.caption).foregroundStyle(.secondary)
                 ForEach(session.recoveryLocations, id: \.self) { url in
                     Text(url.path).font(.caption).textSelection(.enabled)
@@ -72,12 +101,28 @@ struct ShelfImageCopyView: View {
                 Label(message, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
             }
+            if session.hasUnverifiedPublishedCopy {
+                ShelfUnverifiedCopyExplanation()
+                Button("Finish Without Verification") {
+                    Task { await service.acknowledgeUnverifiedImageCopy(requestID: request.id) }
+                }
+                .buttonStyle(.borderless)
+                .disabled(session.isWorking)
+            }
             HStack {
                 Spacer()
-                Button(session.needsCleanup ? "Retry Cleanup" : session.receipt == nil ? "Cancel" : "Done") {
-                    Task { await service.cancelImageCopy(requestID: request.id) }
+                Button(
+                    session.needsReceiptAcknowledgement
+                        ? "Done"
+                        : session.needsCleanup ? "Retry Cleanup" : session.receipt == nil ? "Cancel" : "Done"
+                ) {
+                    if session.needsReceiptAcknowledgement {
+                        service.acknowledgeImageCopyReceipt(requestID: request.id)
+                    } else {
+                        Task { await service.cancelImageCopy(requestID: request.id) }
+                    }
                 }
-                .keyboardShortcut(session.needsCleanup ? nil : .cancelAction)
+                .keyboardShortcut(session.needsCleanup || session.needsReceiptAcknowledgement ? nil : .cancelAction)
                 if session.plan != nil && session.receipt == nil {
                     Button("Save Copy…") {
                         if session.request?.id == request.id { session.save(size: size) }

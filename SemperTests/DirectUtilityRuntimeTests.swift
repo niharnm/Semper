@@ -633,6 +633,99 @@ struct DirectUtilityRuntimeTests {
         }
     }
 
+    @Test(
+        "Publication recovery stays accessible until its acknowledgement finishes the pending stop",
+        .timeLimit(.minutes(1)), arguments: [false, true], [false, true])
+    func shelfRecoveredLocationAcknowledgement(shutdown: Bool, verified: Bool) async throws {
+        try await withRuntime { runtime, probe in
+            let access = DirectShelfStopAccess()
+            let destination = probe.directory.appendingPathComponent("requested-copy.png")
+            let recovered = probe.directory.appendingPathComponent("relocated-copy.png")
+            let copier = DirectShelfRecoveredCopier(recovered: recovered)
+            let session = ShelfImageCopySession(
+                access: access, copier: copier, destinationChooser: DirectShelfImageChooser(destination: destination))
+            probe.shelfAccess = access
+            probe.shelfImageCopy = session
+            let source = probe.directory.appendingPathComponent("source.png")
+            let bitmap = try #require(
+                NSBitmapImageRep(
+                    bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8,
+                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                    bytesPerRow: 0, bitsPerPixel: 0))
+            bitmap.setColor(.red, atX: 0, y: 0)
+            try #require(bitmap.representation(using: .png, properties: [:])).write(to: source)
+            try await runtime.start(.shelf)
+            let shelf = try #require(runtime.shelf)
+            try shelf.addFile(source)
+            let item = try #require(shelf.items.first)
+            let request = try #require(shelf.prepareImageCopy(item))
+            while session.isWorking, !Task.isCancelled { await Task.yield() }
+            try #require(session.plan != nil)
+            try #require(session.save(size: .pixels1024))
+            while session.isWorking, !Task.isCancelled { await Task.yield() }
+            try #require(session.needsCleanup && session.receipt == nil)
+            let edited = Data("user edited the recovered fixture".utf8)
+            if !verified {
+                try edited.write(to: recovered)
+                copier.failRecovery = true
+            }
+
+            if shutdown {
+                await runtime.shutdown()
+            } else {
+                await #expect(throws: UtilityCleanupDeferral.self) { try await runtime.pause(.shelf) }
+            }
+            let shell = UtilityShellView(runtime: runtime, connectsShellActions: false)
+            #expect(runtime.shelf === shelf && shelf.items.map(\.id) == [item.id])
+            #expect(shell.shelfStopRecoveryRoute == (shutdown ? .shutdown : .pause))
+            #expect(shelf.prepareImageCopy(item) == nil)
+            #expect(copier.writes == 1 && copier.recoveries == 1)
+            if verified {
+                #expect(shelf.stopFailure == .recoveredCopyNeedsAcknowledgement)
+                #expect(session.needsReceiptAcknowledgement && !session.needsCleanup)
+                #expect(session.request?.id == request.id && session.receipt?.url == recovered)
+                #expect(access.active == 1)
+                _ = await shelf.cancelImageCopy(requestID: request.id, retryCleanup: false)
+                try await ShelfStopRecoveryRoute.acknowledgeRecoveredCopy(in: runtime, requestID: UUID())
+                #expect(runtime.shelf === shelf && session.request?.id == request.id)
+                #expect(session.needsReceiptAcknowledgement && session.receipt?.url == recovered)
+                #expect(copier.writes == 1 && copier.recoveries == 1)
+                try await ShelfStopRecoveryRoute.acknowledgeRecoveredCopy(in: runtime, requestID: request.id)
+                #expect(session.receipt?.url == recovered)
+                #expect(try Data(contentsOf: recovered) == Data("recovered fixture copy".utf8))
+            } else {
+                #expect(shelf.stopFailure == .storeWrite)
+                #expect(session.hasUnverifiedPublishedCopy && session.receipt == nil)
+                #expect(access.active == 2)
+                try await ShelfStopRecoveryRoute.acknowledgeUnverifiedCopy(in: runtime, requestID: UUID())
+                #expect(copier.acknowledgements == 0)
+                copier.failPrivateCleanup = true
+                await #expect(throws: ShelfFailure.self) {
+                    try await ShelfStopRecoveryRoute.acknowledgeUnverifiedCopy(in: runtime, requestID: request.id)
+                }
+                #expect(runtime.shelf === shelf && session.hasUnverifiedPublishedCopy)
+                #expect(session.request?.id == request.id && session.receipt == nil && access.active == 2)
+                _ = await shelf.cancelImageCopy(requestID: request.id, retryCleanup: false)
+                #expect(copier.acknowledgements == 1 && copier.recoveries == 1)
+                copier.failPrivateCleanup = false
+                try await ShelfStopRecoveryRoute.acknowledgeUnverifiedCopy(in: runtime, requestID: request.id)
+                #expect(session.receipt == nil && copier.acknowledgements == 2)
+                #expect(try Data(contentsOf: recovered) == edited)
+            }
+            #expect(shell.shelfStopRecoveryRoute == nil)
+            #expect(!session.needsReceiptAcknowledgement && session.request == nil)
+            #expect(shelf.stopFailure == nil && access.active == 0)
+            #expect(copier.writes == 1 && copier.recoveries == 1)
+            #expect(!FileManager.default.fileExists(atPath: destination.path))
+            if shutdown {
+                #expect(runtime.shelf == nil)
+            } else {
+                #expect(runtime.shelf === shelf && !shelf.isRunning)
+                #expect(runtime.registry.state(for: .shelf)?.runtime == .paused)
+            }
+        }
+    }
+
     @Test("Direct service changes update permission and limitation badges without restarting services")
     func liveStatus() async throws {
         try await withRuntime { runtime, probe in
@@ -825,6 +918,7 @@ private final class DirectRuntimeProbe {
     var workspaceCreationFails = false
     var workspaceBackendOverride: (any WorkspaceWindowBackend)?
     var shelfAccess: any ShelfFileAccess = DirectRuntimeFileAccess()
+    var shelfImageCopy: ShelfImageCopySession?
     var shelfImporter: @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload = ShelfDropImporter
         .load
 
@@ -864,7 +958,7 @@ private final class DirectRuntimeProbe {
         creations[.shelf, default: 0] += 1
         return ShelfService(
             store: ShelfStore(root: directory.appendingPathComponent("Shelf")), access: shelfAccess,
-            importer: shelfImporter)
+            imageCopy: shelfImageCopy, importer: shelfImporter)
     }
 
     func makeStorage() -> SafeEjectService {
@@ -933,6 +1027,65 @@ private struct DirectRuntimeFileAccess: ShelfFileAccess {
     func state(of url: URL) -> ShelfFileState { .available(isDirectory: false) }
     func bookmark(for url: URL) throws -> Data { throw ShelfFailure.unsupported }
     func resolve(_ bookmark: Data) throws -> URL { throw ShelfFailure.unsupported }
+}
+
+nonisolated private final class DirectShelfRecoveredCopier: ShelfImageCopying, @unchecked Sendable {
+    let recovered: URL
+    private let lock = NSLock()
+    private var writeCount = 0
+    private var recoveryCount = 0
+    private var acknowledgementCount = 0
+    private var recoveryFailure = false
+    private var privateCleanupFailure = false
+    var writes: Int { lock.withLock { writeCount } }
+    var recoveries: Int { lock.withLock { recoveryCount } }
+    var acknowledgements: Int { lock.withLock { acknowledgementCount } }
+    var failRecovery: Bool {
+        get { lock.withLock { recoveryFailure } }
+        set { lock.withLock { recoveryFailure = newValue } }
+    }
+    var failPrivateCleanup: Bool {
+        get { lock.withLock { privateCleanupFailure } }
+        set { lock.withLock { privateCleanupFailure = newValue } }
+    }
+
+    init(recovered: URL) { self.recovered = recovered }
+
+    func inspect(_ source: URL, access: any ShelfFileAccess) throws -> ShelfImageCopyPlan {
+        try NativeShelfImageCopier().inspect(source, access: access)
+    }
+
+    func writeCopy(_ plan: ShelfImageCopyPlan, size: ShelfImageCopySize, to destination: URL) throws
+        -> ShelfImageCopyReceipt
+    {
+        lock.withLock { writeCount += 1 }
+        try Data("recovered fixture copy".utf8).write(to: recovered)
+        throw ShelfImageCopyFailure.publicationUncertain(
+            ShelfImagePublishedCopy(requestedURL: destination, dimensions: plan.outputDimensions(for: size)))
+    }
+
+    func recoverPublishedCopy(_ published: ShelfImagePublishedCopy) throws -> ShelfImageCopyReceipt {
+        lock.withLock { recoveryCount += 1 }
+        if failRecovery { throw ShelfImageCopyFailure.publicationUncertain(published) }
+        return ShelfImageCopyReceipt(url: recovered, dimensions: published.dimensions)
+    }
+
+    func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws {
+        throw ShelfImageCopyFailure.invalidTemporaryCopy
+    }
+
+    func acknowledgeUnverifiedCopy(_ published: ShelfImagePublishedCopy) throws {
+        lock.withLock { acknowledgementCount += 1 }
+        if failPrivateCleanup { throw ShelfImageCopyFailure.publicationUncertain(published) }
+    }
+}
+
+@MainActor
+private final class DirectShelfImageChooser: ShelfImageDestinationChoosing {
+    let destination: URL
+    init(destination: URL) { self.destination = destination }
+    func chooseDestination(for plan: ShelfImageCopyPlan, size: ShelfImageCopySize) async -> URL? { destination }
+    func cancel() {}
 }
 
 nonisolated private final class DirectShelfStopSignal: @unchecked Sendable {

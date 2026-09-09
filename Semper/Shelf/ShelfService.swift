@@ -410,23 +410,47 @@ final class ShelfService {
     @discardableResult
     func cancelImageCopy(requestID: UUID? = nil, retryCleanup: Bool = true) async -> Result<Void, ShelfFailure> {
         if let requestID, requestID != imageCopy.request?.id { return .success(()) }
+        if !retryCleanup, imageCopy.needsReceiptAcknowledgement { return .failure(.recoveredCopyNeedsAcknowledgement) }
         if !retryCleanup, imageCopy.needsCleanup { return .failure(.storeWrite) }
         let request = imageCopy.request
         let result = await imageCopy.cancel(requestID: requestID)
-        if let request {
-            switch result {
-            case .success:
-                if expiryBlockedRequests[request.itemID] == request.id {
-                    expiryBlockedRequests[request.itemID] = nil
-                    scheduleExpiry()
-                }
-            case .failure:
-                if imageCopy.request?.id == request.id, imageCopy.needsCleanup {
-                    expiryBlockedRequests[request.itemID] = request.id
-                }
+        if let request { updateImageExpiryBlock(request, result: result) }
+        return result
+    }
+
+    func acknowledgeUnverifiedImageCopy(requestID: UUID) async -> Result<Void, ShelfFailure> {
+        guard let request = imageCopy.request, request.id == requestID else { return .failure(.cancelled) }
+        let result = await imageCopy.acknowledgeUnverifiedCopy(requestID: requestID)
+        updateImageExpiryBlock(request, result: result)
+        return result
+    }
+
+    @discardableResult
+    func acknowledgeImageCopyReceipt(requestID: UUID) -> Bool {
+        guard let request = imageCopy.request, request.id == requestID,
+            imageCopy.acknowledgeRecoveredReceipt(requestID: requestID)
+        else { return false }
+        if expiryBlockedRequests[request.itemID] == requestID {
+            expiryBlockedRequests[request.itemID] = nil
+            scheduleExpiry()
+        }
+        return true
+    }
+
+    private func updateImageExpiryBlock(_ request: ShelfImageCopyRequest, result: Result<Void, ShelfFailure>) {
+        switch result {
+        case .success:
+            if expiryBlockedRequests[request.itemID] == request.id {
+                expiryBlockedRequests[request.itemID] = nil
+                scheduleExpiry()
+            }
+        case .failure:
+            if imageCopy.request?.id == request.id,
+                imageCopy.needsCleanup || imageCopy.needsReceiptAcknowledgement
+            {
+                expiryBlockedRequests[request.itemID] = request.id
             }
         }
-        return result
     }
 
     func canResizeImage(_ item: ShelfItem) -> Bool {

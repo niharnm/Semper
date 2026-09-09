@@ -90,11 +90,13 @@ nonisolated private final class ImageSessionCopier: ShelfImageCopying, @unchecke
     private var cleanupFailure = false
     private var recoveryFailure = true
     private var recoveryCount = 0
+    private var acknowledgementCount = 0
     let failWrite: Bool
     let uncertainPublication: Bool
     let recoveredOutput: URL
     var writes: Int { lock.withLock { writeCount } }
     var recoveries: Int { lock.withLock { recoveryCount } }
+    var acknowledgements: Int { lock.withLock { acknowledgementCount } }
     var cleanupTokens: [ShelfImageTemporaryCopy] { lock.withLock { removed } }
     var failCleanup: Bool {
         get { lock.withLock { cleanupFailure } }
@@ -149,6 +151,11 @@ nonisolated private final class ImageSessionCopier: ShelfImageCopying, @unchecke
         lock.withLock { recoveryCount += 1 }
         if failRecovery { throw ShelfImageCopyFailure.publicationUncertain(published) }
         return ShelfImageCopyReceipt(url: recoveredOutput, dimensions: published.dimensions)
+    }
+
+    func acknowledgeUnverifiedCopy(_ published: ShelfImagePublishedCopy) throws {
+        lock.withLock { acknowledgementCount += 1 }
+        if failCleanup { throw ShelfImageCopyFailure.publicationUncertain(published) }
     }
 
     func removeTemporaryCopy(_ temporary: ShelfImageTemporaryCopy) throws {
@@ -316,6 +323,10 @@ struct ShelfImageCopySessionTests {
         f.copier.failRecovery = false
         f.chooser.release.resolve()
         await f.service.shutdown()
+        if f.session.needsReceiptAcknowledgement, let requestID = f.session.request?.id {
+            #expect(f.service.acknowledgeImageCopyReceipt(requestID: requestID))
+            await f.service.shutdown()
+        }
         if case .failure(let error) = await f.session.cancel() { Issue.record(error) }
     }
 
@@ -494,13 +505,61 @@ struct ShelfImageCopySessionTests {
             #expect(f.session.receipt == nil && f.access.active(f.output) == 1)
             #expect(f.copier.writes == 1 && f.copier.recoveries == 1)
             f.copier.failRecovery = false
-            try await f.session.cancel(requestID: request.id).get()
+            if case .failure(let failure) = await f.session.cancel(requestID: request.id) {
+                #expect(failure == .recoveredCopyNeedsAcknowledgement)
+            } else {
+                Issue.record("Recovery dismissed its saved location before acknowledgement")
+            }
             #expect(f.session.receipt?.url == f.copier.recoveredOutput)
-            #expect(!f.session.isActive && !f.session.needsCleanup && f.access.balanced)
+            #expect(f.session.isActive && !f.session.needsCleanup && f.access.balanced)
+            #expect(f.session.request?.id == request.id && f.session.needsReceiptAcknowledgement)
+            #expect(!f.session.save(size: .pixels2048))
+            #expect(f.session.begin(itemID: UUID(), name: "next", source: f.source) == nil)
+            #expect(!f.service.acknowledgeImageCopyReceipt(requestID: UUID()))
+            _ = await f.service.cancelImageCopy(requestID: request.id, retryCleanup: false)
+            #expect(f.session.request?.id == request.id && f.session.receipt?.url == f.copier.recoveredOutput)
             #expect(f.copier.writes == 1 && f.copier.recoveries == 2)
+            #expect(f.service.acknowledgeImageCopyReceipt(requestID: request.id))
+            #expect(!f.session.isActive && !f.session.needsReceiptAcknowledgement)
+            #expect(f.session.receipt?.url == f.copier.recoveredOutput)
             #expect(f.copier.cleanupTokens.isEmpty)
             #expect(!FileManager.default.fileExists(atPath: f.output.path))
             #expect(try Data(contentsOf: f.copier.recoveredOutput) == Data("published copy".utf8))
+        }
+    }
+
+    @Test("Unverified acknowledgement requires private cleanup and creates no saved receipt", arguments: [false, true])
+    func unverifiedPublicationAcknowledgement(deleted: Bool) async throws {
+        try await withFixture(uncertainPublication: true) { f in
+            let request = try await begin(f)
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            let changed = Data("user edited the fixture copy".utf8)
+            if deleted {
+                try FileManager.default.removeItem(at: f.copier.recoveredOutput)
+            } else {
+                try changed.write(to: f.copier.recoveredOutput)
+            }
+            _ = await f.session.cancel(requestID: request.id)
+            #expect(f.session.hasUnverifiedPublishedCopy && f.session.receipt == nil)
+            f.copier.failCleanup = true
+            if case .success = await f.service.acknowledgeUnverifiedImageCopy(requestID: request.id) {
+                Issue.record("Unverified acknowledgement discarded failed private cleanup")
+            }
+            #expect(f.session.request?.id == request.id && f.session.hasUnverifiedPublishedCopy)
+            #expect(f.session.receipt == nil && f.access.active(f.output) == 1)
+            _ = await f.service.cancelImageCopy(requestID: request.id, retryCleanup: false)
+            #expect(f.copier.acknowledgements == 1 && f.copier.recoveries == 1)
+            f.copier.failCleanup = false
+            try await f.service.acknowledgeUnverifiedImageCopy(requestID: request.id).get()
+            #expect(!f.session.isActive && !f.session.needsReceiptAcknowledgement)
+            #expect(f.session.receipt == nil && f.access.balanced)
+            #expect(f.copier.writes == 1 && f.copier.acknowledgements == 2 && f.copier.recoveries == 1)
+            if deleted {
+                #expect(!FileManager.default.fileExists(atPath: f.copier.recoveredOutput.path))
+            } else {
+                #expect(try Data(contentsOf: f.copier.recoveredOutput) == changed)
+            }
         }
     }
 

@@ -241,6 +241,13 @@ nonisolated final class ShelfImageFileOwner: Sendable {
         }
     }
 
+    func acknowledgeUnverifiedCopy() throws {
+        try state.withLock { state in
+            guard state.published else { throw ShelfImageCopyFailure.writeFailed }
+            try cleanUp(&state)
+        }
+    }
+
     func cleanUp() throws {
         try state.withLock { state in
             do { try cleanUp(&state) } catch { throw ShelfImageCopyFailure.cleanupFailed(temporaryCopy) }

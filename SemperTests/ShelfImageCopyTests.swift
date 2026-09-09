@@ -822,4 +822,94 @@ struct ShelfImageCopyTests {
             try FileManager.default.contentsOfDirectory(atPath: paths.stage.deletingLastPathComponent().path).isEmpty)
     }
 
+    @Test(
+        "Edited or deleted published copies require private cleanup before acknowledgement",
+        arguments: [false, true], [false, true])
+    func acknowledgeChangedPublication(deleted: Bool, blockedCleanup: Bool) throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let input = f.url("source.png")
+        try encode(try image(width: 16, height: 12), to: input, type: .png)
+        let original = try digest(input)
+        let context = Mutex<ShelfImageFileContext?>(nil)
+        let clones = Mutex(0)
+        let pathReads = Mutex(0)
+        var operations = fileOperations(f.root)
+        operations.clone = { source, parent, name in
+            clones.withLock { $0 += 1 }
+            try ShelfImageFileOperations.native.clone(source, parent, name)
+        }
+        operations.path = { descriptor in
+            pathReads.withLock { $0 += 1 }
+            return try ShelfImageFileOperations.native.path(descriptor)
+        }
+        operations.checkpoint = { checkpoint, value in
+            if checkpoint == .afterPublication {
+                context.withLock { $0 = value }
+                throw ShelfImageCopyFailure.destinationChanged
+            }
+        }
+        let copier = NativeShelfImageCopier(fileOperations: operations)
+        let plan = try copier.inspect(input, access: ShelfImageAccessSpy())
+        let output = f.url("copy.png")
+        var recovery: ShelfImagePublishedCopy?
+        do {
+            _ = try copier.writeCopy(plan, size: .pixels1024, to: output)
+            Issue.record("Expected uncertain publication")
+        } catch ShelfImageCopyFailure.publicationUncertain(let token) { recovery = token }
+        let token = try #require(recovery)
+        let paths = try #require(context.withLock { $0 })
+        let privateDirectory = paths.stage.deletingLastPathComponent()
+        let privateBytes = try Data(contentsOf: paths.stage)
+        let edited = Data("user edited this published copy".utf8)
+        if deleted { try FileManager.default.removeItem(at: output) } else { try edited.write(to: output) }
+        #expect(throws: ShelfImageCopyFailure.publicationUncertain(token)) { try copier.recoverPublishedCopy(token) }
+        let readsBeforeAcknowledgement = pathReads.withLock { $0 }
+        if blockedCleanup {
+            let moved = f.url("retained-private-directory")
+            try FileManager.default.moveItem(at: privateDirectory, to: moved)
+            #expect(throws: ShelfImageCopyFailure.publicationUncertain(token)) {
+                try copier.acknowledgeUnverifiedCopy(token)
+            }
+            #expect(try Data(contentsOf: moved.appendingPathComponent(paths.stage.lastPathComponent)) == privateBytes)
+            #expect(pathReads.withLock { $0 } == readsBeforeAcknowledgement)
+            #expect(clones.withLock { $0 } == 1)
+            if deleted {
+                #expect(!FileManager.default.fileExists(atPath: output.path))
+            } else {
+                #expect(try Data(contentsOf: output) == edited)
+            }
+            try FileManager.default.moveItem(at: moved, to: privateDirectory)
+        }
+        try copier.acknowledgeUnverifiedCopy(token)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: privateDirectory.path).isEmpty)
+        try copier.acknowledgeUnverifiedCopy(token)
+        #expect(pathReads.withLock { $0 } == readsBeforeAcknowledgement)
+        #expect(clones.withLock { $0 } == 1)
+        #expect(try digest(input) == original)
+        if deleted {
+            #expect(!FileManager.default.fileExists(atPath: output.path))
+        } else {
+            #expect(try Data(contentsOf: output) == edited)
+        }
+    }
+
+    @Test("Acknowledgement refuses an owner that has not published a copy")
+    func acknowledgementRequiresPublication() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let owner = try ownedFile(f.root)
+        let temporary = owner.temporaryCopy
+        let bytes = try Data(contentsOf: temporary.url)
+        let published = ShelfImagePublishedCopy(
+            requestedURL: f.url("copy.png"),
+            dimensions: ShelfImageDimensions(width: 16, height: 12), owner: owner)
+        let copier = NativeShelfImageCopier()
+        #expect(throws: ShelfImageCopyFailure.publicationUncertain(published)) {
+            try copier.acknowledgeUnverifiedCopy(published)
+        }
+        #expect(try Data(contentsOf: temporary.url) == bytes)
+        try copier.removeTemporaryCopy(temporary)
+    }
+
 }
