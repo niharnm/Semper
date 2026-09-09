@@ -4,7 +4,7 @@ import IOKit.pwr_mgt
 import Testing
 @testable import Semper
 
-@Suite("Presentation controller")
+@Suite("Presentation controller", .timeLimit(.minutes(1)))
 @MainActor
 struct PresentationControllerTests {
     @Test("Preparing a preview reserves ownership without writes or Awake assertions")
@@ -182,25 +182,28 @@ struct PresentationControllerTests {
                 outcome: .cancelled, recovery: fixture.workspace.pendingRecovery)
         }
         try await fixture.prepare()
-        let start = Task { try await fixture.controller.start() }
-        #expect(await applyGate.waitUntilSuspended())
-        #expect(fixture.controller.canCancelOperation)
-        var stopFinished = false
-        let stop = Task {
-            defer { stopFinished = true }
-            try await fixture.controller.stop()
-        }
+        let work = PresentationTestWork(gates: [applyGate, reverseGate])
+        try await work.run {
+            let start = work.start { try await fixture.controller.start() }
+            try #require(await applyGate.waitUntilSuspended())
+            #expect(fixture.controller.canCancelOperation)
+            var stopFinished = false
+            let stop = work.start {
+                defer { stopFinished = true }
+                try await fixture.controller.stop()
+            }
 
-        #expect(await fixture.trace.waitFor(.workspaceApplyCancelled))
-        #expect(!stopFinished)
-        applyGate.resume()
-        #expect(await reverseGate.waitUntilSuspended())
-        #expect(fixture.controller.phase == .restoring)
-        #expect(!fixture.controller.canCancelOperation)
-        #expect(!stopFinished)
-        reverseGate.resume()
-        await #expect(throws: CancellationError.self) { try await start.value }
-        try await stop.value
+            try #require(await fixture.trace.waitFor(.workspaceApplyCancelled))
+            #expect(!stopFinished)
+            applyGate.resume()
+            try #require(await reverseGate.waitUntilSuspended())
+            #expect(fixture.controller.phase == .restoring)
+            #expect(!fixture.controller.canCancelOperation)
+            #expect(!stopFinished)
+            reverseGate.resume()
+            await #expect(throws: CancellationError.self) { try await start.value }
+            try await stop.value
+        }
 
         #expect(fixture.workspace.reversedIDs == [fixture.workspace.appliedReceipt.operationID])
         #expect(fixture.workspace.reverseWasCancelled == [false])
@@ -224,13 +227,16 @@ struct PresentationControllerTests {
             fixture.workspace.makeReceipt(outcome: .partial, recovery: fixture.workspace.pendingRecovery)
         }
         try await fixture.prepare()
-        let start = Task { try await fixture.controller.start() }
-        #expect(await gate.waitUntilSuspended())
-        let stop = Task { try await fixture.controller.stop() }
-        #expect(await fixture.trace.waitFor(.workspaceApplyCancelled))
-        gate.resume()
-        await #expect(throws: CancellationError.self) { try await start.value }
-        await #expect(throws: PresentationError.self) { try await stop.value }
+        let work = PresentationTestWork(gates: [gate])
+        try await work.run {
+            let start = work.start { try await fixture.controller.start() }
+            try #require(await gate.waitUntilSuspended())
+            let stop = work.start { try await fixture.controller.stop() }
+            try #require(await fixture.trace.waitFor(.workspaceApplyCancelled))
+            gate.resume()
+            await #expect(throws: CancellationError.self) { try await start.value }
+            await #expect(throws: PresentationError.self) { try await stop.value }
+        }
 
         #expect(fixture.controller.phase == .recoveryRequired)
         #expect(!fixture.controller.canCancelOperation)
@@ -239,6 +245,52 @@ struct PresentationControllerTests {
         #expect(fixture.controller.message?.contains("Some windows could not be restored.") == true)
         #expect(fixture.workspace.reverseWasCancelled == [false, false])
         try await fixture.controller.stop()
+    }
+
+    @Test("Cancelling an arrival observer preserves delayed Workspace entry", arguments: [false, true])
+    func cancelledObserverBeforeDelayedWorkspaceArrival(observeTrace: Bool) async throws {
+        let fixture = PresentationFixture()
+        defer { fixture.awake.shutdown() }
+        let sceneGate = PresentationGate()
+        let workspaceGate = PresentationGate()
+        fixture.sceneApplyGate = sceneGate
+        fixture.workspace.applyGate = workspaceGate
+        try await fixture.prepare()
+        let work = PresentationTestWork(gates: [sceneGate, workspaceGate])
+        try await work.run {
+            let start = work.start { try await fixture.controller.start() }
+            try #require(await sceneGate.waitUntilSuspended())
+            #expect(!fixture.trace.events.contains(.workspaceApply))
+
+            let observing = PresentationSignal()
+            let observer = work.start {
+                observing.signal()
+                let arrived: Bool
+                if observeTrace {
+                    arrived = await fixture.trace.waitFor(.workspaceApply)
+                } else {
+                    arrived = await workspaceGate.waitUntilSuspended()
+                }
+                #expect(!arrived)
+            }
+            try #require(await observing.wait())
+            observer.cancel()
+            try await observer.value
+            #expect(!fixture.trace.events.contains(.workspaceApply))
+
+            sceneGate.resume()
+            try #require(await workspaceGate.waitUntilSuspended())
+            try #require(await fixture.trace.waitFor(.workspaceApply))
+            #expect(fixture.controller.canCancelOperation)
+            start.cancel()
+            try #require(await fixture.trace.waitFor(.workspaceApplyCancelled))
+            workspaceGate.resume()
+            await #expect(throws: CancellationError.self) { try await start.value }
+        }
+        #expect(fixture.workspace.reversedIDs == [fixture.workspace.appliedReceipt.operationID])
+        #expect(fixture.controller.phase == .idle)
+        #expect(fixture.controller.reservation == nil)
+        #expect(fixture.backend.activeIDs.isEmpty)
     }
 
     @Test("Expiry during a suspended start cancels it and waits for recovery")
@@ -845,20 +897,24 @@ private final class PresentationWorkspaceFake: PresentationWorkspaceHandling {
 
 @MainActor
 private final class PresentationTrace {
-    enum Event: Equatable {
+    enum Event: Hashable {
         case sceneReserve, scenePreview, sceneApply, scenePending, sceneRestore, sceneKeep, sceneRelease
         case workspaceReserve, workspaceApply, workspaceReverse, workspaceRelease, workspaceKeep
         case awakeAcquire, awakeRelease, sceneApplyCancelled, workspaceApplyCancelled
     }
-    var events: [Event] = []
+    var events: [Event] = [] {
+        didSet {
+            for event in events { arrivals.removeValue(forKey: event)?.signal() }
+        }
+    }
+    private var arrivals: [Event: PresentationSignal] = [:]
 
     func waitFor(_ event: Event) async -> Bool {
-        for _ in 0..<100 {
-            if events.contains(event) { return true }
-            do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return false }
-        }
-        return events.contains(event)
+        guard !Task.isCancelled else { return false }
+        if events.contains(event) { return true }
+        let arrival = arrivals[event] ?? PresentationSignal()
+        arrivals[event] = arrival
+        return await arrival.wait()
     }
 }
 
@@ -866,25 +922,89 @@ private final class PresentationTrace {
 private final class PresentationGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var resumed = false
+    private let arrival = PresentationSignal()
 
     func suspend() async {
         if resumed { return }
-        await withCheckedContinuation { continuation = $0 }
+        await withCheckedContinuation {
+            continuation = $0
+            arrival.signal()
+        }
     }
 
     func waitUntilSuspended() async -> Bool {
-        for _ in 0..<100 {
-            if continuation != nil { return true }
-            do { try await Task.sleep(for: .milliseconds(10)) }
-            catch { return false }
-        }
-        return continuation != nil
+        await arrival.wait()
     }
 
     func resume() {
         resumed = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+@MainActor
+private final class PresentationSignal {
+    private var signalled = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+
+    func signal() {
+        signalled = true
+        let pending = Array(waiters.values)
+        waiters.removeAll()
+        for waiter in pending { waiter.resume(returning: true) }
+    }
+
+    func wait() async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if signalled { return true }
+        let id = UUID()
+        let arrived = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else if signalled {
+                    continuation.resume(returning: true)
+                } else {
+                    waiters[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.waiters.removeValue(forKey: id)?.resume(returning: false) }
+        }
+        return arrived && !Task.isCancelled
+    }
+}
+
+@MainActor
+private final class PresentationTestWork {
+    private let gates: [PresentationGate]
+    private var tasks: [Task<Void, Error>] = []
+
+    init(gates: [PresentationGate]) {
+        self.gates = gates
+    }
+
+    func start(_ action: @escaping @MainActor () async throws -> Void) -> Task<Void, Error> {
+        let task = Task { try await action() }
+        tasks.append(task)
+        return task
+    }
+
+    func run(_ body: @MainActor () async throws -> Void) async throws {
+        do {
+            try await body()
+        } catch {
+            await drain()
+            throw error
+        }
+        await drain()
+    }
+
+    private func drain() async {
+        for task in tasks { task.cancel() }
+        for gate in gates { gate.resume() }
+        for task in tasks { _ = await task.result }
     }
 }
 
