@@ -9,7 +9,9 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULES = ("Workspace", "Shelf", "Storage")
-TEST_PREFIXES = ("Workspace", "Shelf", "SafeEject")
+TEST_PREFIXES = ("Workspace", "Shelf", "SafeEject", "WindowLayout", "MutationAdmissionGate")
+# Shell shortcut tests use the app's package dependencies and run through Xcode.
+APP_TESTS = {"WorkspaceShortcutIsolationTests.swift"}
 
 
 with tempfile.TemporaryDirectory(prefix="semper-direct-utilities-") as directory:
@@ -19,6 +21,9 @@ with tempfile.TemporaryDirectory(prefix="semper-direct-utilities-") as directory
     sources.mkdir(parents=True)
     tests.mkdir(parents=True)
     (sources / "MutationAdmissionGate.swift").symlink_to(ROOT / "Semper/Utilities/MutationAdmissionGate.swift")
+    (sources / "ModuleRegistry.swift").symlink_to(ROOT / "Semper/Modules/ModuleRegistry.swift")
+    for name in ("WindowLayoutModels.swift", "WindowLayoutService.swift", "WindowLayoutTargetTracker.swift"):
+        (sources / name).symlink_to(ROOT / "Semper/WindowLayout" / name)
     for module in MODULES:
         source = ROOT / "Semper" / module
         if not source.is_dir():
@@ -29,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix="semper-direct-utilities-") as directory
         if not matches:
             raise SystemExit(f"Missing tests: {prefix}")
         for source in matches:
+            if source.name in APP_TESTS:
+                continue
             (tests / source.name).symlink_to(source)
     (package / "Package.swift").write_text(
         """// swift-tools-version: 6.0

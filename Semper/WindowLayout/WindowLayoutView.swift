@@ -1,0 +1,51 @@
+import SwiftUI
+
+struct WindowLayoutView: View {
+    @Bindable var service: WindowLayoutService
+    let commands: UtilityCommandCenter
+    @State private var confirmKeepCurrent = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Window Layout").font(.title2.weight(.semibold))
+                Text("Arrange the frontmost app window. When Semper is in front, actions use the last app active while this module was running.")
+                    .foregroundStyle(.secondary)
+                if let message = service.message {
+                    Text(message).textSelection(.enabled)
+                        .foregroundStyle(service.requiresPlacementReview ? .orange : .secondary)
+                }
+                if service.isBusy {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for the window…")
+                        Button("Cancel", action: service.cancel).keyboardShortcut(.cancelAction)
+                    }
+                }
+                if service.requiresPlacementReview {
+                    Text("Check the affected window before continuing. Its last change could not be verified, so automatic restore is unavailable.")
+                        .font(.callout)
+                    Button("Keep Current Placement…") { confirmKeepCurrent = true }
+                        .disabled(service.isBusy || !service.isRunning)
+                }
+                UtilityActionList(
+                    commands: commands,
+                    actions: WindowLayoutAction.allCases.compactMap {
+                        commands.registry.action(for: .init(rawValue: $0.rawValue))
+                    })
+                Text("Halves and Maximize use the display area available around the Dock and menu bar. Center keeps the current size. Restore returns the last changed window to its immediately preceding placement and skips later manual changes.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Full-screen, minimized, unsupported, and unverified windows stay unchanged. Choose another app and return here if no target is available. You can assign optional shortcuts in Settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Pausing retains the previous placement. Removing Window Layout or quitting clears that session history.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(24)
+        }
+        .confirmationDialog("Keep this window placement?", isPresented: $confirmKeepCurrent) {
+            Button("Keep Current Placement", role: .destructive) { service.keepCurrentPlacement() }
+        } message: {
+            Text("This discards the unverified change record. Arrange the window manually if needed before continuing.")
+        }
+    }
+}

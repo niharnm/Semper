@@ -12,11 +12,16 @@ protocol WorkspaceWindowBackend: Sendable {
     func shutdown() async
 }
 
-actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
+actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
+    private enum HandlePolicy {
+        case workspaceRestore, windowLayout
+    }
+
     private struct Handle {
         let element: AXUIElement
         let application: WorkspaceApplication
         let ordinal: Int
+        let policy: HandlePolicy
     }
     private var handles: [WorkspaceWindowID: Handle] = [:]
     private let messageTimeout: Float = 0.15
@@ -107,7 +112,8 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
                     AXUIElementSetMessagingTimeout(window, messageTimeout)
                     let id =
                         handles.first(where: {
-                            $0.value.application == application && CFEqual($0.value.element, window)
+                            $0.value.policy == .workspaceRestore && $0.value.application == application
+                                && CFEqual($0.value.element, window)
                         })?.key ?? WorkspaceWindowID(application: application, token: UUID())
                     guard handles[id] != nil || handles.count < 2_000 else {
                         snapshots.append(
@@ -115,7 +121,8 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
                                 id: nil, application: application, ordinal: index + 1, frame: nil, issue: .unavailable))
                         continue
                     }
-                    handles[id] = Handle(element: window, application: application, ordinal: index + 1)
+                    handles[id] = Handle(
+                        element: window, application: application, ordinal: index + 1, policy: .workspaceRestore)
                     snapshots.append(try snapshot(id, deadline: deadline))
                     if snapshots.count >= 200 { return snapshots }
                 }
@@ -126,6 +133,45 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
             }
         }
         return snapshots
+    }
+
+    func focusedWindow(in application: WorkspaceApplication) async throws -> WorkspaceWindowSnapshot? {
+        try Task.checkCancellation()
+        guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
+        _ = await displays()
+        guard await isSameProcess(application) else { return nil }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let element = AXUIElementCreateApplication(application.pid)
+        AXUIElementSetMessagingTimeout(element, messageTimeout)
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, kAXFocusedWindowAttribute as CFString, &value)
+        guard result != .noValue else { return nil }
+        guard result == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return .init(
+                id: nil, application: application, ordinal: 1, frame: nil,
+                issue: result == .cannotComplete ? .timedOut : .unavailable)
+        }
+        let window = value as! AXUIElement
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(window, &pid) == .success, pid == application.pid else {
+            return .init(id: nil, application: application, ordinal: 1, frame: nil, issue: .ambiguousIdentity)
+        }
+        AXUIElementSetMessagingTimeout(window, messageTimeout)
+        let id = handles.first(where: {
+            $0.value.policy == .windowLayout && $0.value.application == application
+                && CFEqual($0.value.element, window)
+        })?.key ?? WorkspaceWindowID(application: application, token: UUID())
+        guard handles[id] != nil || handles.count < 2_000 else {
+            return .init(id: nil, application: application, ordinal: 1, frame: nil, issue: .unavailable)
+        }
+        handles[id] = Handle(element: window, application: application, ordinal: 1, policy: .windowLayout)
+        let state = try snapshot(id, deadline: deadline)
+        guard await isSameProcess(application) else {
+            handles[id] = nil
+            return nil
+        }
+        try Task.checkCancellation()
+        return state
     }
 
     func current(_ id: WorkspaceWindowID) async throws -> WorkspaceWindowSnapshot? {
@@ -147,7 +193,10 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
         guard before == expected else {
             return .init(
                 before: before, after: before,
-                failure: "The window changed after preview. Preview again before restoring.", writeAttempted: false)
+                failure: handle.policy == .windowLayout
+                    ? "The window changed before the layout was applied. Try again."
+                    : "The window changed after preview. Preview again before restoring.",
+                writeAttempted: false)
         }
         var position = frame.origin
         var size = frame.size
@@ -163,7 +212,9 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
             (kAXSizeAttribute, sizeValue), (kAXPositionAttribute, positionValue), (kAXSizeAttribute, sizeValue),
         ] {
             guard !Task.isCancelled else {
-                failure = "Restore cancelled after the last observed change."
+                failure = handle.policy == .windowLayout
+                    ? "Window change cancelled after the last observed change."
+                    : "Restore cancelled after the last observed change."
                 break
             }
             guard AXIsProcessTrusted() else {
@@ -200,12 +251,13 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
     private func snapshot(_ id: WorkspaceWindowID, deadline: ContinuousClock.Instant) throws -> WorkspaceWindowSnapshot
     {
         guard let handle = handles[id] else { throw WorkspaceError.missing }
-        func value(_ name: String) throws -> CFTypeRef? {
+        func value(_ name: String, from element: AXUIElement? = nil) throws -> CFTypeRef? {
             try Task.checkCancellation()
             guard ContinuousClock.now < deadline else { throw WorkspaceWindowReadError.timeout }
             var value: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(handle.element, name as CFString, &value)
+            let result = AXUIElementCopyAttributeValue(element ?? handle.element, name as CFString, &value)
             if result == .invalidUIElement { throw WorkspaceError.missing }
+            if result == .cannotComplete && handle.policy == .windowLayout { throw WorkspaceWindowReadError.timeout }
             return result == .success ? value : nil
         }
         do {
@@ -216,11 +268,29 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
             var resizable = DarwinBoolean(false)
             let moveResult = AXUIElementIsAttributeSettable(handle.element, kAXPositionAttribute as CFString, &movable)
             let sizeResult = AXUIElementIsAttributeSettable(handle.element, kAXSizeAttribute as CFString, &resizable)
-            let issue = WorkspaceWindowRules.issue(
-                standard: role.map { $0 == kAXStandardWindowSubrole }, minimized: minimized, frame: frame,
-                displays: currentDisplays,
-                movable: moveResult == .success ? movable.boolValue : nil,
-                resizable: sizeResult == .success ? resizable.boolValue : nil)
+            let issue: WorkspaceWindowIssue?
+            switch handle.policy {
+            case .workspaceRestore:
+                issue = WorkspaceWindowRules.issue(
+                    standard: role.map { $0 == kAXStandardWindowSubrole }, minimized: minimized, frame: frame,
+                    displays: currentDisplays,
+                    movable: moveResult == .success ? movable.boolValue : nil,
+                    resizable: sizeResult == .success ? resizable.boolValue : nil)
+            case .windowLayout:
+                var fullscreen: Bool?
+                if let button = try value(kAXFullScreenButtonAttribute), CFGetTypeID(button) == AXUIElementGetTypeID() {
+                    let buttonElement = button as! AXUIElement
+                    AXUIElementSetMessagingTimeout(buttonElement, messageTimeout)
+                    fullscreen = WindowLayoutWindowRules.fullscreenState(
+                        buttonSubrole: try value(kAXSubroleAttribute, from: buttonElement) as? String)
+                }
+                issue = WindowLayoutWindowRules.issue(
+                    standard: role.map { $0 == kAXStandardWindowSubrole }, minimized: minimized, frame: frame,
+                    displays: currentDisplays,
+                    movable: moveResult == .success ? movable.boolValue : nil,
+                    resizable: sizeResult == .success ? resizable.boolValue : nil,
+                    fullscreen: fullscreen)
+            }
             return .init(id: id, application: handle.application, ordinal: handle.ordinal, frame: frame, issue: issue)
         } catch is CancellationError { throw CancellationError() } catch {
             return .init(

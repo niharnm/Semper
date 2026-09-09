@@ -36,7 +36,7 @@ struct UtilityRuntimeTests {
 
     @Test(
         "Adding, pausing, removing, and adding again never starts a dormant module",
-        arguments: [UtilityModuleID.sound, .awake, .workspace, .shelf, .storage])
+        arguments: [UtilityModuleID.sound, .awake, .workspace, .windowLayout, .shelf, .storage])
     func moduleManagementIsDormant(module: UtilityModuleID) async throws {
         try await withRuntime(addedModules: []) { runtime, probe, _ in
             try runtime.registry.add(module)
@@ -76,6 +76,28 @@ struct UtilityRuntimeTests {
             #expect(runtime.sound == nil)
             #expect(runtime.awake == nil)
             #expect(probe.creationCount == 0)
+        }
+    }
+
+    @Test("Window Layout search and pinned actions follow module presence without startup")
+    func windowLayoutActionsAreDormant() async throws {
+        try await withRuntime(addedModules: []) { runtime, _, _ in
+            let actions = Set(WindowLayoutAction.allCases.map { UtilityActionID(rawValue: $0.rawValue) })
+            #expect(runtime.registry.search("layout").isEmpty)
+            try runtime.registry.add(.windowLayout)
+            #expect(actions.isSubset(of: Set(runtime.registry.search("layout").map(\.id))))
+            let left = UtilityActionID(rawValue: WindowLayoutAction.leftHalf.rawValue)
+            try runtime.registry.setFavorite(true, for: left)
+            #expect(runtime.registry.favoriteActions.map(\.id) == [left])
+            #expect(runtime.windowLayout == nil)
+            #expect(runtime.commands.disabledReason(for: left) == nil)
+            try await runtime.pause(.windowLayout)
+            #expect(runtime.commands.disabledReason(for: left) != nil)
+            try runtime.registry.resume(.windowLayout)
+            #expect(runtime.commands.disabledReason(for: left) == nil)
+            try await runtime.remove(.windowLayout)
+            #expect(runtime.registry.search("layout").isEmpty)
+            #expect(runtime.windowLayout == nil)
         }
     }
 
@@ -175,6 +197,7 @@ struct UtilityRuntimeTests {
             soundFactory: probe.makeSound,
             awakeFactory: { try probe.unexpectedCreation(.awake) },
             workspaceFactory: { try probe.unexpectedCreation(.workspace) },
+            windowLayoutFactory: { _ in try probe.unexpectedCreation(.windowLayout) },
             shelfFactory: { try probe.unexpectedCreation(.shelf) },
             storageFactory: { try probe.unexpectedCreation(.storage) }
         )
@@ -189,6 +212,7 @@ struct UtilityRuntimeTests {
         #expect(runtime.sound == nil)
         #expect(runtime.awake == nil)
         #expect(runtime.workspace == nil)
+        #expect(runtime.windowLayout == nil)
         #expect(runtime.shelf == nil)
         #expect(runtime.storage == nil)
         #expect(probe.creationCount == 0)
