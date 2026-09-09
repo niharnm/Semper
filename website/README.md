@@ -62,3 +62,36 @@ Run the dependency-free tests from the repository root:
 ```bash
 node --test website/ab-testing.test.js
 ```
+
+## Product availability and comparisons
+
+The homepage distinguishes the published Sound release from development
+modules. When a packaged release changes, update the download context,
+`SoftwareApplication.softwareVersion`, FAQ text and schema, `about.html`,
+`llms.txt`, and the modified pages in `sitemap.xml` together. A merged feature
+PR alone is not evidence of availability in the download.
+
+The comparison table links to primary feature documentation. Its dated
+feature descriptions are separate from the performance section. Do not use
+feature counts, missing measurements, or an observational sample as a ranking.
+
+For benchmark publication, consume the reviewed evidence from
+`scripts/benchmarks/evidence/` only after that work is integrated. Schema v1
+uses `status` and `comparison_eligible`: `unmeasured` has no metrics;
+`observational` is not eligible for comparisons. Keep the current unmeasured
+presentation until controlled evidence is approved. Add immutable report and
+raw-data links, exact build and workload details, units, repetitions, and
+variation with any published result. Do not automatically render arbitrary
+JSON values as scores.
+
+Verification:
+
+```bash
+python3 scripts/check-website.py
+python3 scripts/test_website_tools.py
+node --test website/ab-testing.test.js
+```
+
+Check the homepage at desktop and narrow mobile widths. Exercise module
+scope disclosures by keyboard, scroll the comparison table to its final
+column, try the Sound sliders and mute buttons, and inspect reduced motion.
