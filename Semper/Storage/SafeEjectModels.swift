@@ -20,6 +20,7 @@ struct SafeEjectVolume: Identifiable, Equatable, Sendable {
     let isRemovable: Bool?
     let isEjectable: Bool?
     let isRoot: Bool
+    var topology: SafeEjectResolvedTopology? = nil
 
     var isCandidate: Bool {
         !isRoot && (isInternal == false || isRemovable == true || isEjectable == true)
@@ -40,9 +41,14 @@ struct SafeEjectInventory: Equatable, Sendable {
         }
         guard volume.isCandidate else { return .ineligible }
         guard let deviceID = volume.deviceID else { return .unknownDevice }
-        guard hasCompleteDeviceMapping else { return .incompleteInventory }
-        guard !volumes.contains(where: { $0.deviceID == deviceID && $0.id != volume.id }) else {
-            return .otherMountedVolumes
+        return conflict(with: deviceID, excluding: volume.id)
+    }
+
+    func conflict(with deviceID: SafeEjectDeviceID, excluding volumeID: SafeEjectVolumeID? = nil) -> SafeEjectFailure? {
+        let otherVolumes = volumes.filter { $0.id != volumeID }
+        if otherVolumes.contains(where: { $0.deviceID == deviceID }) { return .otherMountedVolumes }
+        if hasUnidentifiedLocalVolumes || otherVolumes.contains(where: { $0.deviceID == nil }) {
+            return .incompleteInventory
         }
         return nil
     }
@@ -63,6 +69,7 @@ enum SafeEjectFailure: Error, Equatable, Sendable {
     case unavailable
     case interrupted
     case timedOut
+    case topologyTimedOut
     case stillMounted
     case deviceStillPresent
     case system(Int32)
@@ -73,7 +80,8 @@ enum SafeEjectFailure: Error, Equatable, Sendable {
         case .sleeping: "Safe Eject is waiting for this Mac to wake."
         case .operationInProgress: "Another eject request is still being checked."
         case .ineligible: "This volume is not eligible for external-device eject."
-        case .incompleteInventory: "Some local volumes could not be identified. Refresh before ejecting."
+        case .incompleteInventory:
+            "Some mounted volumes have unsupported or ambiguous physical backing. Use Finder or Disk Utility."
         case .unknownDevice: "The device containing this volume could not be identified. Use Finder or Disk Utility."
         case .changedVolume: "The selected volume disconnected or changed. Select it again after refreshing."
         case .otherMountedVolumes:
@@ -84,6 +92,8 @@ enum SafeEjectFailure: Error, Equatable, Sendable {
         case .unavailable: "Mounted volumes could not be read. Refresh to try again."
         case .interrupted:
             "Checking stopped. A request already sent to macOS may still finish. Refresh before disconnecting."
+        case .topologyTimedOut:
+            "Physical backing could not be checked within 3 seconds. Use Finder or Disk Utility."
         case .timedOut:
             "macOS did not finish within 15 seconds. The request may still finish. Refresh before disconnecting."
         case .stillMounted: "The volume is still mounted. Disconnecting has not been verified."
@@ -135,9 +145,14 @@ struct SafeEjectReceipt: Identifiable, Equatable, Sendable {
 protocol SafeEjectBackend: AnyObject {
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws
     func stop()
+    func drain() async
     func cancelPendingOperation()
     func inventory() throws -> SafeEjectInventory
     func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure>
     func ejectDevice(containing volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure>
     func devicePresence(_ id: SafeEjectDeviceID) -> SafeEjectDevicePresence
+}
+
+extension SafeEjectBackend {
+    func drain() async {}
 }
