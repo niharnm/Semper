@@ -180,6 +180,8 @@
             let rejectsWrite = Mutex(true)
             let writer = SettingsPersistenceWriter { data, url in
                 if rejectsWrite.withLock({ $0 }) { throw ShellFixtureWriteFailure.refused }
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: url, options: .atomic)
             }
             try await withFixture(persistenceWriter: writer) { fixture in
