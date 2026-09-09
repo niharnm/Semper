@@ -73,6 +73,36 @@ class WebsiteCheckTests(unittest.TestCase):
                 result = self.run_check()
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_mismatched_release_version_is_rejected(self) -> None:
+        llms = self.root / "website" / "llms.txt"
+        source = llms.read_text(encoding="utf-8")
+        source, replacements = re.subn(
+            r"^- Published version: v[^\s]+$",
+            "- Published version: v0.0.0-invalid",
+            source,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(replacements, 1)
+        llms.write_text(source, encoding="utf-8")
+
+        result = self.run_check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("same published version", result.stderr)
+
+    def test_missing_release_version_is_rejected(self) -> None:
+        index = self.root / "website" / "index.html"
+        source = index.read_text(encoding="utf-8")
+        index.write_text(
+            re.sub(r'"softwareVersion":\s*"[^"\s]+",?', "", source),
+            encoding="utf-8",
+        )
+
+        result = self.run_check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("identify the published software version", result.stderr)
+
     def test_whitespace_only_description_is_rejected(self) -> None:
         index = self.root / "website" / "index.html"
         source = index.read_text(encoding="utf-8")

@@ -176,7 +176,7 @@ index_source = (WEBSITE / "index.html").read_text(encoding="utf-8")
 if not index.has_google_site_verification:
     fail("index.html is missing the Google Search Console verification tag")
 
-for required_id in ("release", "faq"):
+for required_id in ("modules", "compare", "performance", "release", "faq"):
     if required_id not in index.ids:
         fail(f"index.html is missing the {required_id} section")
 
@@ -256,8 +256,12 @@ if homepage_redirect not in vercel_config.get("redirects", []):
     fail("website/vercel.json must redirect /index.html to /")
 
 llms = (WEBSITE / "llms.txt").read_text(encoding="utf-8")
-if "A signed stable DMG is available from GitHub Releases and Homebrew." not in llms:
-    fail("llms.txt must state the current release status")
+release_version = re.search(r'"softwareVersion":\s*"([^"\s]+)"', index_source)
+if not release_version:
+    fail("index.html must identify the published software version")
+llms_version = re.search(r"^- Published version: v([^\s]+)$", llms, re.MULTILINE)
+if not llms_version or llms_version.group(1) != release_version.group(1):
+    fail("llms.txt must identify the same published version as index.html")
 stale_release_claims = (
     "no packaged public release",
     "no signed public dmg",

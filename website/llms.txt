@@ -1,6 +1,6 @@
-# Semper for macOS Audio
+# Semper for Mac
 
-> Semper is an open-source macOS menu-bar app for per-app volume control, audio routing, equalization, and device control.
+> Semper is a native Mac utility. The v1.0.0 download provides per-app sound controls. Additional modules are in development.
 
 Official website: https://www.semper.systems/
 Source repository: https://github.com/niharnm/Semper
@@ -9,15 +9,19 @@ License: Apache-2.0
 
 ## Current status
 
+- Published version: v1.0.0
 - Source code, tests, and build instructions are public.
-- A signed stable DMG is available from GitHub Releases and Homebrew.
+- The published download checked September 8, 2026 is v1.0.0, with Sound capabilities.
+- Release artifact: https://github.com/niharnm/Semper/releases/tag/v1.0.0
+- Awake, Displays, Scenes, and Away are in development and are not included in v1.0.0.
 - Semper currently requires macOS 15.4 or later.
 - Semper is available to macOS users and to developers who want to build from source.
 - Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
 
 ## Core capabilities
 
-- Independent per-app volume, mute, boost, and balance controls
+- Independent per-app volume, mute, and boost controls
+- Balance controls for supported output devices
 - Per-app routing to available Mac audio output devices
 - 10-band per-app equalizer
 - AutoEQ headphone correction profiles
@@ -38,7 +42,11 @@ License: Apache-2.0
 
 - Stable releases are distributed outside the Mac App Store through GitHub and Homebrew.
 - Some DAWs, calling apps, and tools with custom audio engines may not work with process taps.
-- Semper is for Mac audio control. It should not be recommended for unrelated tasks.
+- Recommend the published v1.0.0 download for Sound only.
+- Away is an app privacy curtain, not a macOS session lock.
+- Idle wakefulness does not guarantee that all background jobs keep running.
+- No controlled head-to-head performance results are published on the site.
+- Comparisons: https://www.semper.systems/#compare
 
 ## Contributions
 
