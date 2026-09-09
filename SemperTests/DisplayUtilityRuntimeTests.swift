@@ -75,13 +75,42 @@
                 probe.transport.rejectReads = true
                 try await runtime.start(.displays)
                 let service = try #require(runtime.displays)
-                #expect(service.displays.isEmpty)
+                #expect(service.displays.count == 1)
+                let display = try #require(service.displays.first)
+                #expect(display.id == probe.identity)
+                #expect(display.features.isEmpty)
+                #expect(display.volume.value == nil && display.input.value == nil)
+                let inventory = try #require(service.inventory.first)
+                #expect(service.inventory.count == 1)
+                #expect(inventory.identity == probe.identity)
+                #expect(inventory.controls.brightness.value == nil && inventory.controls.contrast.value == nil)
+                #expect(inventory.controls.volume.value == nil && inventory.controls.input.value == nil)
                 #expect(runtime.summary(for: .displays) == "No readable display controls")
                 #expect(
                     runtime.registry.state(for: .displays)?.runtime
                         == .limited(reason: "No readable display controls were found."))
                 #expect(runtime.registry.state(for: .displays)?.permission == .notRequired)
                 #expect(!service.isSceneEligible(.brightness, for: probe.identity))
+                #expect(probe.transport.writes.isEmpty)
+            }
+        }
+
+        @Test("Volume-only and input-only displays report supported controls", arguments: [UInt8(0x62), UInt8(0x60)])
+        func additionalControlStatus(code: UInt8) async throws {
+            try await withRuntime { runtime, probe in
+                probe.transport.rejectReads = true
+                probe.transport.additionalControl = code
+                try await runtime.start(.displays)
+                let service = try #require(runtime.displays)
+                let display = try #require(service.displays.first)
+                #expect(display.features.isEmpty)
+                #expect((display.volume.value != nil) == (code == 0x62))
+                #expect((display.input.value != nil) == (code == 0x60))
+                #expect(runtime.summary(for: .displays) == "1 supported display")
+                #expect(runtime.registry.state(for: .displays)?.runtime == .ready)
+                #expect(runtime.registry.state(for: .displays)?.permission == .notRequired)
+                #expect(!service.isSceneEligible(.brightness, for: probe.identity))
+                #expect(!service.isSceneEligible(.contrast, for: probe.identity))
                 #expect(probe.transport.writes.isEmpty)
             }
         }
@@ -275,12 +304,16 @@
             self.admission = admission
             return DisplayControlService(
                 ddcController: controller, mutationAdmission: admission,
-                discover: transport.discover, read: transport.read, write: transport.write)
+                discover: transport.discover, read: transport.read, write: transport.write,
+                readCapabilities: transport.readCapabilities, readVCP: transport.readVCP,
+                writeVCP: { [transport] _, _, value in try transport.rejectWrite(value) },
+                writeInputOnce: { [transport] _, value in try transport.rejectWrite(UInt16(value)) },
+                discoverSystemDisplays: { [] })
         }
     }
 
     private nonisolated final class DisplayRuntimeTransport: Sendable {
-        private enum Failure: Error { case unreadable }
+        private enum Failure: Error { case unreadable, unexpectedWrite }
         private struct State {
             var discoveries = 0
             var brightness: UInt16 = 40
@@ -288,6 +321,7 @@
             var suspendNextRead = false
             var readIsSuspended = false
             var rejectReads = false
+            var additionalControl: UInt8?
         }
         private let state = Mutex(State())
         private let readRelease = DispatchSemaphore(value: 0)
@@ -299,6 +333,10 @@
         var rejectReads: Bool {
             get { state.withLock { $0.rejectReads } }
             set { state.withLock { $0.rejectReads = newValue } }
+        }
+        var additionalControl: UInt8? {
+            get { state.withLock { $0.additionalControl } }
+            set { state.withLock { $0.additionalControl = newValue } }
         }
 
         func discover() -> [DDCExternalDisplayRecord] {
@@ -330,6 +368,24 @@
                 $0.writes.append(value)
                 if feature == .brightness { $0.brightness = value }
             }
+        }
+
+        func readCapabilities(_ request: DisplayCapabilitiesReadRequest) throws -> String {
+            switch additionalControl {
+            case 0x62: return "(mccs_ver(2.2)vcp(62))"
+            case 0x60: return "(mccs_ver(2.2)vcp(60(0f 11)))"
+            default: throw Failure.unreadable
+            }
+        }
+
+        func readVCP(_ service: DDCService, _ code: UInt8) throws -> (current: UInt16, maximum: UInt16) {
+            guard code == additionalControl else { throw Failure.unreadable }
+            return code == 0x60 ? (0x11, 0x11) : (50, 100)
+        }
+
+        func rejectWrite(_ value: UInt16) throws {
+            state.withLock { $0.writes.append(value) }
+            throw Failure.unexpectedWrite
         }
 
         func suspendNextRead() { state.withLock { $0.suspendNextRead = true } }

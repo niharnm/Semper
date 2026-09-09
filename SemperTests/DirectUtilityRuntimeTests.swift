@@ -246,6 +246,37 @@ struct DirectUtilityRuntimeTests {
         }
     }
 
+    @Test("Cold metadata changes and shutdown preserve shortcuts owned by another runtime")
+    func coldRuntimePreservesShortcuts() async throws {
+        try await withShortcutDefaults {
+            let registrations: [(KeyboardShortcuts.Name, KeyboardShortcuts.Shortcut)] = [
+                (UtilityRuntime.workspaceRestoreShortcut, .init(.r, modifiers: [.control, .option])),
+                (ShortcutAction.toggleAwayMode.keyboardShortcutName, .init(.a, modifiers: [.control, .option])),
+            ]
+            for (name, shortcut) in registrations {
+                KeyboardShortcuts.setShortcut(shortcut, for: name)
+                KeyboardShortcuts.onKeyDown(for: name) {}
+            }
+            defer { for (name, _) in registrations { KeyboardShortcuts.removeHandler(for: name) } }
+            try await withRuntime { runtime, probe in
+                try await runtime.pause(.workspace)
+                try runtime.registry.resume(.workspace)
+                try await runtime.remove(.workspace)
+                try runtime.registry.add(.workspace)
+                for (name, shortcut) in registrations {
+                    #expect(KeyboardShortcuts.getShortcut(for: name) == shortcut)
+                    #expect(KeyboardShortcuts.isEnabled(for: name))
+                }
+                await runtime.shutdown()
+                for (name, shortcut) in registrations {
+                    #expect(KeyboardShortcuts.getShortcut(for: name) == shortcut)
+                    #expect(KeyboardShortcuts.isEnabled(for: name))
+                }
+                #expect(probe.creations.isEmpty)
+            }
+        }
+    }
+
     @Test("Workspace shortcut follows metadata without creating Sound or requesting Accessibility")
     func workspaceShortcutLifecycle() async throws {
         try await withShortcutDefaults {

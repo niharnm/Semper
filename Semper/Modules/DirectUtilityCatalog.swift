@@ -31,7 +31,10 @@ extension UtilityModuleDescriptor {
                     permissionReasons: [],
                     runningBackgroundPolicy: "Reads connected display capabilities and controls when requested. Supported writes are serialized; verification results stay visible. Input switching requires confirmation and is sent once.",
                     localDataPolicy: "No display preset is saved by this module. Scene settings are stored by Scenes.",
-                    hardwareRequirements: ["Brightness, contrast, volume, and input availability depend on the display's DDC support. Built-in and unsupported displays remain visible with an unavailable reason."]
+                    hardwareRequirements: [
+                        "Discoverable external displays appear here. Brightness, contrast, volume, and input availability "
+                            + "depend on the display's DDC support. Use macOS Settings for built-in displays."
+                    ]
                 ))
         case .scenes:
             return .init(

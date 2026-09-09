@@ -302,6 +302,7 @@ final class UtilityRuntime {
     }
 
     private func syncShellShortcuts() {
+        guard shortcutsStarted, !shutdownRequested else { return }
         for action in ShortcutAction.shellActions {
             let name = action.keyboardShortcutName
             let assigned = settings.appSettings.customShortcuts[action.rawValue]
@@ -332,12 +333,13 @@ final class UtilityRuntime {
     }
 
     private func stopShellShortcut(_ action: ShortcutAction) {
-        shellShortcutRegistrations[action] = nil
-        let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
-        ShortcutAction.preservingOtherRegistrations(
-            excluding: [action.keyboardShortcutName], additionalNames: sceneNames
-        ) {
-            KeyboardShortcuts.removeHandler(for: action.keyboardShortcutName)
+        if shellShortcutRegistrations.removeValue(forKey: action) != nil {
+            let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
+            ShortcutAction.preservingOtherRegistrations(
+                excluding: [action.keyboardShortcutName], additionalNames: sceneNames
+            ) {
+                KeyboardShortcuts.removeHandler(for: action.keyboardShortcutName)
+            }
         }
         for entry in shellShortcutTasks.values where entry.action == action { entry.task.cancel() }
     }
@@ -658,7 +660,9 @@ final class UtilityRuntime {
                 return "Display controls are unavailable in the App Store build."
             #else
                 guard let displays else { return "Open Displays to check supported controls." }
-                let count = displays.displays.filter { !$0.features.isEmpty }.count
+                let count = displays.displays.filter {
+                    !$0.features.isEmpty || $0.volume.value != nil || $0.input.value != nil
+                }.count
                 return count == 0 ? "No readable display controls" : "\(count) supported \(count == 1 ? "display" : "displays")"
             #endif
         case .presentation:
@@ -1461,7 +1465,9 @@ final class UtilityRuntime {
                 #else
                     if !displays.isRunning {
                         runtime = .limited(reason: "Displays is stopped.")
-                    } else if !displays.displays.contains(where: { !$0.features.isEmpty }) {
+                    } else if !displays.displays.contains(where: {
+                        !$0.features.isEmpty || $0.volume.value != nil || $0.input.value != nil
+                    }) {
                         runtime = .limited(reason: "No readable display controls were found.")
                     } else {
                         runtime = .ready

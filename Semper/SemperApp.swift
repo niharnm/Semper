@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var isTerminationDrainComplete = false
     #if DEBUG
         private var awayUITestFixture: AwayShellUITestFixture?
+        private var shellUITestFixture: ShellUITestFixture?
     #endif
 
     override init() {
@@ -83,11 +84,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 permitTerminationAfterAwayAuthentication()
             }
         }
+
+        func installShellUITestFixture(_ fixture: ShellUITestFixture) {
+            shellUITestFixture = fixture
+            currentAwayOverride = { fixture.runtime.away }
+            terminationDrainOverride = { await fixture.shutdownAndDrain() }
+            fixture.runtime.onAuthenticatedAwayQuit = { [weak self] in
+                self?.permitTerminationAfterAwayAuthentication()
+            }
+        }
     #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
             awayUITestFixture?.showHostWindow()
+            shellUITestFixture?.showHostWindow()
         #endif
     }
 
@@ -228,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #if DEBUG
     enum SemperDebugLaunchMode: Equatable {
         case awayUITest(AwayUITestLaunchOptions)
+        case shellUITest
         case testHost
         case regular
 
@@ -235,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             arguments: [String], hasXCTestConfiguration: Bool, hasXCTestClass: Bool
         ) -> Self {
             if let options = AwayUITestLaunchOptions.parse(arguments: arguments) { return .awayUITest(options) }
+            if arguments.contains(ShellUITestFixture.enabledArgument) { return .shellUITest }
             return hasXCTestConfiguration || hasXCTestClass ? .testHost : .regular
         }
     }
@@ -282,6 +295,18 @@ struct SemperApp: App {
                     return
                 } catch {
                     logger.fault("Semper could not start its isolated Away UI fixture: \(error.localizedDescription)")
+                    exit(EXIT_FAILURE)
+                }
+            case .shellUITest:
+                do {
+                    let fixture = try ShellUITestFixture()
+                    instanceLock = nil
+                    _runtime = State(initialValue: nil)
+                    _showMenuBarExtra = State(initialValue: false)
+                    _appDelegate.wrappedValue.installShellUITestFixture(fixture)
+                    return
+                } catch {
+                    logger.fault("Semper could not start its isolated shell UI fixture: \(error.localizedDescription)")
                     exit(EXIT_FAILURE)
                 }
             case .testHost:

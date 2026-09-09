@@ -93,7 +93,11 @@ struct AwayUtilityRuntimeTests {
                     == ShortcutCodable.from(chord))
             try runtime.registry.resume(.away)
             runtime.recordAwayShortcut(chord)
-            #expect(await runtime.performAwayShortcut() == .accepted)
+            let resumedResult = await runtime.performAwayShortcut()
+            #expect(
+                resumedResult == .accepted,
+                "Result: \(String(describing: resumedResult)); message: \(runtime.message ?? "nil"); "
+                    + "shortcut conflict: \(runtime.awayShortcutConflict ?? "nil")")
             #expect(runtime.away !== original)
             await runtime.shutdown()
             #expect(await runtime.performAwayShortcut() == .cancelled)
