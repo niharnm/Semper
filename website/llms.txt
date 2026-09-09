@@ -40,7 +40,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Microphone permission is used only for input-device monitoring.
 - Accessibility permission is optional for Sound's media-key control.
 - In source builds, Workspace Restore requires Accessibility permission to read and move selected windows.
-- Source builds open on Home. Choose Sound, then Open Sound to start its audio controls. Browsing Home or adding a module does not start Sound.
+- In a source build, open Semper from its menu bar icon. From Home, choose Sound, then Open Sound to start its audio controls. Browsing Home or adding a module does not start Sound.
 
 ## Important limits
 
