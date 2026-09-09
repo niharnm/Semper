@@ -327,7 +327,11 @@ struct UtilityShellView: View {
                             DisplaysPane(
                                 displayService: displays,
                                 isSceneOperationInProgress: runtime.scenes?.isBusy == true
-                                    || runtime.mutationAdmission.activeExclusiveOwner != nil)
+                                    || runtime.mutationAdmission.activeExclusiveOwner != nil,
+                                sceneOperationIsInProgress: {
+                                    runtime.scenes?.isBusy == true
+                                        || runtime.mutationAdmission.activeExclusiveOwner != nil
+                                })
                         }
                         .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
                     #else

@@ -61,7 +61,7 @@ struct UtilityModuleDescriptor: Identifiable, Equatable, Sendable {
                 hardwareRequirements: ["Closing the lid or choosing Sleep still works."]
             )
         ),
-        .init(id: .displays, title: "Displays", summary: "Adjust supported display brightness.", symbolName: "display"),
+        .init(id: .displays, title: "Displays", summary: "Adjust supported display controls.", symbolName: "display"),
         .init(
             id: .workspace, title: "Workspace Restore", summary: "Save and restore app window positions.",
             symbolName: "macwindow.on.rectangle"),

@@ -179,7 +179,8 @@ struct MenuBarPopupView: View {
                     if let displayService {
                         DisplaysPane(
                             displayService: displayService,
-                            isSceneOperationInProgress: sceneManager?.isBusy == true
+                            isSceneOperationInProgress: sceneManager?.isBusy == true,
+                            sceneOperationIsInProgress: { sceneManager?.isBusy == true }
                         )
                     } else {
                         Text("Displays is not running.").foregroundStyle(.secondary).padding()

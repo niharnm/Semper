@@ -713,9 +713,14 @@ struct DisplayControlServiceTests {
         let service = DisplayControlService(
             ddcController: controller,
             mutationAdmission: MutationAdmissionGate(),
-            discover: transport.discover,
-            read: transport.read,
-            write: transport.write
+            discover: { transport.discover() },
+            read: { service, feature in try transport.read(service, feature: feature) },
+            write: { service, feature, value in
+                try transport.write(service, feature: feature, value: value)
+            },
+            readCapabilities: { _ in "(mccs_ver(2.2)vcp(10 12))" },
+            readVCP: { _, _ in throw TestError.failed },
+            discoverSystemDisplays: { [] }
         )
         let identity = DisplayIdentity(vendorID: 101, productID: 202, serialNumber: 303)!
         defer {

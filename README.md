@@ -11,7 +11,7 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake requests that macOS prevent automatic idle sleep for a chosen duration. Away covers each display with a customizable privacy curtain and requires Mac authentication or a Semper PIN to exit. External Displays adds verified brightness and contrast controls, while Scenes group reversible settings.
+Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake requests that macOS prevent automatic idle sleep for a chosen duration. Away covers each display with a customizable privacy curtain and requires Mac authentication or a Semper PIN to exit. External Displays provides supported brightness, contrast, volume, and input controls, while Scenes group reversible settings.
 
 [semper.systems](https://www.semper.systems/)
 

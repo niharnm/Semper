@@ -18,6 +18,12 @@ The shared DDC controller is held above Sound so its serialized display transpor
 
 Scenes can open without starting Sound. Capturing saves controls from modules that are already running. Applying a scene starts only selected domains whose modules are added and unpaused; an unavailable required control stops the operation before changes begin. A pending recovery journal keeps the services it needs available. Deferred shutdown provides a recovery-only screen to restore or explicitly keep the current setup.
 
+## Displays
+
+Displays opens without Sound. Its inventory shows connected displays and explains unavailable controls. Refresh reads capabilities and supported brightness, contrast, volume, and input state. Individual and grouped slider changes keep each display's result visible, including partial, cancelled, and unverified writes.
+
+Input switching requires confirmation and sends one request. It is never automatically retried or restored. Volume and input remain outside Scenes; Scenes use brightness and contrast, and Presentation selects brightness. Identify, a local diagnostics export, and Open Display Settings are explicit actions. Queued view actions recheck current Scene activity before dispatch.
+
 ## Presentation
 
 Add Awake before opening Presentation. Choose 30 minutes, 1 hour, or 2 hours; optionally select display brightness, a Sound output and level, and individually selected windows from a Workspace Restore preview. Loading each optional control requires its module to be added and unpaused. Selecting Sound is the only Presentation path that starts audio controls.
