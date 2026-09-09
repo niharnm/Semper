@@ -82,7 +82,7 @@ nonisolated private final class ShelfAsyncSignal: @unchecked Sendable {
         let received = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let result: Bool? = lock.withLock {
-                    if let result { return result }
+                    if let result = self.result { return result }
                     self.continuation = continuation
                     return nil
                 }
