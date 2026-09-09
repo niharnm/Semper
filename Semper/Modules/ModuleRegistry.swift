@@ -6,6 +6,7 @@ enum UtilityModuleID: String, CaseIterable, Codable, Hashable, Identifiable, Sen
     case awake
     case displays
     case workspace
+    case windowLayout = "window-layout"
     case shelf
     case storage
     case scenes
@@ -65,6 +66,20 @@ struct UtilityModuleDescriptor: Identifiable, Equatable, Sendable {
         .init(
             id: .workspace, title: "Workspace Restore", summary: "Save and restore app window positions.",
             symbolName: "macwindow.on.rectangle"),
+        .init(
+            id: .windowLayout, title: "Window Layout", summary: "Arrange the frontmost app window.",
+            symbolName: "rectangle.split.2x1",
+            disclosure: .init(
+                permissionReasons: [
+                    .init(name: "Accessibility", reason: "Reads and arranges a window only when you invoke an action.")
+                ],
+                runningBackgroundPolicy:
+                    "Remembers the last active app while running. Window reads and changes happen only on request; pausing stops observation and drains pending work.",
+                localDataPolicy:
+                    "Window identity and the previous placement stay in memory. Pausing preserves them; removing the module or quitting clears them. No window titles are collected.",
+                conflicts: ["Finish active Workspace Restore work and end Away before arranging windows."],
+                hardwareRequirements: ["Requires standard windows with readable geometry and move/resize support. Full-height windows and targets are conservatively refused."]
+            )),
         .init(
             id: .shelf, title: "File Shelf", summary: "Keep references to files close at hand.", symbolName: "tray.fill"
         ),

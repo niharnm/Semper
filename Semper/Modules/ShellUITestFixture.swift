@@ -59,6 +59,7 @@
                     soundFactory: { _, _ in try probe.refuse(.sound) },
                     awakeFactory: { try probe.refuse(.awake) },
                     workspaceFactory: { try probe.refuse(.workspace) },
+                    windowLayoutFactory: { _ in try probe.refuse(.windowLayout) },
                     shelfFactory: { try probe.refuse(.shelf) },
                     storageFactory: { try probe.refuse(.storage) },
                     sceneLibraryStore: FileSceneLibraryStore(directory: sceneDirectory),

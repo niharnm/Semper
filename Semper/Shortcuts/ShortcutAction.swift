@@ -14,10 +14,29 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     case targetAppVolumeDown = "frontmostAppVolumeDown"
     case targetAppMuteToggle = "frontmostAppMuteToggle"
     case restoreWorkspace
+    case windowLeftHalf
+    case windowRightHalf
+    case windowMaximize
+    case windowCenter
+    case windowRestore
 
     static var soundActions: [Self] { allCases.filter { !shellActions.contains($0) } }
 
-    static let shellActions: [Self] = [.restoreWorkspace, .toggleAwayMode]
+    static let windowLayoutActions: [Self] = [
+        .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore,
+    ]
+    static let shellActions: [Self] = [.restoreWorkspace, .toggleAwayMode] + windowLayoutActions
+
+    var windowLayoutAction: WindowLayoutAction? {
+        switch self {
+        case .windowLeftHalf: .leftHalf
+        case .windowRightHalf: .rightHalf
+        case .windowMaximize: .maximize
+        case .windowCenter: .center
+        case .windowRestore: .restore
+        default: nil
+        }
+    }
 
     var displayName: String {
         switch self {
@@ -27,6 +46,11 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .targetAppVolumeDown: "App Volume Down"
         case .targetAppMuteToggle: "App Mute"
         case .restoreWorkspace: "Restore workspace"
+        case .windowLeftHalf: "Window Left Half"
+        case .windowRightHalf: "Window Right Half"
+        case .windowMaximize: "Maximize Window"
+        case .windowCenter: "Center Window"
+        case .windowRestore: "Restore Previous Window Placement"
         }
     }
 
@@ -36,7 +60,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     var supportsRepeat: Bool {
         switch self {
         case .targetAppVolumeUp, .targetAppVolumeDown: true
-        case .togglePopup, .toggleAwayMode, .targetAppMuteToggle, .restoreWorkspace: false
+        case .togglePopup, .toggleAwayMode, .targetAppMuteToggle, .restoreWorkspace,
+            .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore: false
         }
     }
 
@@ -49,6 +74,11 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .targetAppVolumeDown: KeyboardShortcuts.Name("frontmost-app-volume-down")
         case .targetAppMuteToggle: KeyboardShortcuts.Name("frontmost-app-mute-toggle")
         case .restoreWorkspace: KeyboardShortcuts.Name("workspace-restore")
+        case .windowLeftHalf: KeyboardShortcuts.Name("window-layout-left-half")
+        case .windowRightHalf: KeyboardShortcuts.Name("window-layout-right-half")
+        case .windowMaximize: KeyboardShortcuts.Name("window-layout-maximize")
+        case .windowCenter: KeyboardShortcuts.Name("window-layout-center")
+        case .windowRestore: KeyboardShortcuts.Name("window-layout-restore")
         }
     }
 
