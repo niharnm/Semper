@@ -52,7 +52,7 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
-- **Modular Menu Bar Shell**: Home, Sound, Awake, and External Displays share one menu bar switcher while keeping their runtime state independent.
+- **Independent Utilities**: Home provides module summaries, up to four pinned actions, and search. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
 - **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
 - **ISO 226 Equal-Loudness Compensation**: Dynamic frequency contour adjustment matching human psychoacoustics at varying volume levels.
@@ -61,6 +61,7 @@ not download a Semper DMG from an unofficial source.
 - **AutoEQ Engine**: 10-band parametric EQ supporting AutoEQ headphone profiles and custom user presets.
 - **Ramped Mono Audio**: Combines left and right channels for managed apps without abrupt signal changes, while retaining output balance control.
 - **Transactional Scenes**: Saves audio, Awake, and supported external display settings together, verifies each change, and keeps a restore point that respects later user changes.
+- **Timed Presentation**: Preview selected display, Sound, and workspace targets, then run a finite session with its own Awake request. End and restore through the same scene journal and owned window receipts. See the [module guide](guide/module-shell.md) for recovery limits.
 - **External Display Controls**: Reads and sets brightness and contrast on uniquely identified DDC-compatible displays outside App Store builds.
 - **Liquid Glass Interface**: High-vibrancy macOS design system with dynamic Tahoe-style HUDs, balance controls, and menu bar interaction.
 

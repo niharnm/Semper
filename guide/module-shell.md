@@ -12,6 +12,20 @@ Cleanup failures remain visible and block a new runtime until cleanup succeeds. 
 
 The shared DDC controller is held above Sound so its serialized display transport can serve independent display controls. Sound detaches its callbacks when it stops.
 
+Scenes can open without starting Sound. Capturing saves controls from modules that are already running. Applying a scene starts only selected domains whose modules are added and unpaused; an unavailable required control stops the operation before changes begin. A pending recovery journal keeps the services it needs available. Deferred shutdown provides a recovery-only screen to restore or explicitly keep the current setup.
+
+## Presentation
+
+Add Awake before opening Presentation. Choose 30 minutes, 1 hour, or 2 hours; optionally select display brightness, a Sound output and level, and individually selected windows from a Workspace Restore preview. Loading each optional control requires its module to be added and unpaused. Selecting Sound is the only Presentation path that starts audio controls.
+
+Preview records the proposed targets and their current values without changing settings or acquiring a power assertion. Start rejects settings that changed after preview. Presentation acquires its own finite Awake lease, applies selected Sound/display controls through the existing scene coordinator, then applies the frozen Workspace plan. It does not add a saved scene to the library.
+
+End, duration expiry, cancellation, and startup failure restore in reverse order: selected windows, scene controls, then Presentation's Awake request. Later manual changes stay in place. The latest window receipt is kept after every recovery attempt. Missing devices, unreadable state, or unverified window writes remain visible and may require retry or manual recovery.
+
+While Presentation owns a preview or recovery, its dependency services cannot be removed. Workspace selection, binding, preview, and direct mutation actions cannot invalidate its reserved plan. **Keep Current Setup** is an explicit confirmation that accepts current settings and gives up this session's recovery. If cleanup fails afterward, every retry retains that choice for this session. Automatic cleanup never chooses it. Window receipts are process-local, so unfinished window recovery cannot be resumed after quitting.
+
+Away holds exclusive mutation admission through authentication and cleanup. Scenes, Presentation, and direct control writes use the shared admission boundary. A queued hardware write keeps its admission until the owned work finishes.
+
 ## Commands
 
 `ModuleRegistry` stores pure module and action descriptors. `UtilityCommandCenter` owns typed action handlers, current disabled reasons, confirmation, and cancellation. It rechecks admission immediately before execution. A pause or removal drains the module's command tasks before disposing its service.
