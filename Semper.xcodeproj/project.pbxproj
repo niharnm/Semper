@@ -11,7 +11,6 @@
 		7980FFE92F261AA200AF5F85 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 79SPARK012F0600000008D52 /* Sparkle */; };
 		79B1000B2F35000000000002 /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79B1000A2F35000000000001 /* IOBluetooth.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		79FLUID0012F0600000008D52 /* FluidMenuBarExtra in Frameworks */ = {isa = PBXBuildFile; productRef = 79FLUID0022F0600000008D52 /* FluidMenuBarExtra */; };
-		D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = C18F337FFBE2D40467959144 /* KeyboardShortcuts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -85,7 +84,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D60793509DEB13A2E97D5EBF /* KeyboardShortcuts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -174,7 +172,6 @@
 			);
 			name = SemperTests;
 			packageProductDependencies = (
-				C18F337FFBE2D40467959144 /* KeyboardShortcuts */,
 			);
 			productName = SemperTests;
 			productReference = 79A607BC2F05C9E10008D52A /* SemperTests.xctest */;
@@ -675,11 +672,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 79SPARK002F0600000008D52 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
-		};
-		C18F337FFBE2D40467959144 /* KeyboardShortcuts */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 25AD8733711702DDEA8EAD12 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
-			productName = KeyboardShortcuts;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
