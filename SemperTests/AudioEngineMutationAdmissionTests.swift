@@ -1,5 +1,6 @@
-import Foundation
 import AppKit
+import Foundation
+import Observation
 import Testing
 
 @testable import Semper
@@ -113,6 +114,116 @@ struct AudioEngineMutationAdmissionTests {
         fixture.gate.release(second)
         await fixture.settle()
         #expect(fixture.tap.currentDeviceUIDs == [fixture.headset.uid])
+        try await fixture.shutdown()
+    }
+
+    @Test("A manual route superseding one reconnect does not abandon the remaining apps")
+    func continuesReconciliationAfterManualRouteSupersession() async throws {
+        let secondApp = AudioApp(
+            id: 12_392, processObjectIDs: [], name: "Second Audio", icon: NSImage(), bundleID: "com.test.second-audio")
+        let operation = ReconciliationRouteOperation(allowsSupersession: true)
+        let fixture = try DeviceReconciliationFixture(controlledRoute: operation, additionalApps: [secondApp])
+        let userOutput = AudioDevice(id: 94, uid: "user-output", name: "User Output", icon: nil, supportsAutoEQ: false)
+        fixture.devices.addOutputDevice(userOutput)
+        fixture.volume.volumes[userOutput.id] = 0.5
+        let away = try fixture.gate.acquire(owner: .awayMode, mode: .exclusive)
+        fixture.connectHeadset()
+        fixture.gate.release(away)
+        await fixture.settle()
+        #expect(operation.isWaiting)
+        #expect(fixture.gate.activeSharedPermitCount > 0)
+        let firstAppID = try #require(operation.firstAppID)
+        let firstApp = firstAppID == fixture.app.id ? fixture.app : secondApp
+        let remainingApp = firstAppID == fixture.app.id ? secondApp : fixture.app
+
+        fixture.engine.setDevice(for: firstApp, deviceUID: userOutput.uid)
+        await fixture.settle()
+
+        #expect(fixture.engine.routeLifecycle(for: firstApp) == .active(deviceUIDs: [userOutput.uid]))
+        #expect(fixture.settings.getDeviceRouting(for: firstApp.persistenceIdentifier) == userOutput.uid)
+        #expect(fixture.engine.routeLifecycle(for: remainingApp) == .active(deviceUIDs: [fixture.headset.uid]))
+        #expect(fixture.settings.getDeviceRouting(for: remainingApp.persistenceIdentifier) == fixture.headset.uid)
+        #expect(fixture.gate.activeSharedPermitCount == 0)
+        try await fixture.shutdown()
+    }
+
+    enum LaterDefaultCallback: Sendable {
+        case none, notification, confirmation
+    }
+
+    @Test(
+        "Default callbacks preserve a pending manual route and reconcile after it finishes",
+        arguments: [(true, LaterDefaultCallback.none), (true, .notification), (false, .none), (true, .confirmation)])
+    func retriesInventoryAfterPendingManualRoute(startsWithInventory: Bool, laterCallback: LaterDefaultCallback)
+        async throws
+    {
+        let steps = PendingManualRouteSteps(startsWithInventory: startsWithInventory)
+        let operation = ReconciliationRouteOperation(routeOperation: steps.wait)
+        let fixture = try DeviceReconciliationFixture(headsetInitiallyConnected: true, controlledRoute: operation)
+        let newDefault = AudioDevice(id: 94, uid: "new-default", name: "New Default", icon: nil, supportsAutoEQ: false)
+        let laterDefault = AudioDevice(
+            id: 95, uid: "later-default", name: "Later Default", icon: nil, supportsAutoEQ: false)
+        for device in [newDefault, laterDefault] {
+            fixture.devices.addOutputDevice(device)
+            fixture.volume.volumes[device.id] = 0.5
+        }
+        steps.onManualStarted = {
+            fixture.volume.defaultDeviceID = newDefault.id
+            fixture.volume.defaultDeviceUID = newDefault.uid
+            fixture.volume.onDefaultDeviceChanged?(newDefault.uid)
+        }
+
+        do {
+            if startsWithInventory {
+                let away = try fixture.gate.acquire(owner: .awayMode, mode: .exclusive)
+                fixture.disconnectHeadset()
+                fixture.gate.release(away)
+                try #require(await ReconciliationCondition { steps.inventoryWaiting }.wait())
+            }
+
+            fixture.engine.setDevice(for: fixture.app, deviceUID: nil)
+            try #require(
+                await ReconciliationCondition {
+                    steps.manualWaiting && fixture.gate.activeSharedPermitCount == 1
+                }.wait())
+            #expect(fixture.volume.defaultDeviceUID == newDefault.uid)
+            #expect(fixture.engine.routeLifecycle(for: fixture.app) == .preparing(deviceUIDs: [fixture.fallback.uid]))
+            #expect(steps.onManualStarted == nil)
+
+            if laterCallback != .none {
+                if laterCallback == .confirmation {
+                    fixture.volume.defaultDeviceWritesPublishState = false
+                    #expect(fixture.engine.requestDefaultOutputDeviceSwitch(laterDefault.id) == .accepted)
+                    #expect(fixture.volume.setDefaultDeviceCalls == [laterDefault.id])
+                }
+                fixture.volume.defaultDeviceID = laterDefault.id
+                fixture.volume.defaultDeviceUID = laterDefault.uid
+                fixture.volume.onDefaultDeviceChanged?(laterDefault.uid)
+                try #require(
+                    await ReconciliationCondition {
+                        steps.manualWasSuperseded || fixture.gate.activeSharedPermitCount == 1
+                    }.wait())
+                #expect(steps.manualWaiting)
+                #expect(!steps.manualWasSuperseded)
+                #expect(
+                    fixture.engine.routeLifecycle(for: fixture.app) == .preparing(deviceUIDs: [fixture.fallback.uid]))
+            }
+
+            steps.finishManual()
+            try #require(await ReconciliationCondition { fixture.gate.activeSharedPermitCount == 0 }.wait())
+            let finalDefault = laterCallback == .none ? newDefault : laterDefault
+            #expect(fixture.engine.routeLifecycle(for: fixture.app) == .active(deviceUIDs: [finalDefault.uid]))
+            #expect(fixture.engine.getDeviceUID(for: fixture.app) == finalDefault.uid)
+            #expect(fixture.engine.isFollowingDefault(for: fixture.app))
+            let persistedFollowsDefault = fixture.settings.isFollowingDefault(for: fixture.app.persistenceIdentifier)
+            #expect(persistedFollowsDefault)
+            #expect(!steps.manualWasSuperseded)
+        } catch {
+            steps.cancelAll()
+            try await fixture.shutdown()
+            throw error
+        }
+        steps.cancelAll()
         try await fixture.shutdown()
     }
 
@@ -265,7 +376,8 @@ private final class DeviceReconciliationFixture {
         headsetInitiallyConnected: Bool = false,
         followsDefault: Bool = false,
         multipleOutputs: Bool = false,
-        controlledRoute: ReconciliationRouteOperation? = nil
+        controlledRoute: ReconciliationRouteOperation? = nil,
+        additionalApps: [AudioApp] = []
     ) throws {
         settings = SettingsManager(directory: directory, managesLaunchAtLogin: false)
         settings.appSettings.showDeviceDisconnectAlerts = false
@@ -273,6 +385,9 @@ private final class DeviceReconciliationFixture {
             settings.setVolume(for: app.persistenceIdentifier, to: 0.8)
         } else {
             settings.setDeviceRouting(for: app.persistenceIdentifier, deviceUID: headset.uid)
+        }
+        for additionalApp in additionalApps {
+            settings.setDeviceRouting(for: additionalApp.persistenceIdentifier, deviceUID: headset.uid)
         }
         if multipleOutputs {
             settings.setDeviceSelectionMode(for: app.persistenceIdentifier, to: .multi)
@@ -285,7 +400,7 @@ private final class DeviceReconciliationFixture {
         volume.defaultDeviceID = fallback.id
         volume.defaultDeviceUID = fallback.uid
         volume.volumes = [fallback.id: 0.5, headset.id: 0.5]
-        processes.activeApps = [app]
+        processes.activeApps = [app] + additionalApps
         permission.status = .authorized
         let tap = RecordingProcessTapController(
             app: app, deviceUIDs: [headsetInitiallyConnected && !followsDefault ? headset.uid : fallback.uid])
@@ -309,7 +424,7 @@ private final class DeviceReconciliationFixture {
         )
         engine.bluetoothDeviceMonitor.stop()
         engine.applyPersistedSettings()
-        #expect(engine.activeProcessingTapCount == 1)
+        #expect(engine.activeProcessingTapCount == 1 + additionalApps.count)
         try engine.installMutationAdmission(gate)
     }
 
@@ -337,12 +452,31 @@ private final class DeviceReconciliationFixture {
 
 @MainActor
 private final class ReconciliationRouteOperation {
+    private let allowsSupersession: Bool
+    private let routeOperation: (@MainActor () async throws -> Void)?
+    private(set) var firstAppID: pid_t?
     private(set) var isWaiting = false
     private(set) var cancellationRequested = false
     var invalidationCount = 0
     private var continuation: CheckedContinuation<Void, any Error>?
 
-    func wait() async throws {
+    init(allowsSupersession: Bool = false, routeOperation: (@MainActor () async throws -> Void)? = nil) {
+        self.allowsSupersession = allowsSupersession
+        self.routeOperation = routeOperation
+    }
+
+    func wait(appID: pid_t) async throws {
+        if let routeOperation {
+            try await routeOperation()
+            return
+        }
+        if allowsSupersession {
+            if let firstAppID {
+                if firstAppID == appID { finishCancellation() }
+                return
+            }
+            firstAppID = appID
+        }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
@@ -359,6 +493,110 @@ private final class ReconciliationRouteOperation {
         continuation = nil
         isWaiting = false
         pending?.resume(throwing: CancellationError())
+    }
+}
+
+@MainActor
+@Observable
+private final class PendingManualRouteSteps {
+    private(set) var inventoryWaiting = false
+    private(set) var manualWaiting = false
+    private(set) var manualWasSuperseded = false
+    var onManualStarted: (() -> Void)?
+    private var callCount = 0
+    private var inventory: CheckedContinuation<Void, any Error>?
+    private var manual: CheckedContinuation<Void, any Error>?
+
+    init(startsWithInventory: Bool = true) {
+        callCount = startsWithInventory ? 0 : 1
+    }
+
+    func wait() async throws {
+        callCount += 1
+        switch callCount {
+        case 1:
+            try await withCheckedThrowingContinuation {
+                inventory = $0
+                inventoryWaiting = true
+            }
+        case 2:
+            try await withCheckedThrowingContinuation {
+                manual = $0
+                manualWaiting = true
+                let onStarted = onManualStarted
+                onManualStarted = nil
+                onStarted?()
+                let previous = inventory
+                inventory = nil
+                inventoryWaiting = false
+                previous?.resume(throwing: CancellationError())
+            }
+        default:
+            if let pending = manual {
+                manual = nil
+                manualWaiting = false
+                manualWasSuperseded = true
+                pending.resume(throwing: CancellationError())
+            }
+            return
+        }
+    }
+
+    func finishManual() {
+        let pending = manual
+        manual = nil
+        manualWaiting = false
+        pending?.resume()
+    }
+
+    func cancelAll() {
+        onManualStarted = nil
+        let pendingInventory = inventory
+        let pendingManual = manual
+        inventory = nil
+        manual = nil
+        inventoryWaiting = false
+        manualWaiting = false
+        pendingInventory?.resume(throwing: CancellationError())
+        pendingManual?.resume(throwing: CancellationError())
+    }
+}
+
+@MainActor
+private final class ReconciliationCondition {
+    private let predicate: @MainActor () -> Bool
+    private let stream: AsyncStream<Bool>
+    private let continuation: AsyncStream<Bool>.Continuation
+    private var finished = false
+
+    init(_ predicate: @escaping @MainActor () -> Bool) {
+        self.predicate = predicate
+        (stream, continuation) = AsyncStream.makeStream()
+    }
+
+    func wait() async -> Bool {
+        observe()
+        let timeout = DispatchWorkItem { [continuation] in continuation.finish() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeout)
+        defer {
+            timeout.cancel()
+            finished = true
+        }
+        var iterator = stream.makeAsyncIterator()
+        return await iterator.next() ?? false
+    }
+
+    private func observe() {
+        guard !finished else { return }
+        let matched = withObservationTracking {
+            predicate()
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observe() }
+        }
+        if matched {
+            continuation.yield(true)
+            continuation.finish()
+        }
     }
 }
 
@@ -397,14 +635,14 @@ private final class ReconciliationTestTap: ProcessTapControlling {
     func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?, requiresExclusiveOutput: Bool)
         async throws
     {
-        try await operation.wait()
+        try await operation.wait(appID: app.id)
         currentDeviceUIDs = [newDeviceUID]
     }
 
     func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, requiresExclusiveOutput: Bool)
         async throws
     {
-        try await operation.wait()
+        try await operation.wait(appID: app.id)
         currentDeviceUIDs = newDeviceUIDs
     }
 }

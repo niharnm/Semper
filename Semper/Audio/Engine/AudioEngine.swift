@@ -83,6 +83,7 @@ final class AudioEngine {
     private var nextAppRouteOperationGeneration: UInt64 = 0
     private var appRouteOperationGenerations: [pid_t: UInt64] = [:]
     private var pendingAppRouteOperations: [pid_t: PendingAppRouteOperation] = [:]
+    private var deferredAppRouteReconciliations: Set<pid_t> = []
     private struct PendingSafeOutputSwitch {
         let generation: UInt64
         let deviceID: AudioDeviceID
@@ -317,6 +318,10 @@ final class AudioEngine {
     private func finishAppRouteOperation(for appID: pid_t, generation: UInt64) {
         guard pendingAppRouteOperations[appID]?.generation == generation else { return }
         pendingAppRouteOperations.removeValue(forKey: appID)
+        if deferredAppRouteReconciliations.remove(appID) != nil {
+            needsOutputDeviceReconciliation = true
+            startOutputDeviceReconciliation()
+        }
     }
 
     func masterOutputVolume(for device: AudioDevice) -> Float {
@@ -1409,6 +1414,7 @@ final class AudioEngine {
         }
         pendingAppRouteOperations.removeAll()
         appRouteOperationGenerations.removeAll()
+        deferredAppRouteReconciliations.removeAll()
         processMonitor.stop()
         deviceMonitor.stop()
         #if !APP_STORE
@@ -1671,6 +1677,10 @@ final class AudioEngine {
         }
         pendingAppRouteOperations.removeAll()
         appRouteOperationGenerations.removeAll()
+        if !deferredAppRouteReconciliations.isEmpty {
+            needsOutputDeviceReconciliation = true
+            deferredAppRouteReconciliations.removeAll()
+        }
         await reconciliationTask?.value
         for task in routeTasks {
             await task.value
@@ -3148,8 +3158,9 @@ final class AudioEngine {
     private func routeFollowsDefaultApps(to targetUID: String) {
         guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
         defer { admission.finish() }
-        if outputDeviceReconciliationTask != nil {
+        if outputDeviceReconciliationTask != nil || !pendingAppRouteOperations.isEmpty {
             needsOutputDeviceReconciliation = true
+            startOutputDeviceReconciliation()
             return
         }
         guard !followsDefault.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
@@ -3185,6 +3196,7 @@ final class AudioEngine {
     private func beginOutputDeviceEvent() -> AudioMutationLease? {
         guard !isEngineStopped else { return nil }
         if needsOutputDeviceReconciliation || outputDeviceReconciliationTask != nil
+            || !pendingAppRouteOperations.isEmpty
             || (audioProcessingState == .bypassing && outputDeviceAdmissionGate != nil)
         {
             needsOutputDeviceReconciliation = true
@@ -3273,6 +3285,11 @@ final class AudioEngine {
         for tap in Array(taps.values) {
             guard canCreateProcessTaps, !Task.isCancelled else { return }
             let app = tap.app
+            guard pendingAppRouteOperations[app.id] == nil else {
+                deferredAppRouteReconciliations.insert(app.id)
+                continue
+            }
+            let routeGeneration = appRouteOperationGenerations[app.id]
             let mode = getDeviceSelectionMode(for: app)
             let selected = settingsManager.getSelectedDeviceUIDs(for: app.persistenceIdentifier) ?? []
             let availableSelection = selected.intersection(aliveUIDs)
@@ -3320,13 +3337,17 @@ final class AudioEngine {
                 }
                 guard canCreateProcessTaps, !Task.isCancelled else { return }
                 if needsOutputDeviceReconciliation { return }
+                guard appRouteOperationGenerations[app.id] == routeGeneration else { continue }
                 applyTapOutputState(to: tap, for: app.id, deviceUIDs: targetUIDs)
                 applyAutoEQToTap(tap)
                 appRouteLifecycles[app.id] = .active(deviceUIDs: targetUIDs)
             } catch is CancellationError {
-                return
+                // A newer app route can cancel its tap switch without canceling this inventory pass.
+                guard canCreateProcessTaps, !Task.isCancelled else { return }
             } catch {
                 guard canCreateProcessTaps, !Task.isCancelled else { return }
+                if needsOutputDeviceReconciliation { return }
+                guard appRouteOperationGenerations[app.id] == routeGeneration else { continue }
                 appRouteLifecycles[app.id] = .failed(
                     previousDeviceUIDs: previousUIDs, message: error.localizedDescription)
                 logger.error("Failed to reconcile \(app.name) output devices: \(error.localizedDescription)")
