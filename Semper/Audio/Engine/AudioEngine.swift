@@ -139,10 +139,43 @@ final class AudioEngine {
     private var permissionPersistenceFailurePending = false
     private let mutationAdmission = AudioMutationAdmission()
     private var sceneMutationAdmission: AudioMutationLease?
+    private var outputDeviceAdmissionGate: MutationAdmissionGate?
+    private var outputDeviceObservationGeneration: UUID?
+    private var observedOutputDeviceUIDs: Set<String> = []
+    private var needsOutputDeviceReconciliation = false
+    private var outputDeviceReconciliationTask: Task<Void, Never>?
     var mutationAdmissionError: (any Error)? { mutationAdmission.lastError }
 
     func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
         try mutationAdmission.install(gate)
+        outputDeviceAdmissionGate = gate
+        startObservingOutputDeviceAdmission()
+    }
+
+    private func startObservingOutputDeviceAdmission() {
+        guard !isEngineStopped, outputDeviceObservationGeneration == nil,
+            let gate = outputDeviceAdmissionGate
+        else { return }
+        let generation = UUID()
+        outputDeviceObservationGeneration = generation
+        observedOutputDeviceUIDs = Set(outputDevices.map(\.uid))
+        observeOutputDeviceAdmission(gate, generation: generation)
+    }
+
+    private func observeOutputDeviceAdmission(_ gate: MutationAdmissionGate, generation: UUID) {
+        withObservationTracking {
+            _ = gate.activeExclusiveOwner
+        } onChange: { [weak self, weak gate] in
+            Task { @MainActor [weak self, weak gate] in
+                guard let self, let gate, !self.isEngineStopped,
+                    self.outputDeviceObservationGeneration == generation
+                else { return }
+                self.observeOutputDeviceAdmission(gate, generation: generation)
+                if gate.activeExclusiveOwner == nil {
+                    self.startOutputDeviceReconciliation()
+                }
+            }
+        }
     }
 
     private var isEngineStopped = false
@@ -1313,6 +1346,7 @@ final class AudioEngine {
     func start() {
         guard shutdownTask == nil else { return }
         isEngineStopped = false
+        startObservingOutputDeviceAdmission()
         // Monitors have internal guards against double-starting
         if permission.status == .authorized,
            settingsManager.audioProcessingMode == .active,
@@ -1342,6 +1376,10 @@ final class AudioEngine {
 
     func stop() {
         isEngineStopped = true
+        outputDeviceObservationGeneration = nil
+        needsOutputDeviceReconciliation = false
+        outputDeviceReconciliationTask?.cancel()
+        outputDeviceReconciliationTask = nil
         onAudioProcessingWillStop?()
         audioProcessingTransitionGeneration &+= 1
         audioProcessingTransitionTask?.cancel()
@@ -1394,7 +1432,9 @@ final class AudioEngine {
         let tasks = Array(pendingCleanup.values) + Array(tapMembershipRefreshTasks.values)
             + Array(tapMaintenanceTasks.values) + pendingAppRouteOperations.values.map(\.task)
             + [healthMonitorTask, staleCleanupTask, audioProcessingTransitionTask,
-               safeOutputSwitchTimeoutTask, defaultOutputConfirmationTimeoutTask].compactMap { $0 }
+                safeOutputSwitchTimeoutTask, defaultOutputConfirmationTimeoutTask,
+                outputDeviceReconciliationTask,
+            ].compactMap { $0 }
         let ownedTaps = Array(taps.values)
         stop()
         bluetoothDeviceMonitor.stop()
@@ -1546,6 +1586,7 @@ final class AudioEngine {
             await self.reconcileAudioProcessing(generation: generation)
             if self.audioProcessingTransitionGeneration == generation {
                 self.audioProcessingTransitionTask = nil
+                self.startOutputDeviceReconciliation()
             }
         }
     }
@@ -1600,6 +1641,11 @@ final class AudioEngine {
     private func tearDownAudioProcessing(explicitBypass: Bool) async -> Bool {
         audioProcessingState = .bypassing
         onAudioProcessingWillStop?()
+        let reconciliationTask = outputDeviceReconciliationTask
+        if let reconciliationTask {
+            needsOutputDeviceReconciliation = true
+            reconciliationTask.cancel()
+        }
         let healthTask = healthMonitorTask
         stopHealthMonitor()
         processMonitor.stop()
@@ -1625,6 +1671,7 @@ final class AudioEngine {
         }
         pendingAppRouteOperations.removeAll()
         appRouteOperationGenerations.removeAll()
+        await reconciliationTask?.value
         for task in routeTasks {
             await task.value
         }
@@ -3101,6 +3148,10 @@ final class AudioEngine {
     private func routeFollowsDefaultApps(to targetUID: String) {
         guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
         defer { admission.finish() }
+        if outputDeviceReconciliationTask != nil {
+            needsOutputDeviceReconciliation = true
+            return
+        }
         guard !followsDefault.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
 
         for pid in followsDefault {
@@ -3131,12 +3182,169 @@ final class AudioEngine {
         }
     }
 
+    private func beginOutputDeviceEvent() -> AudioMutationLease? {
+        guard !isEngineStopped else { return nil }
+        if needsOutputDeviceReconciliation || outputDeviceReconciliationTask != nil
+            || (audioProcessingState == .bypassing && outputDeviceAdmissionGate != nil)
+        {
+            needsOutputDeviceReconciliation = true
+            startOutputDeviceReconciliation()
+            return nil
+        }
+        guard let admission = mutationAdmission.begin() else {
+            needsOutputDeviceReconciliation = true
+            return nil
+        }
+        return admission
+    }
+
+    private func startOutputDeviceReconciliation() {
+        guard !isEngineStopped, needsOutputDeviceReconciliation,
+            audioProcessingState != .bypassing,
+            outputDeviceReconciliationTask == nil,
+            let generation = outputDeviceObservationGeneration,
+            let admission = mutationAdmission.begin()
+        else { return }
+        outputDeviceReconciliationTask = Task { @MainActor [weak self] in
+            defer { admission.finish() }
+            guard let self else { return }
+            defer {
+                if self.outputDeviceObservationGeneration == generation {
+                    self.outputDeviceReconciliationTask = nil
+                }
+            }
+            while !Task.isCancelled, !self.isEngineStopped,
+                self.outputDeviceObservationGeneration == generation,
+                self.needsOutputDeviceReconciliation
+            {
+                self.needsOutputDeviceReconciliation = false
+                await self.reconcileOutputDeviceInventory()
+            }
+        }
+    }
+
+    private func reconcileOutputDeviceInventory() async {
+        let devices = outputDevices
+        let connectedUIDs = Set(devices.map(\.uid))
+        let newlyConnectedUIDs = connectedUIDs.subtracting(observedOutputDeviceUIDs)
+        observedOutputDeviceUIDs = connectedUIDs
+        let aliveDevices = devices.filter { isAliveCheck($0.id) }
+        let aliveUIDs = Set(aliveDevices.map(\.uid))
+        for device in devices {
+            settingsManager.ensureDeviceInPriority(device.uid)
+            if !aliveUIDs.contains(device.uid) {
+                installAliveWatcher(deviceID: device.id, uid: device.uid, name: device.name)
+            }
+        }
+        for (deviceID, watcher) in aliveWatchers where !connectedUIDs.contains(watcher.uid) {
+            removeAliveWatcher(deviceID)
+        }
+        if let target = pendingSafeOutputSwitch?.state.targetDeviceUID, !aliveUIDs.contains(target) {
+            cancelPendingSafeOutputSwitch(reportFailure: true)
+        }
+        if let target = pendingDefaultOutputConfirmation?.deviceUID, !aliveUIDs.contains(target) {
+            cancelPendingDefaultOutputConfirmation(reportFailure: true)
+        }
+        if case .pendingAutoSwitch(_, let task) = outputPriorityState { task.cancel() }
+        outputPriorityState = .stable
+
+        let highestPriority = Self.resolveHighestPriority(
+            priorityOrder: settingsManager.devicePriorityOrder,
+            connectedDevices: aliveDevices,
+            isAlive: isAliveCheck
+        )
+        let currentDefault = deviceVolumeMonitor.defaultDeviceUID
+        if let highestPriority,
+            (currentDefault.map({ !aliveUIDs.contains($0) }) ?? true)
+                || newlyConnectedUIDs.contains(highestPriority.uid)
+        {
+            if highestPriority.uid != currentDefault {
+                _ = beginDefaultOutputSwitch(highestPriority.id, reportsCommandResult: false)
+            }
+        }
+        let fallbackUID =
+            deviceVolumeMonitor.defaultDeviceUID.flatMap {
+                aliveUIDs.contains($0) ? $0 : nil
+            } ?? highestPriority?.uid
+        if let fallbackUID { lastConfirmedDefaultUID = fallbackUID }
+        if needsOutputDeviceReconciliation { return }
+
+        // Rebuild from the current inventory instead of replaying events that may have paired off.
+        for tap in Array(taps.values) {
+            guard canCreateProcessTaps, !Task.isCancelled else { return }
+            let app = tap.app
+            let mode = getDeviceSelectionMode(for: app)
+            let selected = settingsManager.getSelectedDeviceUIDs(for: app.persistenceIdentifier) ?? []
+            let availableSelection = selected.intersection(aliveUIDs)
+            let preferred = settingsManager.getDeviceRouting(for: app.persistenceIdentifier)
+            let targetUIDs: [String]
+            if mode == .multi, !availableSelection.isEmpty {
+                targetUIDs = availableSelection.sorted()
+                volumeState.setSelectedDeviceUIDs(for: app.id, to: availableSelection, persist: false)
+                followsDefault.remove(app.id)
+            } else if mode == .single, let preferred, aliveUIDs.contains(preferred) {
+                targetUIDs = [preferred]
+                followsDefault.remove(app.id)
+            } else if let fallbackUID {
+                targetUIDs = [fallbackUID]
+                followsDefault.insert(app.id)
+                if mode == .multi {
+                    volumeState.setSelectedDeviceUIDs(for: app.id, to: [], persist: false)
+                }
+            } else {
+                appRouteLifecycles[app.id] = .unavailable(message: "No connected output device is available")
+                continue
+            }
+            appDeviceRouting[app.id] = targetUIDs.first
+            if tap.currentDeviceUIDs == targetUIDs {
+                applyTapOutputState(to: tap, for: app.id, deviceUIDs: targetUIDs)
+                applyAutoEQToTap(tap)
+                appRouteLifecycles[app.id] = .active(deviceUIDs: targetUIDs)
+                continue
+            }
+            let previousUIDs = tap.currentDeviceUIDs
+            let sourceDisappeared = !Set(previousUIDs).isSubset(of: aliveUIDs)
+            let preferredSource = preferredTapSourceDeviceUID(
+                forOutputUIDs: targetUIDs,
+                isFollowsDefault: followsDefault.contains(app.id)
+            )
+            do {
+                if targetUIDs.count == 1, let target = targetUIDs.first {
+                    try await tap.switchDevice(
+                        to: target, preferredTapSourceDeviceUID: preferredSource,
+                        requiresExclusiveOutput: sourceDisappeared)
+                } else {
+                    try await tap.updateDevices(
+                        to: targetUIDs, preferredTapSourceDeviceUID: preferredSource,
+                        requiresExclusiveOutput: sourceDisappeared)
+                }
+                guard canCreateProcessTaps, !Task.isCancelled else { return }
+                if needsOutputDeviceReconciliation { return }
+                applyTapOutputState(to: tap, for: app.id, deviceUIDs: targetUIDs)
+                applyAutoEQToTap(tap)
+                appRouteLifecycles[app.id] = .active(deviceUIDs: targetUIDs)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard canCreateProcessTaps, !Task.isCancelled else { return }
+                appRouteLifecycles[app.id] = .failed(
+                    previousDeviceUIDs: previousUIDs, message: error.localizedDescription)
+                logger.error("Failed to reconcile \(app.name) output devices: \(error.localizedDescription)")
+            }
+            if needsOutputDeviceReconciliation { return }
+        }
+    }
+
     /// Called when device disappears - updates routing and switches taps immediately
     private func handleDeviceDisconnected(_ deviceUID: String, name deviceName: String) {
-        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
-        defer { admission.finish() }
+        guard !isEngineStopped else { return }
         // Clean up alive watcher — use UID lookup since device is already removed from monitor
         removeAliveWatcher(forUID: deviceUID)
+        guard let admission = beginOutputDeviceEvent() else { return }
+        defer {
+            observedOutputDeviceUIDs = Set(outputDevices.map(\.uid))
+            admission.finish()
+        }
 
         if pendingSafeOutputSwitch?.state.targetDeviceUID == deviceUID {
             cancelPendingSafeOutputSwitch(reportFailure: true)
@@ -3185,7 +3393,7 @@ final class AudioEngine {
                     // Update in-memory selection to remove disconnected device (don't persist)
                     var currentSelection = volumeState.getSelectedDeviceUIDs(for: app.id)
                     currentSelection.remove(deviceUID)
-                    volumeState.setSelectedDeviceUIDs(for: app.id, to: currentSelection, identifier: nil)
+                    volumeState.setSelectedDeviceUIDs(for: app.id, to: currentSelection, persist: false)
                     continue
                 }
                 // All devices gone in multi-mode, fall through to single-device fallback
@@ -3254,8 +3462,11 @@ final class AudioEngine {
 
     /// Called when a device appears - switches pinned apps back to their preferred device
     private func handleDeviceConnected(_ deviceUID: String, name deviceName: String) {
-        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
-        defer { admission.finish() }
+        guard let admission = beginOutputDeviceEvent() else { return }
+        defer {
+            observedOutputDeviceUIDs = Set(outputDevices.map(\.uid))
+            admission.finish()
+        }
         // Register newly connected device in priority list
         settingsManager.ensureDeviceInPriority(deviceUID)
 
@@ -3315,7 +3526,8 @@ final class AudioEngine {
             // Add the reconnected device back to in-memory selection
             var updatedUIDs = currentUIDs
             updatedUIDs.insert(deviceUID)
-            volumeState.setSelectedDeviceUIDs(for: app.id, to: updatedUIDs, identifier: app.persistenceIdentifier)
+            volumeState.setSelectedDeviceUIDs(
+                for: app.id, to: updatedUIDs, identifier: app.persistenceIdentifier, persist: false)
             multiModeTapsToUpdate.append(tap)
         }
 
@@ -3502,7 +3714,7 @@ final class AudioEngine {
 
     /// Called when system default output device changes - switches apps that follow default
     private func handleDefaultDeviceChanged(_ newDefaultUID: String) {
-        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        guard let admission = beginOutputDeviceEvent() else { return }
         defer { admission.finish() }
         // State machine: if we're waiting for macOS to auto-switch after a device connect,
         // check whether this change is the expected auto-switch or user intent.
