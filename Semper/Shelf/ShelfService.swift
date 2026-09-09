@@ -20,6 +20,7 @@ final class ShelfService {
     private(set) var persistenceEnabled = false
     private(set) var defaultExpiry: ShelfExpiry = .quit
     private(set) var importCount = 0
+    private(set) var isChoosingFiles = false
     private(set) var message: String?
     private(set) var storeNeedsReset = false
     private var pendingImportCleanup: Set<String> = []
@@ -27,6 +28,11 @@ final class ShelfService {
     private var importCancellationCount = 0
 
     var canClear: Bool { !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry }
+    var canChooseFiles: Bool {
+        isRunning && !isStopping && !isClearing && !storeNeedsReset && !isChoosingFiles
+            && importCount == 0 && importCancellationCount == 0 && removingIDs.isEmpty
+            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && items.count < ShelfLimits.items
+    }
 
     let store: ShelfStore
     @ObservationIgnored private let access: any ShelfFileAccess
@@ -39,7 +45,8 @@ final class ShelfService {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var clearGeneration = 0
     @ObservationIgnored private var clearTask: Task<Result<Void, ShelfFailure>, Never>?
-    @ObservationIgnored private var removingIDs: Set<UUID> = []
+    private var removingIDs: Set<UUID> = []
+    @ObservationIgnored private let fileChooser: any ShelfFileChoosing
     @ObservationIgnored private let importer:
         @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload
     @ObservationIgnored private var stopTask: Task<Void, Never>?
@@ -48,12 +55,14 @@ final class ShelfService {
     init(
         store: ShelfStore = .standard, access: any ShelfFileAccess = NativeShelfFileAccess(),
         now: @escaping @Sendable () -> Date = { Date() },
+        fileChooser: any ShelfFileChoosing = NativeShelfFileChooser(),
         importer: @escaping @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload =
             ShelfDropImporter.load
     ) {
         self.store = store
         self.access = access
         self.now = now
+        self.fileChooser = fileChooser
         self.importer = importer
     }
 
@@ -346,7 +355,48 @@ final class ShelfService {
         checksums[id] = .cancelled
     }
 
-    func importDrops(_ providers: [NSItemProvider]) -> Bool {
+    @discardableResult
+    func chooseFiles() -> Bool {
+        guard removingIDs.isEmpty else {
+            message = "Wait for the item removal to finish before choosing files."
+            return false
+        }
+        guard admitImport(count: 1) else { return false }
+        let currentGeneration = generation
+        let id = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.importTasks[id] = nil
+                self.importCount = 0
+                self.isChoosingFiles = false
+            }
+            guard !Task.isCancelled, self.isRunning, self.generation == currentGeneration else { return }
+            guard let urls = await self.fileChooser.chooseFiles() else { return }
+            guard !Task.isCancelled, self.isRunning, self.generation == currentGeneration else { return }
+            guard self.removingIDs.isEmpty else {
+                self.message = "Wait for the item removal to finish before choosing files."
+                return
+            }
+            guard urls.count <= ShelfLimits.items - self.items.count else {
+                self.report(ShelfFailure.full)
+                return
+            }
+            self.importCount = urls.count
+            self.isChoosingFiles = false
+            for url in urls {
+                guard !Task.isCancelled, self.isRunning, self.generation == currentGeneration else { return }
+                do { try self.acceptImported(.file(url)) } catch { self.report(error) }
+                self.importCount = max(0, self.importCount - 1)
+                if self.importCount > 0 { await Task.yield() }
+            }
+        }
+        importTasks[id] = task
+        isChoosingFiles = true
+        return true
+    }
+
+    private func admitImport(count: Int) -> Bool {
         guard isRunning, !isClearing, !isStopping, !storeNeedsReset else {
             report(ShelfFailure.stopped)
             return false
@@ -359,15 +409,20 @@ final class ShelfService {
             message = "Clear Shelf to retry temporary image cleanup before adding another drop."
             return false
         }
-        guard providers.count <= ShelfLimits.items - items.count - importTasks.count else {
+        guard count <= ShelfLimits.items - items.count - importTasks.count else {
             report(ShelfFailure.full)
             return false
         }
-        let currentGeneration = generation
-        guard importTasks.isEmpty else {
-            message = "Wait for the current drop or cancel it before adding another."
+        guard importTasks.isEmpty, !isChoosingFiles else {
+            message = "Finish or cancel the current selection or import before adding more items."
             return false
         }
+        return true
+    }
+
+    func importDrops(_ providers: [NSItemProvider]) -> Bool {
+        guard admitImport(count: providers.count) else { return false }
+        let currentGeneration = generation
         let id = UUID()
         let task = Task { [weak self] in
             guard let self else { return }
@@ -406,6 +461,7 @@ final class ShelfService {
         }
         let workers = importTasks
         for task in workers.values { task.cancel() }
+        if isChoosingFiles { fileChooser.cancel() }
         for (id, task) in workers {
             await task.value
             importTasks[id] = nil

@@ -14,13 +14,16 @@ struct ShelfCompactView: View {
                     .font(.headline)
                 Spacer()
                 Text("\(service.items.count)").foregroundStyle(.secondary)
+                Button("Choose Files…") { service.chooseFiles() }
+                    .keyboardShortcut("o", modifiers: .command)
+                    .disabled(!service.canChooseFiles)
                 Button("Open", action: openDetail)
             }
             if !service.isRunning {
                 Text("File Shelf is paused.").foregroundStyle(.secondary)
                 Button("Start File Shelf") { service.start() }
             } else if service.items.isEmpty {
-                Text("Drop files, folders, links, images, or text here.")
+                Text("Choose files and folders, or drop files, links, images, or text here.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 54)
             } else {
@@ -69,10 +72,13 @@ struct ShelfDetailView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("File Shelf").font(.title2.weight(.semibold))
-                    Text("A temporary place for items you drop. Original files stay in place.")
+                    Text("A temporary place for items you add. Original files stay in place.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Choose Files…", systemImage: "folder.badge.plus") { service.chooseFiles() }
+                    .keyboardShortcut("o", modifiers: .command)
+                    .disabled(!service.canChooseFiles)
                 Button("Refresh", systemImage: "arrow.clockwise") { service.refresh() }.disabled(!service.isRunning)
                 Button("Clear Shelf", systemImage: "tray") { confirmClear = true }.disabled(!service.canClear)
             }
@@ -126,9 +132,9 @@ struct ShelfDetailView: View {
             Group {
                 if service.items.isEmpty {
                     ContentUnavailableView(
-                        "Drop items here", systemImage: "tray.and.arrow.down",
+                        "Add items to your shelf", systemImage: "tray.and.arrow.down",
                         description: Text(
-                            "Files and folders are held by reference. Drop text or images to keep a temporary local copy."
+                            "Choose files and folders or drop items here. Files stay in place. Dropped text and images use a temporary local copy."
                         ))
                 } else {
                     ScrollView {
