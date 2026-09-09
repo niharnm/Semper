@@ -24,7 +24,7 @@ before removal or quit. Do not request Accessibility from startup or from module
 registration. Audio startup must remain a separate shell decision.
 
 The shell should keep one service instance per added module. Discard the instance
-after shutdown and construct a new one if the module is added again:
+after successful shutdown cleanup and construct a new one if the module is added again:
 
 | Service | Start enabled module | Pause or disable | Remove or quit |
 | --- | --- | --- | --- |
@@ -34,9 +34,14 @@ after shutdown and construct a new one if the module is added again:
 
 These calls run on the main actor. Workspace delegates Accessibility operations
 to its backend actor; shelf imports and checksums have cancellable workers.
-Safe Eject cancels monitoring immediately, then `waitForCleanup()` awaits its
-owned metadata-query cleanup before removal or quit. New queries wait for prior
-query cleanup instead of overlapping on repeated mount notifications.
+Safe Eject cancels monitoring immediately, then `waitForCleanup()` returns
+`Result<Void, SafeEjectFailure>` after checking its owned metadata-query cleanup.
+Handle the result before removal or quit. On `.failure(.cleanupPending)`, keep
+the service alive, report incomplete cleanup, and offer an explicit retry. The
+same failure is available through `cleanupFailure`; restart cannot clear it.
+Calling `waitForCleanup()` again can clear it after the owned process has exited
+and its resources have closed. A failed cleanup returns without an indefinite
+quit wait. No replacement query starts while cleanup remains pending.
 Mount `WorkspaceView(service: workspace)`, `ShelfDetailView(service: shelf)`, or
 `SafeEjectView(service: storage)` in the appropriate detail route. The menu can
 mount `ShelfCompactView(service: shelf, openDetail: openFiles)`.
@@ -92,9 +97,13 @@ device identities before each storage operation. Cached topology only informs
 the UI.
 
 The metadata query runs off the main actor with a 1 MiB output limit and a
-three-second deadline. Cancellation drains owned process and pipe cleanup, with
-up to two 250 ms termination waits. The plist schema is validated explicitly;
-unsupported output refuses the operation without exposing volume data in errors.
+three-second deadline. Cancellation requests termination through the owned
+`Process` and waits up to 250 ms. If the process remains alive or closing its
+resources fails, ownership is retained and cleanup is reported as pending.
+Repeated notifications and preflight calls cannot launch another query until an
+explicit cleanup retry confirms exit and closes the resources. There is no raw
+PID-based forced signal. The plist schema is validated explicitly; unsupported
+output refuses the operation without exposing volume data in errors.
 
 Another mounted volume on the selected physical device blocks eject. Proven
 disjoint backing, including internal-only startup storage, does not. Unknown

@@ -18,6 +18,7 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
     }
 
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws {
+        guard topologyCache.cleanupFailure == nil else { throw SafeEjectFailure.cleanupPending }
         guard session == nil else { return }
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             throw SafeEjectFailure.unavailable
@@ -58,7 +59,7 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
         session = nil
     }
 
-    func drain() async {
+    func drain() async -> Result<Void, SafeEjectFailure> {
         await topologyCache.drain()
     }
 
@@ -70,6 +71,7 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
     }
 
     func inventory() throws -> SafeEjectInventory {
+        guard topologyCache.cleanupFailure == nil else { throw SafeEjectFailure.cleanupPending }
         guard let session else { throw SafeEjectFailure.paused }
         guard
             let urls = FileManager.default.mountedVolumeURLs(

@@ -70,12 +70,15 @@ enum SafeEjectFailure: Error, Equatable, Sendable {
     case interrupted
     case timedOut
     case topologyTimedOut
+    case cleanupPending
     case stillMounted
     case deviceStillPresent
     case system(Int32)
 
     var message: String {
         switch self {
+        case .cleanupPending:
+            "Storage checks have not finished cleaning up. Keep Safe Eject open and retry cleanup before restarting."
         case .paused: "Safe Eject is paused. Start it to refresh mounted volumes."
         case .sleeping: "Safe Eject is waiting for this Mac to wake."
         case .operationInProgress: "Another eject request is still being checked."
@@ -145,7 +148,7 @@ struct SafeEjectReceipt: Identifiable, Equatable, Sendable {
 protocol SafeEjectBackend: AnyObject {
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws
     func stop()
-    func drain() async
+    func drain() async -> Result<Void, SafeEjectFailure>
     func cancelPendingOperation()
     func inventory() throws -> SafeEjectInventory
     func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure>
@@ -154,5 +157,5 @@ protocol SafeEjectBackend: AnyObject {
 }
 
 extension SafeEjectBackend {
-    func drain() async {}
+    func drain() async -> Result<Void, SafeEjectFailure> { .success(()) }
 }
