@@ -79,7 +79,8 @@ struct ShelfDetailView: View {
             HStack {
                 Picker(
                     "New items expire",
-                    selection: Binding(get: { service.defaultExpiry }, set: service.setDefaultExpiry)
+                    selection: Binding(
+                        get: { service.defaultExpiry }, set: { value in service.setDefaultExpiry(value) })
                 ) {
                     ForEach(ShelfExpiry.allCases) { Text($0.title).tag($0) }
                 }.frame(maxWidth: 310)
@@ -93,7 +94,7 @@ struct ShelfDetailView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Toggle(
                     "Keep shelf between launches",
-                    isOn: Binding(get: { service.persistenceEnabled }, set: service.setPersistence)
+                    isOn: Binding(get: { service.persistenceEnabled }, set: { value in service.setPersistence(value) })
                 )
                 .disabled(service.storeNeedsReset || !service.isRunning)
                 Text(

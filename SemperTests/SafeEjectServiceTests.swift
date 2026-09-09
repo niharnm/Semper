@@ -304,7 +304,7 @@ struct SafeEjectServiceTests {
     @Test("Stopping topology work cancels fresh checks and ignores a late reader result")
     func stoppedTopologyCache() async {
         let reader = SafeEjectSuspendedTopologyReader()
-        let cache = SafeEjectTopologyCache { await reader.read() }
+        let cache = SafeEjectTopologyCache { try await reader.read() }
         var publications = 0
         cache.start { publications += 1 }
         await reader.waitForCall(1)
@@ -327,7 +327,7 @@ struct SafeEjectServiceTests {
     @Test("Caller cancellation and concurrent fresh topology queries cannot publish stale results")
     func cancelledTopologyPreflight() async {
         let reader = SafeEjectSuspendedTopologyReader()
-        let cache = SafeEjectTopologyCache { await reader.read() }
+        let cache = SafeEjectTopologyCache { try await reader.read() }
         cache.start {}
         await reader.waitForCall(1)
         let first = Task { try await cache.fresh() }
@@ -355,7 +355,7 @@ struct SafeEjectServiceTests {
     @Test("Topology invalidation prevents old preflight results from replacing the new inventory")
     func invalidatedTopologyCache() async {
         let reader = SafeEjectSuspendedTopologyReader()
-        let cache = SafeEjectTopologyCache { await reader.read() }
+        let cache = SafeEjectTopologyCache { try await reader.read() }
         let (events, continuation) = AsyncStream<Void>.makeStream()
         var iterator = events.makeAsyncIterator()
         cache.start { continuation.yield(()) }
@@ -385,7 +385,7 @@ struct SafeEjectServiceTests {
     @Test("Rapid invalidation and restart retain cancelled readers until cleanup has drained")
     func serializedTopologyCleanup() async {
         let reader = SafeEjectSuspendedTopologyReader()
-        let cache = SafeEjectTopologyCache { await reader.read() }
+        let cache = SafeEjectTopologyCache { try await reader.read() }
         cache.start {}
         await reader.waitForCall(1)
         for _ in 0..<20 { cache.invalidate() }
@@ -409,7 +409,7 @@ struct SafeEjectServiceTests {
     @Test("A fresh query and stop await cancelled background cleanup without starting another reader")
     func freshWaitsForCleanup() async {
         let reader = SafeEjectSuspendedTopologyReader()
-        let cache = SafeEjectTopologyCache { await reader.read() }
+        let cache = SafeEjectTopologyCache { try await reader.read() }
         cache.start {}
         await reader.waitForCall(1)
         let (started, continuation) = AsyncStream<Void>.makeStream()
@@ -462,6 +462,247 @@ struct SafeEjectServiceTests {
         await wait.value
         #expect(drained)
         #expect(service.state == .shutDown)
+    }
+
+    @Test("A cleanup failure prevents a later preflight from launching another reader")
+    func failedCleanupBlocksReplacement() async {
+        let fixture = SafeEjectCleanupFixture()
+        let cache = SafeEjectTopologyCache { try await fixture.read() }
+        let (events, continuation) = AsyncStream<Void>.makeStream()
+        var iterator = events.makeAsyncIterator()
+        cache.start { continuation.yield(()) }
+        _ = await iterator.next()
+        do {
+            _ = try await cache.fresh()
+            Issue.record("Pending cleanup must refuse fresh metadata")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        #expect(await fixture.calls == 1)
+        cache.stop()
+        continuation.finish()
+    }
+
+    @Test("Cleanup failure is published even when a background reader was cancelled and invalidated")
+    func revisedReaderPreservesCleanupFailure() async {
+        let reader = SafeEjectSuspendedTopologyReader()
+        let cache = SafeEjectTopologyCache(
+            read: { try await reader.read() }, retryCleanup: { throw SafeEjectAPFSError.cleanupFailed }
+        )
+        let (events, continuation) = AsyncStream<Void>.makeStream()
+        var iterator = events.makeAsyncIterator()
+        cache.start { continuation.yield(()) }
+        await reader.waitForCall(1)
+        cache.invalidate()
+        await reader.waitForCancellation(1)
+        await reader.failCleanup(1)
+        _ = await iterator.next()
+        #expect(cache.cleanupFailure == .cleanupPending)
+        for _ in 0..<20 { cache.invalidate() }
+        do {
+            _ = try await cache.fresh()
+            Issue.record("Invalidation must not clear a failed cleanup")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        cache.stop()
+        #expect(cache.cleanupFailure == .cleanupPending)
+        do {
+            try await cache.drain().get()
+            Issue.record("Failed cleanup must reach the owner")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        #expect(await reader.count == 1)
+        continuation.finish()
+    }
+
+    @Test("Stopped preflight reports failed cleanup before its cancellation result")
+    func cancelledPreflightPreservesCleanupFailure() async {
+        let reader = SafeEjectSuspendedTopologyReader()
+        let cache = SafeEjectTopologyCache { try await reader.read() }
+        cache.start {}
+        await reader.waitForCall(1)
+        let fresh = Task { try await cache.fresh() }
+        await reader.waitForCancellation(1)
+        await reader.resolve(1)
+        await reader.waitForCall(2)
+        cache.stop()
+        await reader.failCleanup(2)
+        do {
+            _ = try await fresh.value
+            Issue.record("Stopped preflight must preserve cleanup failure")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        #expect(cache.cleanupFailure == .cleanupPending)
+        cache.start {}
+        #expect(cache.cleanupFailure == .cleanupPending)
+        #expect(await reader.count == 2)
+        cache.stop()
+    }
+
+    @Test("Only an explicit successful cleanup retry allows a replacement reader")
+    func explicitCleanupRetry() async throws {
+        let fixture = SafeEjectCleanupFixture()
+        let cache = SafeEjectTopologyCache(
+            read: { try await fixture.read() }, retryCleanup: { try await fixture.retryCleanup() }
+        )
+        let (events, continuation) = AsyncStream<Void>.makeStream()
+        var iterator = events.makeAsyncIterator()
+        cache.start { continuation.yield(()) }
+        _ = await iterator.next()
+        cache.stop()
+        do {
+            try await cache.drain().get()
+            Issue.record("Cleanup is still retained")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        cache.start {}
+        #expect(cache.cleanupFailure == .cleanupPending)
+        #expect(await fixture.calls == 1)
+        cache.stop()
+        await fixture.allowCleanup()
+        try await cache.drain().get()
+        #expect(cache.cleanupFailure == nil)
+        cache.start {}
+        _ = try await cache.fresh()
+        #expect(await fixture.calls == 2)
+        cache.stop()
+        try await cache.drain().get()
+        continuation.finish()
+    }
+
+    @Test("Pause and shutdown retain cleanup failure until deliberate retry succeeds")
+    func serviceRetainsCleanupFailure() async throws {
+        for shuttingDown in [false, true] {
+            let backend = SafeEjectTestBackend()
+            backend.cleanupResult = .failure(.cleanupPending)
+            let service = SafeEjectService(backend: backend)
+            service.start()
+            if shuttingDown { service.shutdown() } else { service.pause() }
+            do {
+                try await service.waitForCleanup().get()
+                Issue.record("The shell must receive pending cleanup")
+            } catch {
+                #expect(error as? SafeEjectFailure == .cleanupPending)
+            }
+            #expect(service.cleanupFailure == .cleanupPending)
+            service.start()
+            service.refresh()
+            #expect(backend.startCalls == 1)
+            #expect(service.cleanupFailure == .cleanupPending)
+            backend.cleanupResult = .success(())
+            try await service.waitForCleanup().get()
+            #expect(service.cleanupFailure == nil)
+            service.start()
+            #expect(backend.startCalls == (shuttingDown ? 1 : 2))
+            service.shutdown()
+        }
+    }
+
+    @Test("Background cleanup failure is visible to direct controls before pause")
+    func servicePublishesBackgroundCleanupFailure() async throws {
+        let backend = SafeEjectTestBackend()
+        backend.inventoryError = .cleanupPending
+        let service = SafeEjectService(backend: backend)
+        service.start()
+        #expect(service.state == .running)
+        #expect(service.cleanupFailure == .cleanupPending)
+        #expect(service.refusal(for: volume()) == .cleanupPending)
+        backend.inventoryError = nil
+        try await service.waitForCleanup().get()
+        #expect(service.cleanupFailure == nil)
+        #expect(service.inventoryFailure == nil)
+        service.shutdown()
+    }
+
+    @Test("Concurrent shell cleanup waits share one backend retry and preserve its result")
+    func concurrentServiceCleanupWaits() async throws {
+        let backend = SafeEjectTestBackend()
+        backend.suspendCleanup = true
+        backend.cleanupResult = .failure(.cleanupPending)
+        let service = SafeEjectService(backend: backend)
+        service.start()
+        service.pause()
+        let first = Task { await service.waitForCleanup() }
+        await backend.waitUntilCleanupSuspended()
+        let (events, continuation) = AsyncStream<Void>.makeStream()
+        var iterator = events.makeAsyncIterator()
+        let second = Task {
+            continuation.yield(())
+            return await service.waitForCleanup()
+        }
+        _ = await iterator.next()
+        #expect(backend.drainCalls == 1)
+        backend.finishCleanup()
+        for result in [await first.value, await second.value] {
+            do {
+                try result.get()
+                Issue.record("Each waiter must receive the same cleanup failure")
+            } catch {
+                #expect(error as? SafeEjectFailure == .cleanupPending)
+            }
+        }
+        #expect(service.cleanupFailure == .cleanupPending)
+        backend.suspendCleanup = false
+        backend.cleanupResult = .success(())
+        try await service.waitForCleanup().get()
+        #expect(backend.drainCalls == 2)
+        #expect(service.cleanupFailure == nil)
+        continuation.finish()
+    }
+
+    @Test("Concurrent cache drains share one explicit retry without restoring an old failure")
+    func concurrentCacheCleanupRetry() async throws {
+        let fixture = SafeEjectCleanupFixture()
+        let cache = SafeEjectTopologyCache(
+            read: { try await fixture.read() }, retryCleanup: { try await fixture.retryCleanup() }
+        )
+        let (events, continuation) = AsyncStream<Void>.makeStream()
+        var iterator = events.makeAsyncIterator()
+        cache.start { continuation.yield(()) }
+        _ = await iterator.next()
+        cache.stop()
+        await fixture.suspendRetry()
+        let first = Task { await cache.drain() }
+        await fixture.waitForRetry()
+        let (secondStarted, secondContinuation) = AsyncStream<Void>.makeStream()
+        var secondIterator = secondStarted.makeAsyncIterator()
+        let second = Task {
+            secondContinuation.yield(())
+            return await cache.drain()
+        }
+        _ = await secondIterator.next()
+        #expect(await fixture.retryCalls == 1)
+        await fixture.allowCleanup()
+        await fixture.finishRetry()
+        try await first.value.get()
+        try await second.value.get()
+        #expect(cache.cleanupFailure == nil)
+        #expect(await fixture.retryCalls == 1)
+        #expect(await fixture.calls == 1)
+        continuation.finish()
+        secondContinuation.finish()
+    }
+
+    @Test("A late operation cannot restore cleanup failure after a successful intentional retry")
+    func oldOperationAfterCleanup() async throws {
+        let selected = volume()
+        let backend = SafeEjectTestBackend(mounted: [selected])
+        backend.suspendUnmount = true
+        backend.ignoreUnmountCancellation = true
+        let service = SafeEjectService(backend: backend)
+        service.start()
+        let eject = Task { await service.eject(selected) }
+        await backend.waitUntilSuspended()
+        service.pause()
+        try await service.waitForCleanup().get()
+        backend.finishUnmountWithCleanupFailure()
+        #expect(await eject.value == .unverified(.interrupted))
+        #expect(service.cleanupFailure == nil)
+        #expect(backend.ejectCalls == 0)
     }
 
     @Test("Reconnected volume with a reused BSD name cannot reuse old selection")
@@ -764,6 +1005,7 @@ private final class SafeEjectTestBackend: SafeEjectBackend {
     var presentDevices: Set<SafeEjectDeviceID>
     var hasUnidentified = false
     var inventoryFails = false
+    var inventoryError: SafeEjectFailure?
     var isMonitoring = false
     var startCalls = 0
     var startFails = false
@@ -774,7 +1016,10 @@ private final class SafeEjectTestBackend: SafeEjectBackend {
     var removeDeviceOnEject = true
     var presenceUnavailable = false
     var suspendUnmount = false
+    var ignoreUnmountCancellation = false
     var suspendCleanup = false
+    var drainCalls = 0
+    var cleanupResult: Result<Void, SafeEjectFailure> = .success(())
     var unmountFailure: SafeEjectFailure?
     var ejectFailure: SafeEjectFailure?
     var onUnmount: (() -> Void)?
@@ -804,17 +1049,25 @@ private final class SafeEjectTestBackend: SafeEjectBackend {
     }
 
     func cancelPendingOperation() {
+        if ignoreUnmountCancellation { return }
         pendingUnmount?.resume(returning: .failure(.interrupted))
         pendingUnmount = nil
     }
 
-    func drain() async {
-        guard suspendCleanup else { return }
+    func finishUnmountWithCleanupFailure() {
+        pendingUnmount?.resume(returning: .failure(.cleanupPending))
+        pendingUnmount = nil
+    }
+
+    func drain() async -> Result<Void, SafeEjectFailure> {
+        drainCalls += 1
+        guard suspendCleanup else { return cleanupResult }
         await withCheckedContinuation { continuation in
             cleanupWaiter = continuation
             cleanupStarted?.resume()
             cleanupStarted = nil
         }
+        return cleanupResult
     }
 
     func waitUntilCleanupSuspended() async {
@@ -835,6 +1088,7 @@ private final class SafeEjectTestBackend: SafeEjectBackend {
     func inventory() throws -> SafeEjectInventory {
         inventoryCalls += 1
         if inventoryFails { throw SafeEjectFailure.unavailable }
+        if let inventoryError { throw inventoryError }
         return SafeEjectInventory(volumes: mounted, hasUnidentifiedLocalVolumes: hasUnidentified)
     }
 
@@ -879,14 +1133,14 @@ private actor SafeEjectSuspendedTopologyReader {
     private(set) var maximumPending = 0
     private var cancelled: Set<Int> = []
     private var cancellationWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
-    private var pending: [Int: CheckedContinuation<SafeEjectAPFSTopology, Never>] = [:]
+    private var pending: [Int: CheckedContinuation<SafeEjectAPFSTopology, Error>] = [:]
     private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
-    func read() async -> SafeEjectAPFSTopology {
+    func read() async throws -> SafeEjectAPFSTopology {
         count += 1
         let index = count
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
                 pending[index] = continuation
                 maximumPending = max(maximumPending, pending.count)
                 let ready = waiters.filter { $0.0 <= count }
@@ -919,9 +1173,55 @@ private actor SafeEjectSuspendedTopologyReader {
         pending.removeValue(forKey: index)?.resume(returning: SafeEjectAPFSTopology(containers: []))
     }
 
+    func failCleanup(_ index: Int) {
+        pending.removeValue(forKey: index)?.resume(throwing: SafeEjectAPFSError.cleanupFailed)
+    }
+
     func resolveAll() {
         let continuations = pending.values
         pending = [:]
         for continuation in continuations { continuation.resume(returning: SafeEjectAPFSTopology(containers: [])) }
+    }
+}
+
+private actor SafeEjectCleanupFixture {
+    private(set) var calls = 0
+    private var mayCleanUp = false
+    private(set) var retryCalls = 0
+    private var suspend = false
+    private var retryContinuation: CheckedContinuation<Void, Never>?
+    private var retryStarted: CheckedContinuation<Void, Never>?
+
+    func read() throws -> SafeEjectAPFSTopology {
+        calls += 1
+        if mayCleanUp { return SafeEjectAPFSTopology(containers: []) }
+        throw SafeEjectAPFSError.cleanupFailed
+    }
+
+    func retryCleanup() async throws {
+        retryCalls += 1
+        if suspend {
+            await withCheckedContinuation { continuation in
+                retryContinuation = continuation
+                retryStarted?.resume()
+                retryStarted = nil
+            }
+        }
+        if !mayCleanUp { throw SafeEjectAPFSError.cleanupFailed }
+    }
+
+    func allowCleanup() { mayCleanUp = true }
+
+    func suspendRetry() { suspend = true }
+
+    func waitForRetry() async {
+        if retryContinuation != nil { return }
+        await withCheckedContinuation { retryStarted = $0 }
+    }
+
+    func finishRetry() {
+        retryContinuation?.resume()
+        retryContinuation = nil
+        suspend = false
     }
 }

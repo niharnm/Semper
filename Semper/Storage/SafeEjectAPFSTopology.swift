@@ -106,21 +106,21 @@ nonisolated enum SafeEjectAPFSReadChunk {
     case waiting, end
 }
 
-// One worker owns the process and all pipe access, including termination and closing.
+// The reader actor owns the process and all pipe access until cleanup succeeds.
 nonisolated protocol SafeEjectAPFSProcessControlling {
     func launch() throws
     func read(maximumBytes: Int) throws -> SafeEjectAPFSReadChunk
     var isRunning: Bool { get }
     var exitedSuccessfully: Bool { get }
     func terminate()
-    func forceTerminate() throws
     func close() throws
 }
 
-nonisolated struct SafeEjectAPFSReader: Sendable {
+actor SafeEjectAPFSReader {
     private let makeProcess: @Sendable () -> any SafeEjectAPFSProcessControlling
     private let timeout: Duration
     private let terminationGrace: Duration
+    private var pendingProcess: (any SafeEjectAPFSProcessControlling)?
 
     init() {
         self.init(makeProcess: { SafeEjectAPFSNativeProcess() })
@@ -136,28 +136,27 @@ nonisolated struct SafeEjectAPFSReader: Sendable {
     }
 
     func read() async throws -> SafeEjectAPFSTopology {
+        guard pendingProcess == nil else { throw SafeEjectAPFSError.cleanupFailed }
         guard !Task.isCancelled else { throw SafeEjectAPFSError.cancelled }
-        let task = Task.detached(priority: .utility) {
-            let process = makeProcess()
-            let result: Result<Data, SafeEjectAPFSError>
-            do {
-                result = .success(try Self.collect(process, timeout: timeout))
-            } catch let error as SafeEjectAPFSError {
-                result = .failure(error)
-            } catch {
-                result = .failure(.readFailed)
-            }
-            try Self.cleanUp(process, grace: terminationGrace)
-            guard !Task.isCancelled else { throw SafeEjectAPFSError.cancelled }
-            let topology = try SafeEjectAPFSTopology.parse(result.get())
-            guard !Task.isCancelled else { throw SafeEjectAPFSError.cancelled }
-            return topology
+        let process = makeProcess()
+        pendingProcess = process
+        let result: Result<Data, SafeEjectAPFSError>
+        do {
+            result = .success(try Self.collect(process, timeout: timeout))
+        } catch let error as SafeEjectAPFSError {
+            result = .failure(error)
+        } catch {
+            result = .failure(.readFailed)
         }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        try cleanUp(process)
+        guard !Task.isCancelled else { throw SafeEjectAPFSError.cancelled }
+        let topology = try SafeEjectAPFSTopology.parse(result.get())
+        guard !Task.isCancelled else { throw SafeEjectAPFSError.cancelled }
+        return topology
+    }
+
+    func retryCleanup() async throws {
+        try releaseExitedProcess()
     }
 
     private static func collect(_ process: any SafeEjectAPFSProcessControlling, timeout: Duration) throws -> Data {
@@ -191,21 +190,20 @@ nonisolated struct SafeEjectAPFSReader: Sendable {
         }
     }
 
-    private static func cleanUp(_ process: any SafeEjectAPFSProcessControlling, grace: Duration) throws {
-        var failed = false
+    private func cleanUp(_ process: any SafeEjectAPFSProcessControlling) throws {
         if process.isRunning {
             process.terminate()
-            let deadline = ContinuousClock.now.advanced(by: grace)
+            let deadline = ContinuousClock.now.advanced(by: terminationGrace)
             while process.isRunning, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.005) }
-            if process.isRunning {
-                do { try process.forceTerminate() } catch { failed = true }
-                let deadline = ContinuousClock.now.advanced(by: grace)
-                while process.isRunning, ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.005) }
-                if process.isRunning { failed = true }
-            }
         }
-        do { try process.close() } catch { failed = true }
-        if failed { throw SafeEjectAPFSError.cleanupFailed }
+        try releaseExitedProcess()
+    }
+
+    private func releaseExitedProcess() throws {
+        guard let process = pendingProcess else { return }
+        guard !process.isRunning else { throw SafeEjectAPFSError.cleanupFailed }
+        do { try process.close() } catch { throw SafeEjectAPFSError.cleanupFailed }
+        pendingProcess = nil
     }
 }
 
@@ -214,9 +212,10 @@ nonisolated private final class SafeEjectAPFSNativeProcess: SafeEjectAPFSProcess
     private let output = Pipe()
     private var null: FileHandle?
     private var launched = false
+    private var readerOpen = true
     private var writerOpen = true
 
-    var isRunning: Bool { launched && process.isRunning }
+    var isRunning: Bool { process.isRunning }
     var exitedSuccessfully: Bool { launched && !process.isRunning && process.terminationStatus == 0 }
 
     func launch() throws {
@@ -234,8 +233,8 @@ nonisolated private final class SafeEjectAPFSNativeProcess: SafeEjectAPFSProcess
         process.standardError = null
         try process.run()
         launched = true
-        writerOpen = false
         try output.fileHandleForWriting.close()
+        writerOpen = false
     }
 
     func read(maximumBytes: Int) throws -> SafeEjectAPFSReadChunk {
@@ -249,23 +248,25 @@ nonisolated private final class SafeEjectAPFSNativeProcess: SafeEjectAPFSProcess
 
     func terminate() { if isRunning { process.terminate() } }
 
-    func forceTerminate() throws {
-        guard isRunning else { return }
-        guard kill(process.processIdentifier, SIGKILL) == 0 || errno == ESRCH else {
-            throw SafeEjectAPFSError.cleanupFailed
-        }
-    }
-
     func close() throws {
         var failed = false
-        do { try output.fileHandleForReading.close() } catch { failed = true }
+        if readerOpen {
+            do {
+                try output.fileHandleForReading.close()
+                readerOpen = false
+            } catch { failed = true }
+        }
         if writerOpen {
-            writerOpen = false
-            do { try output.fileHandleForWriting.close() } catch { failed = true }
+            do {
+                try output.fileHandleForWriting.close()
+                writerOpen = false
+            } catch { failed = true }
         }
         if let null {
-            self.null = nil
-            do { try null.close() } catch { failed = true }
+            do {
+                try null.close()
+                self.null = nil
+            } catch { failed = true }
         }
         if failed { throw SafeEjectAPFSError.cleanupFailed }
     }

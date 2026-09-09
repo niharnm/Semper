@@ -128,7 +128,7 @@ struct SafeEjectAPFSTopologyTests {
         #expect(result == (try SafeEjectAPFSTopology.parse(data)))
         let state = process.snapshot
         #expect(state.launched && !state.launchedOnMainThread)
-        #expect(state.closes == 1 && state.terminations == 0 && state.forceTerminations == 0)
+        #expect(state.closes == 1 && state.terminations == 0)
         #expect(state.maximumRead <= 16_384)
     }
 
@@ -137,7 +137,7 @@ struct SafeEjectAPFSTopologyTests {
             let process = APFSProcessFixture(output: try apfsData([]), failure: failure)
             let expected: SafeEjectAPFSError =
                 switch failure {
-                case .launch: .launchFailed
+                case .launch, .launchAfterStart: .launchFailed
                 case .read: .readFailed
                 case .exit: .processFailed
                 case .close: .cleanupFailed
@@ -164,42 +164,39 @@ struct SafeEjectAPFSTopologyTests {
         #expect(state.maximumRead <= 16_384)
     }
 
-    @Test func timeoutTerminatesAndEscalatesWithinCleanupBound() async throws {
+    @Test(.timeLimit(.minutes(1))) func timeoutUsesOneBoundedTerminationAttempt() async throws {
         for ignoresTermination in [false, true] {
             let process = APFSProcessFixture(waits: true, ignoresTermination: ignoresTermination)
             let reader = SafeEjectAPFSReader(
                 makeProcess: { process }, timeout: .milliseconds(20), terminationGrace: .milliseconds(10))
-            let start = ContinuousClock.now
-            await #expect(throws: SafeEjectAPFSError.timedOut) { try await reader.read() }
-            #expect(start.duration(to: .now) < .seconds(1))
+            let expected: SafeEjectAPFSError = ignoresTermination ? .cleanupFailed : .timedOut
+            await #expect(throws: expected) { try await reader.read() }
             let state = process.snapshot
-            #expect(state.closes == 1 && state.terminations == 1 && !state.running)
-            #expect(state.forceTerminations == (ignoresTermination ? 1 : 0))
+            #expect(state.closes == (ignoresTermination ? 0 : 1) && state.terminations == 1)
+            #expect(state.running == ignoresTermination)
         }
     }
 
-    @Test func cleanupFailureIsExplicitAndDoesNotWaitIndefinitely() async throws {
-        let process = APFSProcessFixture(waits: true, ignoresTermination: true, ignoresForce: true)
+    @Test(.timeLimit(.minutes(1))) func cleanupFailureIsExplicitAndDoesNotWaitIndefinitely() async throws {
+        let process = APFSProcessFixture(waits: true, ignoresTermination: true)
         let reader = SafeEjectAPFSReader(
             makeProcess: { process }, timeout: .milliseconds(20), terminationGrace: .milliseconds(10))
-        let start = ContinuousClock.now
         await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
-        #expect(start.duration(to: .now) < .seconds(1))
         let state = process.snapshot
-        #expect(state.closes == 1 && state.terminations == 1 && state.forceTerminations == 1)
+        #expect(state.closes == 0 && state.terminations == 1 && state.running)
     }
 
-    @Test func cancellationWaitsForOwnedProcessCleanup() async throws {
-        let process = APFSProcessFixture(waits: true, ignoresTermination: true)
+    @Test(.timeLimit(.minutes(1))) func cancellationWaitsForOwnedProcessCleanup() async throws {
+        let process = APFSProcessFixture(waits: true)
         let reader = SafeEjectAPFSReader(makeProcess: { process }, terminationGrace: .milliseconds(10))
         let task = Task { try await reader.read() }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-        while !process.snapshot.launched, ContinuousClock.now < deadline { await Task.yield() }
+        defer { task.cancel() }
+        try await process.waitForLaunch()
         #expect(process.snapshot.launched)
         task.cancel()
         await #expect(throws: SafeEjectAPFSError.cancelled) { try await task.value }
         let state = process.snapshot
-        #expect(state.closes == 1 && state.terminations == 1 && state.forceTerminations == 1 && !state.running)
+        #expect(state.closes == 1 && state.terminations == 1 && !state.running)
     }
 
     @Test func alreadyCancelledReadDoesNotLaunch() async throws {
@@ -210,6 +207,96 @@ struct SafeEjectAPFSTopologyTests {
         }
         await #expect(throws: SafeEjectAPFSError.cancelled) { try await task.value }
         #expect(!process.snapshot.launched)
+    }
+
+    @Test func pendingCleanupPreventsAnotherLaunch() async throws {
+        let process = APFSProcessFixture(waits: true, ignoresTermination: true)
+        let reader = SafeEjectAPFSReader(
+            makeProcess: { process.makeProcess() }, timeout: .milliseconds(20), terminationGrace: .milliseconds(10))
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        let state = process.snapshot
+        #expect(state.creations == 1)
+        #expect(state.launches == 1)
+        #expect(state.closes == 0)
+        #expect(state.running)
+    }
+
+    @Test func explicitRetryRequiresObservedExitBeforeAnotherRead() async throws {
+        let pending = APFSProcessFixture(waits: true, ignoresTermination: true)
+        let next = APFSProcessFixture(output: try apfsData([]))
+        let factory = APFSProcessFactory([pending, next])
+        let reader = SafeEjectAPFSReader(
+            makeProcess: { factory.makeProcess() }, timeout: .milliseconds(20), terminationGrace: .milliseconds(10))
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.retryCleanup() }
+        #expect(pending.snapshot.closes == 0 && pending.snapshot.terminations == 1)
+        pending.observeExit()
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        #expect(factory.creations == 1)
+        try await reader.retryCleanup()
+        #expect(pending.snapshot.closes == 1 && pending.snapshot.terminations == 1)
+        #expect(try await reader.read().containers.isEmpty)
+        #expect(factory.creations == 2 && next.snapshot.closes == 1)
+        try await reader.retryCleanup()
+        #expect(next.snapshot.closes == 1)
+    }
+
+    @Test func pendingOwnershipRetainsProcessUntilCleanupSucceeds() async throws {
+        let factory = APFSProcessFactory([APFSProcessFixture(waits: true, ignoresTermination: true)])
+        let reader = SafeEjectAPFSReader(
+            makeProcess: { factory.makeProcess() }, timeout: .milliseconds(20), terminationGrace: .milliseconds(10))
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        #expect(factory.lastProcess != nil)
+        #expect(factory.lastProcess?.snapshot.closes == 0)
+        factory.lastProcess?.observeExit()
+        try await reader.retryCleanup()
+        #expect(factory.lastProcess == nil)
+    }
+
+    @Test func pipeCloseFailureRetainsOwnershipUntilSuccessfulRetry() async throws {
+        let factory = APFSProcessFactory([APFSProcessFixture(output: try apfsData([]), failure: .close)])
+        let reader = SafeEjectAPFSReader(makeProcess: { factory.makeProcess() })
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        #expect(factory.lastProcess?.snapshot.running == false)
+        #expect(factory.lastProcess?.snapshot.closes == 1)
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.retryCleanup() }
+        #expect(factory.lastProcess?.snapshot.closes == 2)
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        #expect(factory.creations == 1)
+        factory.lastProcess?.allowClose()
+        try await reader.retryCleanup()
+        #expect(factory.lastProcess == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func cancelledPendingReadBlocksConcurrentAdmission() async throws {
+        let process = APFSProcessFixture(waits: true, ignoresTermination: true)
+        let reader = SafeEjectAPFSReader(makeProcess: { process.makeProcess() }, terminationGrace: .milliseconds(10))
+        let first = Task { try await reader.read() }
+        defer { first.cancel() }
+        try await process.waitForLaunch()
+        #expect(process.snapshot.launched)
+        let second = Task { try await reader.read() }
+        defer { second.cancel() }
+        first.cancel()
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await first.value }
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await second.value }
+        let state = process.snapshot
+        #expect(state.creations == 1 && state.launches == 1 && state.terminations == 1)
+        #expect(state.closes == 0 && state.running)
+        process.observeExit()
+        try await reader.retryCleanup()
+    }
+
+    @Test func launchFailureAfterStartingStillRetainsOwnership() async throws {
+        let process = APFSProcessFixture(failure: .launchAfterStart, ignoresTermination: true)
+        let reader = SafeEjectAPFSReader(makeProcess: { process.makeProcess() }, terminationGrace: .milliseconds(10))
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        await #expect(throws: SafeEjectAPFSError.cleanupFailed) { try await reader.read() }
+        #expect(process.snapshot.creations == 1 && process.snapshot.closes == 0)
+        process.observeExit()
+        try await reader.retryCleanup()
+        #expect(process.snapshot.closes == 1)
     }
 }
 
@@ -232,14 +319,16 @@ nonisolated private func apfsData(
 }
 
 nonisolated private final class APFSProcessFixture: SafeEjectAPFSProcessControlling, @unchecked Sendable {
-    enum Failure: CaseIterable { case launch, read, exit, close }
+    enum Failure: CaseIterable { case launch, launchAfterStart, read, exit, close }
     struct State {
+        var creations = 0
+        var launches = 0
         var launched = false
         var launchedOnMainThread = false
         var running = false
         var closes = 0
         var terminations = 0
-        var forceTerminations = 0
+        var closeAllowed = false
         var bytesRead = 0
         var maximumRead = 0
     }
@@ -250,30 +339,48 @@ nonisolated private final class APFSProcessFixture: SafeEjectAPFSProcessControll
     private let waits: Bool
     private let failure: Failure?
     private let ignoresTermination: Bool
-    private let ignoresForce: Bool
+    private let launchSignal: AsyncStream<Void>
+    private let launchContinuation: AsyncStream<Void>.Continuation
 
     init(
         output: Data = Data(), waits: Bool = false, failure: Failure? = nil,
-        ignoresTermination: Bool = false, ignoresForce: Bool = false
+        ignoresTermination: Bool = false
     ) {
         self.output = output
         self.waits = waits
         self.failure = failure
         self.ignoresTermination = ignoresTermination
-        self.ignoresForce = ignoresForce
+        (launchSignal, launchContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
 
     var snapshot: State { lock.withLock { state } }
     var isRunning: Bool { snapshot.running }
     var exitedSuccessfully: Bool { !isRunning && failure != .exit }
 
+    func makeProcess() -> any SafeEjectAPFSProcessControlling {
+        lock.withLock { state.creations += 1 }
+        return self
+    }
+
+    func waitForLaunch() async throws {
+        for await _ in launchSignal {
+            try Task.checkCancellation()
+            return
+        }
+        throw CancellationError()
+    }
+
     func launch() throws {
         try lock.withLock {
             if failure == .launch { throw SafeEjectAPFSError.launchFailed }
+            state.launches += 1
             state.launched = true
             state.launchedOnMainThread = Thread.isMainThread
             state.running = true
         }
+        launchContinuation.yield(())
+        launchContinuation.finish()
+        if failure == .launchAfterStart { throw SafeEjectAPFSError.launchFailed }
     }
 
     func read(maximumBytes: Int) throws -> SafeEjectAPFSReadChunk {
@@ -299,17 +406,39 @@ nonisolated private final class APFSProcessFixture: SafeEjectAPFSProcessControll
         }
     }
 
-    func forceTerminate() throws {
-        lock.withLock {
-            state.forceTerminations += 1
-            if !ignoresForce { state.running = false }
-        }
-    }
+    func observeExit() { lock.withLock { state.running = false } }
+
+    func allowClose() { lock.withLock { state.closeAllowed = true } }
 
     func close() throws {
         try lock.withLock {
             state.closes += 1
-            if failure == .close { throw SafeEjectAPFSError.cleanupFailed }
+            if failure == .close, !state.closeAllowed { throw SafeEjectAPFSError.cleanupFailed }
+        }
+    }
+}
+
+nonisolated private final class APFSProcessFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: [APFSProcessFixture]
+    private var count = 0
+    private weak var last: APFSProcessFixture?
+
+    init(_ processes: [APFSProcessFixture]) { remaining = processes }
+
+    var creations: Int { lock.withLock { count } }
+    var lastProcess: APFSProcessFixture? { lock.withLock { last } }
+
+    func makeProcess() -> any SafeEjectAPFSProcessControlling {
+        lock.withLock {
+            count += 1
+            guard !remaining.isEmpty else {
+                Issue.record("Unexpected APFS process factory call.")
+                return APFSProcessFixture(failure: .launch)
+            }
+            let process = remaining.removeFirst()
+            last = process
+            return process
         }
     }
 }

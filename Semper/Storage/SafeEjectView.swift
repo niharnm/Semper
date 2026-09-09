@@ -4,6 +4,7 @@ struct SafeEjectView: View {
     @Bindable var service: SafeEjectService
     @State private var selection: SafeEjectVolume?
     @State private var request: SafeEjectVolume?
+    @State private var cleanupRequest: UUID?
 
     var body: some View {
         Form {
@@ -15,9 +16,14 @@ struct SafeEjectView: View {
                     if service.state == .running {
                         Button("Refresh", systemImage: "arrow.clockwise") { service.refresh() }
                             .disabled(service.activeVolumeID != nil)
-                        Button("Pause") { service.pause() }
+                        Button("Pause") {
+                            service.pause()
+                            cleanupRequest = UUID()
+                        }
+                        .disabled(cleanupRequest != nil)
                     } else if service.state == .paused {
                         Button("Start") { service.start() }
+                            .disabled(service.cleanupFailure != nil || cleanupRequest != nil)
                     }
                 }
                 Text(
@@ -27,7 +33,18 @@ struct SafeEjectView: View {
                 .foregroundStyle(.secondary)
             }
 
-            if let failure = service.inventoryFailure {
+            if let failure = service.cleanupFailure {
+                Section {
+                    Label(failure.message, systemImage: "exclamationmark.triangle")
+                    Button("Retry Cleanup") { cleanupRequest = UUID() }
+                        .disabled(cleanupRequest != nil)
+                }
+            }
+            if cleanupRequest != nil {
+                Section { ProgressView("Finishing storage checks") }
+            }
+
+            if let failure = service.inventoryFailure, failure != .cleanupPending {
                 Section { Label(failure.message, systemImage: "exclamationmark.triangle") }
             }
 
@@ -102,6 +119,11 @@ struct SafeEjectView: View {
             Text(
                 "Unmount \(volume.name), then ask macOS to eject its device. This request will stop if another volume on that device is mounted."
             )
+        }
+        .task(id: cleanupRequest) {
+            guard let cleanupRequest else { return }
+            await service.waitForCleanup()
+            if self.cleanupRequest == cleanupRequest { self.cleanupRequest = nil }
         }
         .task(id: request?.id) {
             guard let request else { return }
