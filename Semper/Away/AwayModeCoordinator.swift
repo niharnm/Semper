@@ -13,6 +13,13 @@ enum AwayModeState: Equatable, Sendable {
     case disarming
 }
 
+enum AwayModeCleanupResult: Equatable, Sendable {
+    case complete
+    case ownedWorkPending
+    case powerAssertionPending
+    case mutationAdmissionPending
+}
+
 enum AwayModeActivationError: Error, Equatable, Sendable {
     case disclosureRequired
     case systemAuthenticationUnavailable
@@ -151,6 +158,7 @@ extension AwayInputGuard: AwayInputGuarding {}
 final class AwayModeCoordinator: AwayShortcutHandling {
     typealias Sleep = @Sendable (Duration) async throws -> Void
     typealias CurtainContentBuilder = @MainActor (AwayScreenSnapshot, Bool) throws -> NSView
+    typealias AwakeServiceProvider = @MainActor () throws -> AwakeService
 
     private static let countdownLength = 5
     private static let authenticationReason = "Exit Semper Away Mode."
@@ -165,7 +173,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
     )
 
     private let settings: SettingsManager
-    private let awakeService: AwakeService
+    private let awakeServiceProvider: AwakeServiceProvider
     private let mutationAdmission: MutationAdmissionGate
     private let windows: any AwayWindowManaging
     private let inputGuard: any AwayInputGuarding
@@ -202,9 +210,15 @@ final class AwayModeCoordinator: AwayShortcutHandling {
     @ObservationIgnored private var authenticationTask: Task<Void, Never>?
     @ObservationIgnored private var pinVerificationTask: Task<Void, Never>?
     @ObservationIgnored private var disarmTask: Task<Void, Never>?
+    @ObservationIgnored private var terminalTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var pinPreparationTask: Task<AwayPreparedPIN, Error>?
+    @ObservationIgnored private var pinPreparationID: UUID?
     @ObservationIgnored private var pinVerificationID: UUID?
     @ObservationIgnored private var pinManagementID: UUID?
+    @ObservationIgnored private var pinManagementDrainID: UUID?
+    @ObservationIgnored private var pinManagementDrainWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var activeSessionID: UUID?
+    @ObservationIgnored private var activeAwakeService: AwakeService?
     @ObservationIgnored private var awakeLease: AwakeLeaseToken?
     @ObservationIgnored private var mutationPermit: MutationAdmissionPermit?
     @ObservationIgnored private var lastDimScheduleAt: Date?
@@ -217,7 +231,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
 
     init(
         settings: SettingsManager,
-        awakeService: AwakeService,
+        awakeServiceProvider: @escaping AwakeServiceProvider,
         mutationAdmission: MutationAdmissionGate = MutationAdmissionGate(),
         windows: any AwayWindowManaging = AwayWindowController(),
         inputGuard: any AwayInputGuarding = AwayInputGuard(),
@@ -231,7 +245,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
     ) {
         self.settings = settings
-        self.awakeService = awakeService
+        self.awakeServiceProvider = awakeServiceProvider
         self.mutationAdmission = mutationAdmission
         self.windows = windows
         self.inputGuard = inputGuard
@@ -449,7 +463,10 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         inputGuard.setPolicy(.systemAuthentication)
         NSApp.activate(ignoringOtherApps: true)
 
-        authenticationTask?.cancel()
+        authenticator.cancelAuthentication()
+        if let authenticationTask {
+            retainForTerminalDrain(authenticationTask)
+        }
         authenticationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let succeeded: Bool
@@ -660,12 +677,10 @@ final class AwayModeCoordinator: AwayShortcutHandling {
 
         let managementID = UUID()
         pinManagementID = managementID
+        pinManagementDrainID = managementID
         isManagingPIN = true
         defer {
-            if pinManagementID == managementID {
-                pinManagementID = nil
-                isManagingPIN = false
-            }
+            finishPINManagementOperation(managementID)
         }
         do {
             try await authenticator.authenticate(reason: "Change the Semper Away Mode PIN.")
@@ -674,14 +689,25 @@ final class AwayModeCoordinator: AwayShortcutHandling {
                   pinManagementID == managementID,
                   state == .inactive else { return false }
             let store = pinStore
-            let preparedPIN = try await Task.detached(priority: .userInitiated) {
+            let preparationTask = Task.detached(priority: .userInitiated) {
                 try store.preparePIN(pin)
-            }.value
+            }
+            pinPreparationTask = preparationTask
+            pinPreparationID = managementID
+            defer {
+                if pinPreparationID == managementID {
+                    pinPreparationTask = nil
+                    pinPreparationID = nil
+                }
+            }
+            let preparedPIN = try await preparationTask.value
             guard !Task.isCancelled,
                   !didShutDown,
                   pinManagementID == managementID,
                   state == .inactive else {
-                pinConfigurationError = "Mac authentication or PIN storage failed."
+                if !didShutDown {
+                    pinConfigurationError = "Mac authentication or PIN storage failed."
+                }
                 return false
             }
             let priorAppSettings = settings.appSettings
@@ -698,7 +724,9 @@ final class AwayModeCoordinator: AwayShortcutHandling {
             pinConfigurationError = nil
             return true
         } catch {
-            pinConfigurationError = "Mac authentication or PIN storage failed."
+            if !didShutDown {
+                pinConfigurationError = "Mac authentication or PIN storage failed."
+            }
             return false
         }
     }
@@ -708,12 +736,10 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         guard !didShutDown, state == .inactive, !isManagingPIN else { return false }
         let managementID = UUID()
         pinManagementID = managementID
+        pinManagementDrainID = managementID
         isManagingPIN = true
         defer {
-            if pinManagementID == managementID {
-                pinManagementID = nil
-                isManagingPIN = false
-            }
+            finishPINManagementOperation(managementID)
         }
         do {
             try await authenticator.authenticate(reason: "Remove the Semper Away Mode PIN.")
@@ -732,7 +758,9 @@ final class AwayModeCoordinator: AwayShortcutHandling {
             pinConfigurationError = nil
             return true
         } catch {
-            pinConfigurationError = "Mac authentication or PIN removal failed."
+            if !didShutDown {
+                pinConfigurationError = "Mac authentication or PIN removal failed."
+            }
             return false
         }
     }
@@ -826,6 +854,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
     }
 
     func managedPhotoImage() async -> NSImage? {
+        guard !didShutDown else { return nil }
         guard let url = managedPhotoURL() else { return nil }
         do {
             return try await photoImageCache.image(at: url)
@@ -844,12 +873,10 @@ final class AwayModeCoordinator: AwayShortcutHandling {
 
         let managementID = UUID()
         pinManagementID = managementID
+        pinManagementDrainID = managementID
         isManagingPIN = true
         defer {
-            if pinManagementID == managementID {
-                pinManagementID = nil
-                isManagingPIN = false
-            }
+            finishPINManagementOperation(managementID)
         }
 
         guard authenticator.isAvailable() else {
@@ -860,7 +887,8 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         } catch {
             throw AwayModeDataError.authenticationFailed
         }
-        guard !didShutDown,
+        guard !Task.isCancelled,
+              !didShutDown,
               pinManagementID == managementID,
               state == .inactive else {
             throw AwayModeDataError.mutationUnavailable
@@ -910,46 +938,86 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         }
     }
 
-    func shutdown() {
-        guard !didShutDown else { return }
-        didShutDown = true
-        countdownTask?.cancel()
-        dimTask?.cancel()
-        authenticationTask?.cancel()
-        cancelPINVerification()
-        disarmTask?.cancel()
-        countdownTask = nil
-        dimTask = nil
-        authenticationTask = nil
-        disarmTask = nil
-        activeSessionID = nil
-        lastDimScheduleAt = nil
-        pinManagementID = nil
-        returnToPINAfterSystemAuthentication = false
-        activeAuthenticationMethod = nil
-        quitAfterAuthentication = false
-        pinEntry = ""
-        pinCooldown.recordSuccess()
-        isManagingPIN = false
-        hasCoverageFailure = false
-        hasInputFailure = false
-        for observer in workspaceObservers {
-            workspaceNotificationCenter.removeObserver(observer)
+    func shutdownAndDrain() async -> AwayModeCleanupResult {
+        _ = shutdown()
+        let tasks = terminalTasks
+        for (_, task) in tasks {
+            await task.value
         }
-        workspaceObservers.removeAll()
-        windows.dismiss()
-        presentation.restore()
-        inputGuard.stop()
-        if releaseAwayLease() {
-            releaseMutationPermit()
+        for id in tasks.keys {
+            terminalTasks[id] = nil
         }
-        powerPolicy.shutdown()
-        photoImageCache.clear()
-        sessionStartedAt = nil
-        isBlackedOut = false
-        lastErrorMessage = nil
-        powerWarning = nil
-        state = .inactive
+        await waitForPINManagementDrain()
+        let preparationTask = pinPreparationTask
+        let preparationID = pinPreparationID
+        if let preparationTask {
+            _ = await preparationTask.result
+        }
+        if pinPreparationID == preparationID {
+            pinPreparationTask = nil
+            pinPreparationID = nil
+        }
+        await photoImageCache.cancelAndDrain()
+        return finishTerminalCleanup()
+    }
+
+    @discardableResult
+    func shutdown() -> AwayModeCleanupResult {
+        if !didShutDown {
+            didShutDown = true
+            authenticator.cancelAuthentication()
+            let tasks = [
+                countdownTask,
+                dimTask,
+                authenticationTask,
+                pinVerificationTask,
+                disarmTask,
+            ].compactMap { $0 }
+            for task in tasks {
+                retainForTerminalDrain(task)
+            }
+            pinPreparationTask?.cancel()
+            countdownTask = nil
+            dimTask = nil
+            authenticationTask = nil
+            pinVerificationTask = nil
+            pinVerificationID = nil
+            isVerifyingPIN = false
+            disarmTask = nil
+            activeSessionID = nil
+            lastDimScheduleAt = nil
+            pinManagementID = nil
+            returnToPINAfterSystemAuthentication = false
+            activeAuthenticationMethod = nil
+            quitAfterAuthentication = false
+            pinEntry = ""
+            pinCooldown.recordSuccess()
+            isManagingPIN = false
+            hasCoverageFailure = false
+            hasInputFailure = false
+            for observer in workspaceObservers {
+                workspaceNotificationCenter.removeObserver(observer)
+            }
+            workspaceObservers.removeAll()
+            windows.dismiss()
+            presentation.restore()
+            inputGuard.stop()
+            powerPolicy.shutdown()
+            photoImageCache.clear()
+            sessionStartedAt = nil
+            isBlackedOut = false
+            lastErrorMessage = nil
+            powerWarning = nil
+            state = .inactive
+        }
+        let cleanupResult = finishTerminalCleanup()
+        guard cleanupResult == .complete else { return cleanupResult }
+        return terminalTasks.isEmpty
+            && pinManagementDrainID == nil
+            && pinPreparationTask == nil
+            && !photoImageCache.hasPendingLoads
+            ? .complete
+            : .ownedWorkPending
     }
 
     private func preflightCapabilities() -> Bool {
@@ -1000,10 +1068,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         do {
             if powerSnapshot.allowsAwakeAssertions {
                 do {
-                    awakeLease = try awakeService.acquireLease(
-                        owner: .awayMode,
-                        keepsDisplayAwake: preferences.keepsDisplayAwake
-                    )
+                    try acquireAwayLease()
                 } catch {
                     throw AwayModeActivationError.powerAssertionFailed
                 }
@@ -1095,6 +1160,7 @@ final class AwayModeCoordinator: AwayShortcutHandling {
                 return
             }
             guard !Task.isCancelled,
+                  !didShutDown,
                   state == .disarming,
                   activeSessionID == sessionID else { return }
             windows.dismiss()
@@ -1157,7 +1223,8 @@ final class AwayModeCoordinator: AwayShortcutHandling {
             return
         }
 
-        if awakeLease != nil, !awakeService.hasLease(for: .awayMode) {
+        if let activeAwakeService,
+           awakeLease == nil || !activeAwakeService.hasLease(for: .awayMode) {
             guard releaseAwayLease() else {
                 powerWarning = "The macOS awake request cleanup is pending."
                 return
@@ -1166,15 +1233,15 @@ final class AwayModeCoordinator: AwayShortcutHandling {
 
         do {
             if let awakeLease {
-                try awakeService.updateLease(
+                guard let activeAwakeService else {
+                    throw AwakeLeaseError.invalidToken
+                }
+                try activeAwakeService.updateLease(
                     awakeLease,
                     keepsDisplayAwake: preferences.keepsDisplayAwake
                 )
             } else {
-                awakeLease = try awakeService.acquireLease(
-                    owner: .awayMode,
-                    keepsDisplayAwake: preferences.keepsDisplayAwake
-                )
+                try acquireAwayLease()
             }
         } catch {
             let didRelease = releaseAwayLease()
@@ -1199,22 +1266,42 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         }
     }
 
+    private func acquireAwayLease() throws {
+        guard activeAwakeService == nil else {
+            throw AwakeLeaseError.conflictingLease
+        }
+        let awakeService = try awakeServiceProvider()
+        activeAwakeService = awakeService
+        awakeLease = try awakeService.acquireLease(
+            owner: .awayMode,
+            keepsDisplayAwake: preferences.keepsDisplayAwake
+        )
+    }
+
     @discardableResult
     private func releaseAwayLease() -> Bool {
+        guard let activeAwakeService else {
+            guard awakeLease == nil else {
+                Self.logger.error("Away power lease owner is unavailable")
+                return false
+            }
+            return true
+        }
         if let awakeLease {
-            let released = awakeService.hasLease(for: .awayMode)
-                ? awakeService.releaseLease(awakeLease)
-                : awakeService.retryReleaseLease(awakeLease)
+            let released = activeAwakeService.hasLease(for: .awayMode)
+                ? activeAwakeService.releaseLease(awakeLease)
+                : activeAwakeService.retryReleaseLease(awakeLease)
             guard released else {
                 Self.logger.error("Away power lease cleanup is pending")
                 return false
             }
             self.awakeLease = nil
         }
-        guard awakeService.retryPendingLeaseCleanup(owner: .awayMode) else {
+        guard activeAwakeService.retryPendingLeaseCleanup(owner: .awayMode) else {
             Self.logger.error("Away power lease cleanup is pending")
             return false
         }
+        self.activeAwakeService = nil
         return true
     }
 
@@ -1234,11 +1321,54 @@ final class AwayModeCoordinator: AwayShortcutHandling {
         self.mutationPermit = nil
     }
 
+    private func finishTerminalCleanup() -> AwayModeCleanupResult {
+        guard releaseAwayLease() else { return .powerAssertionPending }
+        releaseMutationPermit()
+        return mutationPermit == nil ? .complete : .mutationAdmissionPending
+    }
+
     private func cancelPINVerification() {
-        pinVerificationTask?.cancel()
+        if let pinVerificationTask {
+            retainForTerminalDrain(pinVerificationTask)
+        }
         pinVerificationTask = nil
         pinVerificationID = nil
         isVerifyingPIN = false
+    }
+
+    private func retainForTerminalDrain(_ task: Task<Void, Never>) {
+        let id = UUID()
+        terminalTasks[id] = task
+        task.cancel()
+        Task { @MainActor [weak self] in
+            await task.value
+            self?.terminalTasks[id] = nil
+        }
+    }
+
+    private func finishPINManagementOperation(_ id: UUID) {
+        if pinManagementID == id {
+            pinManagementID = nil
+            isManagingPIN = false
+        }
+        guard pinManagementDrainID == id else { return }
+        pinManagementDrainID = nil
+        let waiters = pinManagementDrainWaiters
+        pinManagementDrainWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func waitForPINManagementDrain() async {
+        guard pinManagementDrainID != nil else { return }
+        await withCheckedContinuation { continuation in
+            guard pinManagementDrainID != nil else {
+                continuation.resume()
+                return
+            }
+            pinManagementDrainWaiters.append(continuation)
+        }
     }
 
     private var protectionDegradationMessage: String? {

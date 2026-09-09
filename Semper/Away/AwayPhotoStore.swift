@@ -266,6 +266,11 @@ final class AwayPhotoImageCache {
     private let dataLoader: DataLoader
     private var cachedImage: CachedImage?
     private var inFlightLoad: InFlightLoad?
+    private var retiredLoads: [UUID: Task<Data, Error>] = [:]
+
+    var hasPendingLoads: Bool {
+        inFlightLoad != nil || !retiredLoads.isEmpty
+    }
 
     init(dataLoader: @escaping DataLoader = { url in
         try await Task.detached(priority: .utility) {
@@ -284,7 +289,9 @@ final class AwayPhotoImageCache {
         if let inFlightLoad, inFlightLoad.url == url {
             load = inFlightLoad
         } else {
-            inFlightLoad?.task.cancel()
+            if let inFlightLoad {
+                retire(inFlightLoad)
+            }
             let id = UUID()
             let task = Task { try await dataLoader(url) }
             load = InFlightLoad(id: id, url: url, task: task)
@@ -310,13 +317,32 @@ final class AwayPhotoImageCache {
             if inFlightLoad?.id == load.id {
                 inFlightLoad = nil
             }
+            retiredLoads[load.id] = nil
             throw error
         }
     }
 
     func clear() {
-        inFlightLoad?.task.cancel()
+        if let inFlightLoad {
+            retire(inFlightLoad)
+        }
         inFlightLoad = nil
         cachedImage = nil
+    }
+
+    func cancelAndDrain() async {
+        clear()
+        let loads = retiredLoads
+        for (_, task) in loads {
+            _ = await task.result
+        }
+        for id in loads.keys {
+            retiredLoads[id] = nil
+        }
+    }
+
+    private func retire(_ load: InFlightLoad) {
+        load.task.cancel()
+        retiredLoads[load.id] = load.task
     }
 }

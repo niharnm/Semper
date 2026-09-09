@@ -8,7 +8,11 @@ private final class AwayAuthenticationContextStub: AwayAuthenticationContext {
     var availabilityError: Error?
     var authenticationError: Error?
     var result = true
+    var waitsForInvalidation = false
     private(set) var reasons: [String] = []
+    private(set) var authenticationStarted = false
+    private(set) var invalidationCount = 0
+    private var continuation: CheckedContinuation<Bool, Error>?
 
     func checkAvailability() throws {
         if let availabilityError {
@@ -18,10 +22,30 @@ private final class AwayAuthenticationContextStub: AwayAuthenticationContext {
 
     func authenticate(reason: String) async throws -> Bool {
         reasons.append(reason)
+        authenticationStarted = true
         if let authenticationError {
             throw authenticationError
         }
+        if waitsForInvalidation {
+            return try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
         return result
+    }
+
+    func invalidate() {
+        invalidationCount += 1
+        continuation?.resume(throwing: NSError(
+            domain: LAError.errorDomain,
+            code: LAError.appCancel.rawValue
+        ))
+        continuation = nil
+    }
+
+    func finishAuthentication(with result: Bool) {
+        continuation?.resume(returning: result)
+        continuation = nil
     }
 }
 
@@ -78,6 +102,25 @@ struct AwayAuthenticationTests {
         #expect(creationCount == 0)
     }
 
+    @Test("A cancelled task does not create an authentication context")
+    func cancellationBeforeAuthenticationStarts() async {
+        var creationCount = 0
+        let authenticator = LocalAwaySystemAuthenticator {
+            creationCount += 1
+            return AwayAuthenticationContextStub()
+        }
+        let authentication = Task { @MainActor in
+            await Task.yield()
+            try await authenticator.authenticate(reason: "Return to Semper")
+        }
+        authentication.cancel()
+
+        await #expect(throws: AwayAuthenticationError.cancelled) {
+            try await authentication.value
+        }
+        #expect(creationCount == 0)
+    }
+
     @Test("Unavailable system authentication reports its error code")
     func unavailable() async {
         let context = AwayAuthenticationContextStub()
@@ -123,6 +166,100 @@ struct AwayAuthenticationTests {
         await #expect(throws: AwayAuthenticationError.denied) {
             try await authenticator.authenticate(reason: "Return to Semper")
         }
+    }
+
+    @Test("Authentication cancellation invalidates the active context")
+    func authenticationCancellationInvalidatesContext() async {
+        let context = AwayAuthenticationContextStub()
+        context.waitsForInvalidation = true
+        let authenticator = LocalAwaySystemAuthenticator { context }
+        let authentication = Task { @MainActor in
+            try await authenticator.authenticate(reason: "Return to Semper")
+        }
+        for _ in 0..<1_000 where !context.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(context.authenticationStarted)
+
+        authenticator.cancelAuthentication()
+
+        await #expect(throws: AwayAuthenticationError.cancelled) {
+            try await authentication.value
+        }
+        #expect(context.invalidationCount == 1)
+    }
+
+    @Test("Cancelling the caller task invalidates the active context")
+    func callerCancellationInvalidatesContext() async {
+        let context = AwayAuthenticationContextStub()
+        context.waitsForInvalidation = true
+        let authenticator = LocalAwaySystemAuthenticator { context }
+        let authentication = Task { @MainActor in
+            try await authenticator.authenticate(reason: "Return to Semper")
+        }
+        for _ in 0..<1_000 where !context.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(context.authenticationStarted)
+
+        authentication.cancel()
+
+        await #expect(throws: AwayAuthenticationError.cancelled) {
+            try await authentication.value
+        }
+        #expect(context.invalidationCount == 1)
+    }
+
+    @Test("A cancelled task cannot accept a delivered authentication success")
+    func cancellationRejectsDeliveredSuccess() async {
+        let context = AwayAuthenticationContextStub()
+        context.waitsForInvalidation = true
+        let authenticator = LocalAwaySystemAuthenticator { context }
+        let authentication = Task { @MainActor in
+            try await authenticator.authenticate(reason: "Return to Semper")
+        }
+        for _ in 0..<1_000 where !context.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(context.authenticationStarted)
+
+        context.finishAuthentication(with: true)
+        authentication.cancel()
+
+        await #expect(throws: AwayAuthenticationError.cancelled) {
+            try await authentication.value
+        }
+        #expect(context.invalidationCount == 1)
+    }
+
+    @Test("Availability checks do not replace an active authentication context")
+    func availabilityDoesNotReplaceActiveContext() async {
+        let authenticationContext = AwayAuthenticationContextStub()
+        authenticationContext.waitsForInvalidation = true
+        let availabilityContext = AwayAuthenticationContextStub()
+        var contexts: [AwayAuthenticationContextStub] = [
+            authenticationContext,
+            availabilityContext,
+        ]
+        let authenticator = LocalAwaySystemAuthenticator {
+            contexts.removeFirst()
+        }
+        let authentication = Task { @MainActor in
+            try await authenticator.authenticate(reason: "Return to Semper")
+        }
+        for _ in 0..<1_000 where !authenticationContext.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(authenticationContext.authenticationStarted)
+
+        #expect(authenticator.isAvailable())
+        authenticator.cancelAuthentication()
+
+        await #expect(throws: AwayAuthenticationError.cancelled) {
+            try await authentication.value
+        }
+        #expect(authenticationContext.invalidationCount == 1)
+        #expect(availabilityContext.invalidationCount == 0)
     }
 
     @Test("Availability LA errors retain their code")

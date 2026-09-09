@@ -359,13 +359,13 @@ struct SemperApp: App {
             mutationAdmission: mutationAdmission
         ) ?? AwayModeCoordinator(
             settings: settings,
-            awakeService: awake,
+            awakeServiceProvider: { awake },
             mutationAdmission: mutationAdmission
         )
         #else
         let away = AwayModeCoordinator(
             settings: settings,
-            awakeService: awake,
+            awakeServiceProvider: { awake },
             mutationAdmission: mutationAdmission
         )
         #endif

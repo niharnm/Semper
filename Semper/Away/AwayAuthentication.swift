@@ -13,12 +13,14 @@ enum AwayAuthenticationError: Error, Equatable, Sendable {
 protocol AwaySystemAuthenticating: AnyObject {
     func isAvailable() -> Bool
     func authenticate(reason: String) async throws
+    func cancelAuthentication()
 }
 
 @MainActor
 protocol AwayAuthenticationContext: AnyObject {
     func checkAvailability() throws
     func authenticate(reason: String) async throws -> Bool
+    func invalidate()
 }
 
 @MainActor
@@ -39,6 +41,10 @@ final class LocalAwayAuthenticationContext: AwayAuthenticationContext {
     func authenticate(reason: String) async throws -> Bool {
         try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
     }
+
+    func invalidate() {
+        context.invalidate()
+    }
 }
 
 @MainActor
@@ -46,6 +52,8 @@ final class LocalAwaySystemAuthenticator: AwaySystemAuthenticating {
     typealias ContextFactory = @MainActor () -> any AwayAuthenticationContext
 
     private let contextFactory: ContextFactory
+    private var activeContext: (any AwayAuthenticationContext)?
+    private var activeAttemptID: UUID?
 
     init(contextFactory: @escaping ContextFactory = { LocalAwayAuthenticationContext() }) {
         self.contextFactory = contextFactory
@@ -65,6 +73,9 @@ final class LocalAwaySystemAuthenticator: AwaySystemAuthenticating {
         guard !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AwayAuthenticationError.invalidReason
         }
+        guard !Task.isCancelled else {
+            throw AwayAuthenticationError.cancelled
+        }
 
         let context = contextFactory()
         do {
@@ -73,8 +84,29 @@ final class LocalAwaySystemAuthenticator: AwaySystemAuthenticating {
             throw map(error, unavailable: true)
         }
 
+        let attemptID = UUID()
+        activeContext = context
+        activeAttemptID = attemptID
+        defer {
+            if activeContext === context, activeAttemptID == attemptID {
+                activeContext = nil
+                activeAttemptID = nil
+            }
+        }
+
         do {
-            guard try await context.authenticate(reason: reason) else {
+            let succeeded = try await withTaskCancellationHandler {
+                try await context.authenticate(reason: reason)
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.cancelAuthentication(attemptID: attemptID)
+                }
+            }
+            guard !Task.isCancelled else {
+                cancelAuthentication(attemptID: attemptID)
+                throw AwayAuthenticationError.cancelled
+            }
+            guard succeeded else {
                 throw AwayAuthenticationError.denied
             }
         } catch let error as AwayAuthenticationError {
@@ -82,6 +114,17 @@ final class LocalAwaySystemAuthenticator: AwaySystemAuthenticating {
         } catch {
             throw map(error, unavailable: false)
         }
+    }
+
+    func cancelAuthentication() {
+        activeContext?.invalidate()
+        activeContext = nil
+        activeAttemptID = nil
+    }
+
+    private func cancelAuthentication(attemptID: UUID) {
+        guard activeAttemptID == attemptID else { return }
+        cancelAuthentication()
     }
 
     private func map(_ error: Error, unavailable: Bool) -> AwayAuthenticationError {

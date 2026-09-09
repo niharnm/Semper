@@ -207,6 +207,12 @@ private enum AwayCoordinatorTestError: Error {
     case expected
 }
 
+enum AwayCoordinatorManagementOperation: CaseIterable, Sendable {
+    case configurePIN
+    case removePIN
+    case resetAwayData
+}
+
 @MainActor
 private final class AwayCoordinatorAuthenticator: AwaySystemAuthenticating {
     struct Plan {
@@ -217,7 +223,10 @@ private final class AwayCoordinatorAuthenticator: AwaySystemAuthenticating {
     let log: AwayCoordinatorEventLog
     var available = true
     var plans: [Plan] = [Plan(succeeds: true, yieldCount: 0)]
+    var holdsAuthentication = false
     private(set) var reasons: [String] = []
+    private(set) var authenticationStarted = false
+    private var heldAuthentication: CheckedContinuation<Void, Error>?
 
     init(log: AwayCoordinatorEventLog) {
         self.log = log
@@ -231,6 +240,13 @@ private final class AwayCoordinatorAuthenticator: AwaySystemAuthenticating {
     func authenticate(reason: String) async throws {
         reasons.append(reason)
         log.append("auth.authenticate")
+        authenticationStarted = true
+        if holdsAuthentication {
+            try await withCheckedThrowingContinuation { continuation in
+                heldAuthentication = continuation
+            }
+            return
+        }
         let plan = plans.isEmpty ? Plan(succeeds: true, yieldCount: 0) : plans.removeFirst()
         for _ in 0..<plan.yieldCount {
             await Task.yield()
@@ -238,6 +254,18 @@ private final class AwayCoordinatorAuthenticator: AwaySystemAuthenticating {
         if !plan.succeeds {
             throw AwayCoordinatorTestError.expected
         }
+    }
+
+    func cancelAuthentication() {}
+
+    func finishHeldAuthentication() {
+        heldAuthentication?.resume(throwing: AwayCoordinatorTestError.expected)
+        heldAuthentication = nil
+    }
+
+    func succeedHeldAuthentication() {
+        heldAuthentication?.resume()
+        heldAuthentication = nil
     }
 }
 
@@ -448,10 +476,20 @@ private final class AwayCoordinatorClock {
 }
 
 @MainActor
+private final class AwayCoordinatorAwakeProvider {
+    var service: AwakeService
+
+    init(service: AwakeService) {
+        self.service = service
+    }
+}
+
+@MainActor
 private final class AwayCoordinatorHarness {
     let log: AwayCoordinatorEventLog
     let backend: AwayCoordinatorPowerBackend
     let awakeService: AwakeService
+    let awakeProvider: AwayCoordinatorAwakeProvider
     let windows: AwayCoordinatorWindows
     let input: AwayCoordinatorInputGuard
     let authenticator: AwayCoordinatorAuthenticator
@@ -484,6 +522,7 @@ private final class AwayCoordinatorHarness {
             now: { Date(timeIntervalSince1970: 1_800_000_000) },
             workspaceNotificationCenter: NotificationCenter()
         )
+        let awakeProvider = AwayCoordinatorAwakeProvider(service: awakeService)
         let windows = AwayCoordinatorWindows(log: log)
         let input = AwayCoordinatorInputGuard(log: log)
         let authenticator = AwayCoordinatorAuthenticator(log: log)
@@ -506,7 +545,7 @@ private final class AwayCoordinatorHarness {
         let mutationAdmission = MutationAdmissionGate()
         let coordinator = AwayModeCoordinator(
             settings: settings,
-            awakeService: awakeService,
+            awakeServiceProvider: { awakeProvider.service },
             mutationAdmission: mutationAdmission,
             windows: windows,
             inputGuard: input,
@@ -526,6 +565,7 @@ private final class AwayCoordinatorHarness {
         self.mutationAdmission = mutationAdmission
         self.backend = backend
         self.awakeService = awakeService
+        self.awakeProvider = awakeProvider
         self.windows = windows
         self.input = input
         self.authenticator = authenticator
@@ -1194,12 +1234,69 @@ struct AwayModeCoordinatorTests {
         }
         #expect(didStartPreparation)
 
-        subject.coordinator.shutdown()
+        #expect(subject.coordinator.shutdown() == .ownedWorkPending)
+        var cleanupResult: AwayModeCleanupResult?
+        let shutdown = Task { @MainActor in
+            let result = await subject.coordinator.shutdownAndDrain()
+            cleanupResult = result
+            return result
+        }
+        await settle()
+        #expect(cleanupResult == nil)
         allowPreparationToFinish.signal()
 
         #expect(!(await configuration.value))
+        #expect(await shutdown.value == .complete)
         #expect(subject.pinStore.storedPINs.isEmpty)
         #expect(subject.coordinator.preferences.authenticationMethod == .system)
+    }
+
+    @Test(
+        "Shutdown drains the full PIN management authentication phase",
+        arguments: AwayCoordinatorManagementOperation.allCases
+    )
+    func shutdownDrainsPINManagementAuthentication(
+        operation: AwayCoordinatorManagementOperation
+    ) async {
+        let subject = AwayCoordinatorHarness(authenticationMethod: .pin)
+        subject.authenticator.holdsAuthentication = true
+
+        let management = Task { @MainActor in
+            switch operation {
+            case .configurePIN:
+                return await subject.coordinator.configurePIN("0123", confirmation: "0123")
+            case .removePIN:
+                return await subject.coordinator.removePIN()
+            case .resetAwayData:
+                do {
+                    try await subject.coordinator.resetAwayData()
+                    return true
+                } catch {
+                    return false
+                }
+            }
+        }
+        for _ in 0..<1_000 where !subject.authenticator.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(subject.authenticator.authenticationStarted)
+
+        var cleanupResult: AwayModeCleanupResult?
+        let shutdown = Task { @MainActor in
+            let result = await subject.coordinator.shutdownAndDrain()
+            cleanupResult = result
+            return result
+        }
+        await settle()
+        #expect(cleanupResult == nil)
+        #expect(subject.coordinator.pinConfigurationError == nil)
+
+        subject.authenticator.finishHeldAuthentication()
+
+        #expect(!(await management.value))
+        #expect(await shutdown.value == .complete)
+        #expect(subject.coordinator.pinConfigurationError == nil)
+        #expect(!subject.coordinator.isManagingPIN)
     }
 
     @Test("PIN confirmation mismatch never starts Mac authentication")
@@ -1272,7 +1369,7 @@ struct AwayModeCoordinatorTests {
             }
             try? await Task.sleep(for: .milliseconds(50))
             allowRemovalToFinish.signal()
-            await shutdown.value
+            _ = await shutdown.value
             return didStartRemoval
         }
 
@@ -1637,6 +1734,37 @@ struct AwayModeCoordinatorTests {
         #expect(subject.coordinator.preferences.theme == .customPhoto)
     }
 
+    @Test("Cancelled Reset cannot mutate after authentication succeeds")
+    func cancelledResetAfterAuthenticationSuccess() async {
+        let filename = "away-photo-00000000-0000-0000-0000-000000000000.jpg"
+        let subject = AwayCoordinatorHarness(authenticationMethod: .pin)
+        subject.coordinator.updatePreferences {
+            $0.managedPhotoFilename = filename
+            $0.theme = .customPhoto
+        }
+        subject.authenticator.holdsAuthentication = true
+        let settingsBeforeReset = subject.settings.appSettings
+        let cleanupCountBeforeReset = subject.photoStore.cleanupCallCount
+        let reset = Task { @MainActor in
+            try await subject.coordinator.resetAwayData()
+        }
+        for _ in 0..<1_000 where !subject.authenticator.authenticationStarted {
+            await Task.yield()
+        }
+        #expect(subject.authenticator.authenticationStarted)
+
+        subject.authenticator.succeedHeldAuthentication()
+        reset.cancel()
+
+        await #expect(throws: AwayModeDataError.mutationUnavailable) {
+            try await reset.value
+        }
+        #expect(subject.pinStore.removeCallCount == 0)
+        #expect(subject.photoStore.removalAttempts.isEmpty)
+        #expect(subject.photoStore.cleanupCallCount == cleanupCountBeforeReset)
+        #expect(subject.settings.appSettings == settingsBeforeReset)
+    }
+
     @Test("Partial Reset keeps preferences aligned with completed deletions")
     func partialResetPreferenceRepair() async {
         let filename = "away-photo-00000000-0000-0000-0000-000000000000.jpg"
@@ -1895,6 +2023,61 @@ struct AwayModeCoordinatorTests {
         #expect(subject.coordinator.powerWarning == nil)
     }
 
+    @Test("Pending acquisition cleanup stays with its original Awake service")
+    func pendingAcquisitionCleanupRetainsOriginalService() {
+        let subject = AwayCoordinatorHarness(keepsDisplayAwake: true)
+        subject.powerSource.reading = AwayPowerReading(
+            isLowPowerModeEnabled: false,
+            thermalPressure: .critical,
+            powerSupply: .battery(percentage: 80)
+        )
+        subject.powerSource.sendChange()
+        subject.enterGuarded()
+        #expect(subject.coordinator.state == .guarded)
+        #expect(subject.backend.activeIDs.isEmpty)
+
+        subject.backend.failingKinds = [.preventIdleDisplaySleep]
+        subject.backend.failingReleaseIDs = [1]
+        subject.powerSource.reading = AwayPowerReading(
+            isLowPowerModeEnabled: false,
+            thermalPressure: .nominal,
+            powerSupply: .ac(percentage: 80, isCharging: true)
+        )
+        subject.powerSource.sendChange()
+        #expect(subject.awakeService.hasPendingLeaseCleanup(owner: .awayMode))
+        #expect(subject.backend.activeIDs == [1])
+
+        let replacementBackend = AwayCoordinatorPowerBackend(log: subject.log)
+        let replacementService = AwakeService(
+            backend: replacementBackend,
+            scheduler: AwayCoordinatorExpiryScheduler(),
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            workspaceNotificationCenter: NotificationCenter()
+        )
+        subject.awakeProvider.service = replacementService
+        subject.powerSource.sendChange()
+
+        #expect(subject.awakeService.hasPendingLeaseCleanup(owner: .awayMode))
+        #expect(subject.backend.activeIDs == [1])
+        #expect(replacementBackend.activeIDs.isEmpty)
+        #expect(!replacementService.hasLease(for: .awayMode))
+
+        subject.backend.failingKinds = []
+        subject.backend.failingReleaseIDs = []
+        subject.powerSource.reading = AwayPowerReading(
+            isLowPowerModeEnabled: false,
+            thermalPressure: .nominal,
+            powerSupply: .ac(percentage: 81, isCharging: true)
+        )
+        subject.powerSource.sendChange()
+
+        #expect(!subject.awakeService.hasPendingLeaseCleanup(owner: .awayMode))
+        #expect(subject.backend.activeIDs.isEmpty)
+        #expect(replacementService.hasLease(for: .awayMode))
+        #expect(replacementBackend.activeIDs.count == 2)
+        subject.coordinator.shutdown()
+    }
+
     @Test("Failed lease cleanup retains exclusive admission and blocks reentry")
     func failedLeaseCleanupRetainsAdmission() async {
         let subject = AwayCoordinatorHarness()
@@ -2019,6 +2202,141 @@ struct AwayModeCoordinatorTests {
         subject.coordinator.shutdown()
         #expect(subject.coordinator.state == .inactive)
         #expect(subject.powerSource.stopCallCount == 1)
+    }
+
+    @Test("Activation resolves the current Awake service")
+    func activationUsesReplacementAwakeService() {
+        let subject = AwayCoordinatorHarness()
+        subject.awakeService.shutdown()
+        let replacementBackend = AwayCoordinatorPowerBackend(log: subject.log)
+        let replacementService = AwakeService(
+            backend: replacementBackend,
+            scheduler: AwayCoordinatorExpiryScheduler(),
+            now: { Date(timeIntervalSince1970: 1_800_000_000) },
+            workspaceNotificationCenter: NotificationCenter()
+        )
+        subject.awakeProvider.service = replacementService
+
+        subject.enterGuarded()
+
+        #expect(subject.coordinator.state == .guarded)
+        #expect(!subject.awakeService.hasLease(for: .awayMode))
+        #expect(replacementService.hasLease(for: .awayMode))
+        #expect(replacementBackend.activeIDs.count == 1)
+        subject.coordinator.shutdown()
+    }
+
+    @Test("Async shutdown reports and retries owned cleanup")
+    func asyncShutdownRetriesOwnedCleanup() async {
+        let subject = AwayCoordinatorHarness()
+        subject.enterGuarded()
+        subject.backend.failingReleaseIDs = [1]
+
+        let pending = await subject.coordinator.shutdownAndDrain()
+
+        #expect(pending == .powerAssertionPending)
+        #expect(subject.backend.activeIDs == [1])
+        #expect(subject.mutationAdmission.activeExclusiveOwner == .awayMode)
+
+        subject.backend.failingReleaseIDs = []
+        let completed = await subject.coordinator.shutdownAndDrain()
+
+        #expect(completed == .complete)
+        #expect(subject.backend.activeIDs.isEmpty)
+        #expect(subject.mutationAdmission.activeExclusiveOwner == nil)
+    }
+
+    @Test("Terminal shutdown prevents a held disarm from publishing")
+    func shutdownStopsHeldDisarmPublication() async {
+        let disarmGate = AwayCoordinatorDisarmGate()
+        let subject = AwayCoordinatorHarness(
+            sleep: { duration in try await disarmGate.sleep(duration) }
+        )
+        var disarmCount = 0
+        var authenticatedQuitCount = 0
+        subject.coordinator.onDidDisarm = { disarmCount += 1 }
+        subject.coordinator.onAuthenticatedQuit = { authenticatedQuitCount += 1 }
+        subject.enterGuarded()
+        subject.coordinator.requestAuthentication()
+        await settle()
+        #expect(subject.coordinator.state == .disarming)
+        subject.coordinator.requestQuit()
+
+        #expect(subject.coordinator.shutdown() == .ownedWorkPending)
+
+        var cleanupResult: AwayModeCleanupResult?
+        let shutdown = Task { @MainActor in
+            let result = await subject.coordinator.shutdownAndDrain()
+            cleanupResult = result
+            return result
+        }
+        await settle()
+        #expect(cleanupResult == nil)
+        await disarmGate.open()
+        #expect(await shutdown.value == .complete)
+
+        #expect(disarmCount == 0)
+        #expect(authenticatedQuitCount == 0)
+        #expect(subject.coordinator.state == .inactive)
+    }
+
+    @Test("Async shutdown waits for PIN verification to exit")
+    func shutdownWaitsForPINVerification() async {
+        let subject = AwayCoordinatorHarness(authenticationMethod: .pin)
+        let verificationGate = DispatchSemaphore(value: 0)
+        subject.pinStore.allowVerificationToFinish = verificationGate
+        subject.enterGuarded()
+        subject.coordinator.requestAuthentication()
+        subject.coordinator.updatePINEntry("0123")
+        subject.coordinator.submitPIN()
+        #expect(subject.coordinator.isVerifyingPIN)
+
+        var cleanupResult: AwayModeCleanupResult?
+        let shutdown = Task { @MainActor in
+            let result = await subject.coordinator.shutdownAndDrain()
+            cleanupResult = result
+            return result
+        }
+        await settle()
+        #expect(cleanupResult == nil)
+
+        verificationGate.signal()
+        #expect(await shutdown.value == .complete)
+        #expect(subject.coordinator.state == .inactive)
+        #expect(subject.backend.activeIDs.isEmpty)
+    }
+
+    @Test("Async shutdown waits for PIN verification superseded by Mac authentication")
+    func shutdownWaitsForSupersededPINVerification() async {
+        let subject = AwayCoordinatorHarness(authenticationMethod: .pin)
+        let verificationGate = DispatchSemaphore(value: 0)
+        subject.pinStore.allowVerificationToFinish = verificationGate
+        subject.enterGuarded()
+        subject.coordinator.requestAuthentication()
+        subject.coordinator.updatePINEntry("0123")
+        subject.coordinator.submitPIN()
+
+        for _ in 0..<1_000 where subject.pinStore.verifiedCandidates.isEmpty {
+            await Task.yield()
+        }
+        #expect(!subject.pinStore.verifiedCandidates.isEmpty)
+
+        subject.coordinator.beginSystemAuthentication()
+        #expect(subject.coordinator.activeAuthenticationMethod == .system)
+
+        var cleanupResult: AwayModeCleanupResult?
+        let shutdown = Task { @MainActor in
+            let result = await subject.coordinator.shutdownAndDrain()
+            cleanupResult = result
+            return result
+        }
+        await settle()
+        #expect(cleanupResult == nil)
+
+        verificationGate.signal()
+        #expect(await shutdown.value == .complete)
+        #expect(subject.coordinator.state == .inactive)
+        #expect(subject.backend.activeIDs.isEmpty)
     }
 
     private func settle(iterations: Int = 12) async {

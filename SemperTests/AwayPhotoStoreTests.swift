@@ -143,6 +143,44 @@ struct AwayPhotoStoreTests {
         #expect(await loader.loadCount() == 1)
     }
 
+    @MainActor
+    @Test("Photo cache drain waits for a canceled load to exit")
+    func imageCacheDrainWaitsForCanceledLoad() async {
+        let source = URL(fileURLWithPath: "/tmp/away-photo-drain.jpg")
+        let loader = AwayPhotoHeldDataLoader(data: Data([0]))
+        let cache = AwayPhotoImageCache { _ in
+            await loader.load()
+        }
+        let imageLoad = Task { @MainActor in
+            try await cache.image(at: source)
+        }
+        for _ in 0..<1_000 {
+            if await loader.hasStarted { break }
+            await Task.yield()
+        }
+        #expect(await loader.hasStarted)
+
+        var didDrain = false
+        let drain = Task { @MainActor in
+            await cache.cancelAndDrain()
+            didDrain = true
+        }
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        #expect(!didDrain)
+
+        await loader.finish()
+        await drain.value
+        #expect(didDrain)
+        do {
+            _ = try await imageLoad.value
+            Issue.record("Expected the canceled image load to fail")
+        } catch {
+            #expect(error is CancellationError)
+        }
+    }
+
     @Test("Source metadata is absent from the managed image")
     func metadataRemoval() throws {
         let directory = try makeDirectory()
@@ -295,5 +333,27 @@ private actor AwayPhotoDataLoaderProbe {
 
     func loadCount() -> Int {
         count
+    }
+}
+
+private actor AwayPhotoHeldDataLoader {
+    private let data: Data
+    private var continuation: CheckedContinuation<Data, Never>?
+    private(set) var hasStarted = false
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func load() async -> Data {
+        hasStarted = true
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func finish() {
+        continuation?.resume(returning: data)
+        continuation = nil
     }
 }

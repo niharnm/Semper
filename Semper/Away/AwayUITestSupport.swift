@@ -120,7 +120,7 @@ final class AwayUITestSupport {
     ) -> AwayModeCoordinator {
         AwayModeCoordinator(
             settings: settings,
-            awakeService: awakeService,
+            awakeServiceProvider: { [awakeService] in awakeService },
             mutationAdmission: mutationAdmission,
             inputGuard: inputGuard,
             authenticator: authenticator,
@@ -202,6 +202,8 @@ private final class AwayUITestSystemAuthenticator: AwaySystemAuthenticating {
             throw AwayAuthenticationError.denied
         }
     }
+
+    func cancelAuthentication() {}
 }
 
 private final class AwayUITestPINStore: AwayPINStoring, @unchecked Sendable {
