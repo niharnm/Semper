@@ -13,17 +13,7 @@ protocol WorkspaceWindowBackend: Sendable {
 }
 
 actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
-    private enum HandlePolicy {
-        case workspaceRestore, windowLayout
-    }
-
-    private struct Handle {
-        let element: AXUIElement
-        let application: WorkspaceApplication
-        let ordinal: Int
-        let policy: HandlePolicy
-    }
-    private var handles: [WorkspaceWindowID: Handle] = [:]
+    private var handles = WorkspaceWindowHandleStore<AXUIElement>()
     private let messageTimeout: Float = 0.15
     private var currentDisplays: [WorkspaceDisplay] = []
 
@@ -80,8 +70,7 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
     func windows(in applications: [WorkspaceApplication]) async throws -> [WorkspaceWindowSnapshot] {
         guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
         _ = await displays()
-        let running = await self.applications()
-        handles = handles.filter { running.contains($0.value.application) }
+        await pruneTerminatedProcesses()
         var snapshots: [WorkspaceWindowSnapshot] = []
         for application in applications.prefix(30) {
             try Task.checkCancellation()
@@ -99,9 +88,7 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
                             issue: error == .cannotComplete ? .timedOut : .unavailable))
                     continue
                 }
-                handles = handles.filter { entry in
-                    entry.value.application != application || elements.contains { CFEqual(entry.value.element, $0) }
-                }
+                handles.retainWorkspaceWindows(in: application, elements: elements, equal: CFEqual)
                 for (index, window) in elements.enumerated() {
                     try Task.checkCancellation()
                     if ContinuousClock.now >= deadline {
@@ -110,19 +97,16 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
                         break
                     }
                     AXUIElementSetMessagingTimeout(window, messageTimeout)
-                    let id =
-                        handles.first(where: {
-                            $0.value.policy == .workspaceRestore && $0.value.application == application
-                                && CFEqual($0.value.element, window)
-                        })?.key ?? WorkspaceWindowID(application: application, token: UUID())
-                    guard handles[id] != nil || handles.count < 2_000 else {
+                    guard
+                        let id = handles.retain(
+                            element: window, application: application, ordinal: index + 1,
+                            policy: .workspaceRestore, equal: CFEqual)
+                    else {
                         snapshots.append(
                             .init(
                                 id: nil, application: application, ordinal: index + 1, frame: nil, issue: .unavailable))
                         continue
                     }
-                    handles[id] = Handle(
-                        element: window, application: application, ordinal: index + 1, policy: .workspaceRestore)
                     snapshots.append(try snapshot(id, deadline: deadline))
                     if snapshots.count >= 200 { return snapshots }
                 }
@@ -139,6 +123,7 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
         try Task.checkCancellation()
         guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
         _ = await displays()
+        await pruneTerminatedProcesses()
         guard await isSameProcess(application) else { return nil }
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         let element = AXUIElementCreateApplication(application.pid)
@@ -157,17 +142,24 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
             return .init(id: nil, application: application, ordinal: 1, frame: nil, issue: .ambiguousIdentity)
         }
         AXUIElementSetMessagingTimeout(window, messageTimeout)
-        let id = handles.first(where: {
-            $0.value.policy == .windowLayout && $0.value.application == application
-                && CFEqual($0.value.element, window)
-        })?.key ?? WorkspaceWindowID(application: application, token: UUID())
-        guard handles[id] != nil || handles.count < 2_000 else {
+        for _ in 0..<min(4, handles.windowLayoutCount) {
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else { break }
+            guard let candidate = handles.nextWindowLayoutProbeCandidates(limit: 1).first else { break }
+            var role: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(candidate.element, kAXRoleAttribute as CFString, &role)
+            handles.recordProbe(result, for: candidate.id)
+        }
+        guard
+            let id = handles.retain(
+                element: window, application: application, ordinal: 1, policy: .windowLayout, equal: CFEqual)
+        else {
             return .init(id: nil, application: application, ordinal: 1, frame: nil, issue: .unavailable)
         }
-        handles[id] = Handle(element: window, application: application, ordinal: 1, policy: .windowLayout)
         let state = try snapshot(id, deadline: deadline)
-        guard await isSameProcess(application) else {
-            handles[id] = nil
+        let sameProcess = await Self.processMatches(application)
+        guard sameProcess == true else {
+            if sameProcess == false { handles.removeProcesses([application]) }
             return nil
         }
         try Task.checkCancellation()
@@ -177,7 +169,12 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
     func current(_ id: WorkspaceWindowID) async throws -> WorkspaceWindowSnapshot? {
         try Task.checkCancellation()
         guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
-        guard handles[id] != nil, await isSameProcess(id.application) else { return nil }
+        guard handles[id] != nil else { return nil }
+        let sameProcess = await Self.processMatches(id.application)
+        guard sameProcess == true else {
+            if sameProcess == false { handles.removeProcesses([id.application]) }
+            return nil
+        }
         _ = await displays()
         let state = try snapshot(id, deadline: ContinuousClock.now.advanced(by: .seconds(2)))
         return state.issue == .unavailable ? nil : state
@@ -261,11 +258,21 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
     }
 
     private func isSameProcess(_ application: WorkspaceApplication) async -> Bool {
-        await MainActor.run {
-            guard let app = NSRunningApplication(processIdentifier: application.pid) else { return false }
-            return !app.isTerminated && app.bundleIdentifier == application.bundleID
-                && app.launchDate == application.launchDate
-        }
+        await Self.processMatches(application) == true
+    }
+
+    private func pruneTerminatedProcesses() async {
+        let known = Set(handles.entries.values.map(\.application))
+        let stale = await MainActor.run { known.filter { Self.processMatches($0) == false } }
+        handles.removeProcesses(Array(stale))
+    }
+
+    @MainActor
+    private static func processMatches(_ application: WorkspaceApplication) -> Bool? {
+        guard let app = NSRunningApplication(processIdentifier: application.pid) else { return false }
+        guard !app.isTerminated else { return false }
+        guard let bundleID = app.bundleIdentifier, let launchDate = app.launchDate else { return nil }
+        return bundleID == application.bundleID && launchDate == application.launchDate
     }
 
     private func snapshot(_ id: WorkspaceWindowID, deadline: ContinuousClock.Instant) throws -> WorkspaceWindowSnapshot
@@ -276,7 +283,10 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
             guard ContinuousClock.now < deadline else { throw WorkspaceWindowReadError.timeout }
             var value: CFTypeRef?
             let result = AXUIElementCopyAttributeValue(handle.element, name as CFString, &value)
-            if result == .invalidUIElement { throw WorkspaceError.missing }
+            if result == .invalidUIElement {
+                handles.recordProbe(result, for: id)
+                throw WorkspaceError.missing
+            }
             if result == .cannotComplete && handle.policy == .windowLayout { throw WorkspaceWindowReadError.timeout }
             return result == .success ? value : nil
         }

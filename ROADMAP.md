@@ -2,8 +2,8 @@
 
 Semper has ten utility modules integrated on `main`: Sound, Awake, Displays,
 Workspace Restore, Window Layout, File Shelf, Safe Eject, Scenes, Away, and
-Presentation. Resize a Copy extends File Shelf in this change set and awaits
-integration. The downloadable release is v1.0.0, which contains Sound only.
+Presentation. File Shelf includes Resize a Copy. The downloadable release
+is v1.0.0, which contains Sound only.
 This roadmap orders the work to deliver the whole suite as dependable signed
 releases without hiding experimental behavior. Per-module state lives in the
 [product status guide](guide/product-status.md).
@@ -66,8 +66,9 @@ Native acceptance remains open. See the [Window Layout guide](guide/window-layou
   restarts.
 - File Shelf and Safe Eject: behavior improvements from reproducible reports,
   keeping original files and volumes safe.
-- Complete integration and native acceptance of File Shelf's **Resize a Copy**,
-  implemented in this change set. It resizes one local JPEG or PNG to a longest
+- Complete native acceptance of File Shelf's **Resize a Copy**, integrated
+  through [PR #111](https://github.com/niharnm/Semper/pull/111).
+  It resizes one local JPEG or PNG to a longest
   edge of 1024 or 2048 pixels without enlargement or overwriting a file.
   Format, displayed orientation, color profile and PNG transparency are kept;
   descriptive metadata is removed. JPEG re-encoding can lose detail.
@@ -133,7 +134,7 @@ discussion and include a hardware test plan.
   Homebrew are current.
 - Integrated on `main` and in no download yet: Awake, Displays, Workspace
   Restore, Window Layout, File Shelf, Safe Eject, Scenes, Away, and Presentation.
-- Implemented in this change set, awaiting integration: File Shelf's Resize a Copy.
+- File Shelf's Resize a Copy is integrated on `main` and is not in v1.0.0.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, Accessibility window operations, volume ejection, and permission
   behavior.

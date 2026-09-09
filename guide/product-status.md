@@ -4,11 +4,10 @@ Semper has ten utility modules integrated on `main`. This page
 records what each module does, where it stands, and what remains before
 release. It changes in the same commit as the work that changes a status.
 
-Snapshot: baseline `main` at `f3e278d`, 2026-09-09, including Window Layout and
-website alignment from [PR #110](https://github.com/niharnm/Semper/pull/110).
-Cleared Resize a Copy source `2db9a4a` is staged with that baseline at `a575a87`;
-its integration requires this full change set to merge into `main`. Latest
-downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
+Snapshot: `main` at `ced1a2b`, 2026-09-09, including Resize a Copy and website
+alignment from [PR #111](https://github.com/niharnm/Semper/pull/111), following
+Window Layout in [PR #110](https://github.com/niharnm/Semper/pull/110).
+Latest downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
 
 ## States
 
@@ -30,7 +29,7 @@ downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
 | Displays | Read and set supported external display brightness, contrast, volume, and input | Integrated | Shared gates, plus DDC checks on real displays | [Source](../Semper/Displays), [guide](module-shell.md#displays) |
 | Workspace Restore | Return selected app windows to a saved arrangement | Integrated | Shared gates, plus Accessibility permission flows, multi-display, and Spaces checks | [Source](../Semper/Workspace), [guide](direct-utilities.md) |
 | Window Layout | Place one eligible window or restore its preceding placement | Integrated | Shared gates; full-height/auto-hide limits, focus, shortcuts, constrained windows and recovery need native verification | [Source](../Semper/WindowLayout), [guide](window-layout.md) |
-| File Shelf | Hold temporary files, links, images, and text between apps | Integrated | Shared gates, plus drop-source, missing-file, and persistence checks | [Source](../Semper/Shelf), [guide](direct-utilities.md) |
+| File Shelf | Hold temporary items between apps and resize local image copies | Integrated | Shared gates, plus drop-source, missing-file, persistence and image-copy checks below | [Source](../Semper/Shelf), [guide](direct-utilities.md), [image copies](shelf-image-copy.md) |
 | Safe Eject | Review removable volumes to eject and check each observed result | Integrated | Shared gates, plus disposable-drive single and batch eject checks | [Source](../Semper/Storage), [guide](direct-utilities.md) |
 | Scenes | Save and apply settings across utilities together, with a restore point | Integrated | Shared gates, plus capture, apply, and recovery checks on hardware | [Source](../Semper/Scenes), [guide](module-shell.md) |
 | Away | Cover every display with a privacy curtain that requires authentication to exit | Integrated | Shared gates, plus input-filter permission, authentication, and multi-display checks | [Source](../Semper/Away), [guide](module-shell.md#away) |
@@ -46,21 +45,20 @@ the shared release gates remain separate.
 | Presentation preparation/start cancellation | Integrated | Visible cancellation and Escape during preparation/start, pending-work drainage, recovery and retry controls | [Presentation controls](presentation-controls.md) |
 | File Shelf Choose Files | Integrated | Native picker focus, selection and cancellation, keyboard navigation and Command-O routing in compact and detail views | [File selection](shelf-file-selection.md) |
 
-## Next increments
+## Integrated File Shelf feature
 
-This feature extends File Shelf in the staged source snapshot. It is outside
-the baseline `main` snapshot and is not released. It adds no new module.
+This feature extends File Shelf in the `main` snapshot above. It is not
+released and adds no new module.
 
 | Increment | State | Remaining acceptance |
 | --- | --- | --- |
-| File Shelf Resize a Copy | Implemented in this change set, [PR #109](https://github.com/niharnm/Semper/pull/109) | Combined verification and source merge; native Save, keyboard/VoiceOver, cancellation, recovery and destination compatibility remain separate release gates |
+| File Shelf Resize a Copy | Integrated, [PR #111](https://github.com/niharnm/Semper/pull/111) | Native Save, keyboard/VoiceOver, cancellation, recovery, destination compatibility and shared release gates |
 
 ## Window Layout
 
 Source `0f25f65` adds left half, right half, maximize, center and
 previous-placement restore with optional shortcuts and Home/search/pinned
-actions. It is integrated through PR #110 at `f3e278d`; both the baseline main
-and staged source snapshots contain ten modules.
+actions. It is integrated through PR #110 at `f3e278d`.
 
 Full-height current windows and targets are refused even for ordinary windowed
 apps. Halves and maximize can therefore be unavailable when both the Dock and
@@ -78,7 +76,7 @@ permission, real-window or hardware acceptance. See the
 
 ## File Shelf Resize a Copy
 
-Cleared source `2db9a4a` is included in this change set. Select one fully
+Source `2db9a4a` is integrated through PR #111 at `ced1a2b`. Select one fully
 downloaded local JPEG or PNG, review dimensions for a longest edge of 1,024 or
 2,048 pixels, then save a separate copy. Images are not enlarged. The source
 format, displayed orientation, color profile and PNG transparency are kept;
