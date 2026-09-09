@@ -5,10 +5,6 @@ import SwiftUI
 import Testing
 @testable import Semper
 
-private enum PowerAssertionMockError: Error {
-    case requestedFailure
-}
-
 @MainActor
 private final class PowerAssertionBackendMock: PowerAssertionCreating {
     enum Event: Equatable {
@@ -27,9 +23,9 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
         kind: PowerAssertionKind,
         reason: String,
         timeout: TimeInterval?
-    ) throws -> PowerAssertionID {
+    ) throws(PowerAssertionError) -> PowerAssertionID {
         guard !failingKinds.contains(kind) else {
-            throw PowerAssertionMockError.requestedFailure
+            throw PowerAssertionError.creationFailed(kIOReturnError)
         }
         let id = nextID
         nextID += 1
@@ -38,10 +34,10 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
         return id
     }
 
-    func releaseAssertion(_ id: PowerAssertionID) throws {
+    func releaseAssertion(_ id: PowerAssertionID) throws(PowerAssertionError) {
         guard !failingReleaseIDs.contains(id) else {
             events.append(.releaseFailed(id))
-            throw PowerAssertionMockError.requestedFailure
+            throw PowerAssertionError.releaseFailed(kIOReturnError)
         }
         events.append(.released(id))
     }

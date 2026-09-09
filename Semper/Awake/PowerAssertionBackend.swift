@@ -30,9 +30,9 @@ protocol PowerAssertionCreating: AnyObject {
         kind: PowerAssertionKind,
         reason: String,
         timeout: TimeInterval?
-    ) throws -> PowerAssertionID
+    ) throws(PowerAssertionError) -> PowerAssertionID
 
-    func releaseAssertion(_ id: PowerAssertionID) throws
+    func releaseAssertion(_ id: PowerAssertionID) throws(PowerAssertionError)
 }
 
 @MainActor
@@ -45,7 +45,7 @@ final class IOPMPowerAssertionBackend: PowerAssertionCreating {
         kind: PowerAssertionKind,
         reason: String,
         timeout: TimeInterval?
-    ) throws -> PowerAssertionID {
+    ) throws(PowerAssertionError) -> PowerAssertionID {
         var assertionID = IOPMAssertionID(kIOPMNullAssertionID)
         let timeoutAction: CFString? = timeout.map { _ in
             kIOPMAssertionTimeoutActionTurnOff as CFString
@@ -73,7 +73,7 @@ final class IOPMPowerAssertionBackend: PowerAssertionCreating {
         return assertionID
     }
 
-    func releaseAssertion(_ id: PowerAssertionID) throws {
+    func releaseAssertion(_ id: PowerAssertionID) throws(PowerAssertionError) {
         let status = IOPMAssertionRelease(id)
         guard status == kIOReturnSuccess else {
             logger.error("Power assertion release failed: id \(id), status \(status)")
