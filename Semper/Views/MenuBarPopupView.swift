@@ -162,7 +162,8 @@ struct MenuBarPopupView: View {
                     #if !APP_STORE
                     DisplaysPane(
                         displayService: displayService,
-                        isSceneOperationInProgress: sceneManager.isBusy
+                        isSceneOperationInProgress: sceneManager.isBusy,
+                        sceneOperationIsInProgress: { sceneManager.isBusy }
                     )
                     #else
                     DisplaysPane()
