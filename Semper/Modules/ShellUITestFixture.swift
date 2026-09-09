@@ -5,7 +5,7 @@
 
     @MainActor
     final class ShellUITestFixture {
-        static let enabledArgument = "--shell-ui-testing"
+        nonisolated static let enabledArgument = "--shell-ui-testing"
 
         let runtime: UtilityRuntime
         let directory: URL
