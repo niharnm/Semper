@@ -309,6 +309,36 @@ struct WorkspaceOperationReceiptTests {
         #expect(try await backend.current(ids[0])?.frame == support.displaced)
     }
 
+    @Test("Already-restored frames still require the original display and supported window state")
+    func alreadyRestoredRequiresOriginalContext() async throws {
+        let (service, backend, ids, plan) = try await prepared(count: 1)
+        let applied = await service.apply(plan)
+        await backend.change(ids[0], frame: support.displaced)
+        let replacement = WorkspaceDisplay(
+            id: "replacement", name: "Replacement", visibleFrame: support.screen.visibleFrame)
+        let shifted = WorkspaceDisplay(
+            id: support.screen.id, name: support.screen.name,
+            visibleFrame: support.screen.visibleFrame.offsetBy(dx: -10, dy: 0))
+        let count = await backend.moves.count
+        for displays in [[replacement], [shifted], []] {
+            await backend.setScreens(displays)
+            let refused = await service.reverse(applied)
+            #expect(refused.steps[0].outcome == .skipped(.changedDisplays))
+            #expect(refused.pendingRecoverySlotIDs == plan.selectedSlotIDs)
+            #expect(await backend.moves.count == count)
+        }
+        await backend.setScreens([support.screen])
+        await backend.change(ids[0], issue: .minimized)
+        let unsupported = await service.reverse(applied)
+        #expect(unsupported.steps[0].outcome == .skipped(.unsupported(.minimized)))
+        #expect(unsupported.pendingRecoverySlotIDs == plan.selectedSlotIDs)
+        await backend.change(ids[0], frame: support.displaced)
+        let restored = await service.reverse(applied)
+        #expect(restored.steps[0].outcome == .alreadyRestored)
+        #expect(!restored.needsRecovery)
+        #expect(await backend.moves.count == count)
+    }
+
     @Test("Reverse continues after failure and returned recovery can be retried")
     func reversePartialFailure() async throws {
         let (service, backend, ids, plan) = try await prepared(count: 3)
