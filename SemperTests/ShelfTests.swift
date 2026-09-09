@@ -659,6 +659,191 @@ struct ShelfTests {
         #expect(service.items.isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func clearRetainsItemsWhenManifestWriteFails(throughCommand: Bool) async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        let access = ShelfAccessSpy()
+        let service = ShelfService(store: fixture.store, access: access)
+        service.start()
+        service.setDefaultExpiry(.oneHour)
+        try service.addText("Retained note")
+        try service.addLink(try #require(URL(string: "https://example.com/retained")))
+        try service.addFile(fixture.file)
+        service.setPersistence(true)
+        try #require(service.persistenceEnabled)
+        let retained = service.items
+        let manifest = try Data(contentsOf: fixture.store.manifest)
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try Data("cache obstacle".utf8).write(to: fixture.store.cache)
+
+        var opened = false
+        let handler = ShelfCommandHandler(service: service, openDetail: { opened = true })
+        let result = throughCommand ? await handler.execute(.clear) : await service.clear()
+
+        #expect(throws: ShelfFailure.storeWrite) { try result.get() }
+        #expect(!opened)
+        #expect(service.items == retained)
+        #expect(!service.isClearing)
+        #expect(try Data(contentsOf: fixture.store.manifest) == manifest)
+        #expect(try Data(contentsOf: fixture.file) == Data("abc".utf8))
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try fixture.store.prepareCache()
+        let reloaded = ShelfService(store: fixture.store, access: access)
+        reloaded.start()
+        #expect(reloaded.items == retained)
+        await reloaded.shutdown()
+        service.report(ShelfFailure.missing)
+        try await handler.execute(.clear).get()
+        #expect(service.message == ShelfFailure.missing.localizedDescription)
+        #expect(service.items.isEmpty)
+        #expect(try fixture.store.load()?.items.isEmpty == true)
+        #expect(try Data(contentsOf: fixture.file) == Data("abc".utf8))
+        try await handler.execute(.open).get()
+        #expect(opened)
+        await service.shutdown()
+        #expect(access.begins == access.ends)
+    }
+
+    @Test func clearSessionOnlyDoesNotCreateManifest() async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        let access = ShelfAccessSpy()
+        let service = ShelfService(store: fixture.store, access: access)
+        service.start()
+        try service.addFile(fixture.file)
+        try service.addText("Session note")
+        try await service.clear().get()
+        #expect(service.items.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.manifest.path))
+        #expect(try Data(contentsOf: fixture.file) == Data("abc".utf8))
+        await service.shutdown()
+        #expect(access.begins == access.ends)
+    }
+
+    @Test func failedSavedDataResetRemainsAvailable() async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        try fixture.store.prepareCache()
+        try Data("invalid manifest".utf8).write(to: fixture.store.manifest)
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try Data("cache obstacle".utf8).write(to: fixture.store.cache)
+        let service = ShelfService(store: fixture.store)
+        service.start()
+        try #require(service.storeNeedsReset)
+        let result = await service.clear()
+        #expect(throws: ShelfFailure.invalidStore) { try result.get() }
+        #expect(try Data(contentsOf: fixture.store.manifest) == Data("invalid manifest".utf8))
+        await service.resetSavedData()
+        #expect(service.storeNeedsReset)
+        #expect(service.message != nil)
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try fixture.store.prepareCache()
+        await service.resetSavedData()
+        #expect(!service.storeNeedsReset)
+        #expect(service.message == nil)
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.manifest.path))
+        await service.shutdown()
+    }
+
+    @Test func clearReportsOwnedCopyRemovalFailure() async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        let name = "shelf-item-\(UUID().uuidString).png"
+        let cached = try fixture.store.cacheURL(named: name)
+        let item = ShelfItem(name: "Owned image", payload: .cachedFile(name), now: Date(), expiry: .oneHour)
+        let firstName = "shelf-item-\(UUID().uuidString).png"
+        let firstCached = try fixture.store.cacheURL(named: firstName)
+        let firstItem = ShelfItem(name: "First image", payload: .cachedFile(firstName), now: Date(), expiry: .oneHour)
+        try fixture.store.save(items: [firstItem, item], expiry: .oneHour)
+        try Data("first image".utf8).write(to: firstCached)
+        try Data("owned image".utf8).write(to: cached)
+        let access = ShelfAccessSpy()
+        let service = ShelfService(store: fixture.store, access: access)
+        service.start()
+        try FileManager.default.removeItem(at: cached)
+        try FileManager.default.createSymbolicLink(at: cached, withDestinationURL: fixture.file)
+        let result = await service.clear()
+        #expect(throws: ShelfFailure.storeWrite) { try result.get() }
+        #expect(service.items == [firstItem, item])
+        #expect(!FileManager.default.fileExists(atPath: firstCached.path))
+        #expect(access.ends == 0)
+        #expect(!service.isClearing)
+        #expect(try Data(contentsOf: fixture.file) == Data("abc".utf8))
+        try FileManager.default.removeItem(at: cached)
+        try Data("owned image".utf8).write(to: cached)
+        try await service.clear().get()
+        #expect(service.message == nil)
+        #expect(service.items.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: cached.path))
+        await service.shutdown()
+        #expect(access.begins == access.ends)
+    }
+
+    @Test func coalescedClearReturnsSharedFailureAfterCancelledWaiter() async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        let entered = ShelfAsyncSignal()
+        let release = ShelfAsyncSignal()
+        let importerHold = Task.detached { await release.wait() }
+        defer { release.resolve(true) }
+        let service = ShelfService(
+            store: fixture.store,
+            importer: { _, _ in
+                entered.resolve(true)
+                _ = await importerHold.value
+                return .text("Cancelled import")
+            })
+        service.start()
+        service.setDefaultExpiry(.oneHour)
+        try service.addText("Retained note")
+        service.setPersistence(true)
+        let retained = service.items
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try Data("cache obstacle".utf8).write(to: fixture.store.cache)
+        #expect(service.importDrops([NSItemProvider()]))
+        let arrived = await entered.wait()
+        if !arrived {
+            release.resolve(true)
+            await service.shutdown()
+        }
+        try #require(arrived)
+        let firstEntered = ShelfAsyncSignal()
+        let first = Task {
+            firstEntered.resolve(true)
+            return await service.clear()
+        }
+        #expect(await firstEntered.wait())
+        let secondEntered = ShelfAsyncSignal()
+        let second = Task {
+            secondEntered.resolve(true)
+            return await ShelfCommandHandler(service: service, openDetail: {}).execute(.clear)
+        }
+        #expect(await secondEntered.wait())
+        #expect(service.isClearing)
+        service.setPersistence(false)
+        #expect(service.persistenceEnabled)
+        await service.remove(retained[0].id)
+        #expect(service.items == retained)
+        first.cancel()
+        release.resolve(true)
+        #expect(await importerHold.value)
+        let firstResult = await first.value
+        let secondResult = await second.value
+        #expect(throws: ShelfFailure.storeWrite) { try firstResult.get() }
+        #expect(throws: ShelfFailure.storeWrite) { try secondResult.get() }
+        #expect(service.items == retained)
+        #expect(!service.isClearing)
+        #expect(service.importCount == 0)
+        try FileManager.default.removeItem(at: fixture.store.cache)
+        try fixture.store.prepareCache()
+        await service.resetSavedData()
+        #expect(service.items.isEmpty)
+        #expect(!service.persistenceEnabled)
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.manifest.path))
+        await service.shutdown()
+    }
+
     @Test func clearBlocksNewImportsAndPauseJoinsClear() async throws {
         let fixture = try ShelfFixture()
         defer { fixture.remove() }
@@ -685,7 +870,7 @@ struct ShelfTests {
         await Task.yield()
         #expect(!paused)
         await gate.resume()
-        await clear.value
+        if case .failure(let error) = await clear.value { Issue.record(error) }
         await pause.value
         #expect(service.items.isEmpty)
         #expect(!service.isClearing)
