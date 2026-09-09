@@ -499,7 +499,7 @@ struct UtilityLifecycleTests {
             await first.value
             await second.value
             await lifecycle.shutdown()
-            #expect(order == [.away, .presentation, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake])
+            #expect(order == [.away, .presentation, .scenes, .windowLayout, .workspace, .shelf, .storage, .displays, .sound, .awake])
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.start(.awake) }
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.pause(.awake) }
             await #expect(throws: UtilityLifecycleError.self) { try await lifecycle.remove(.awake) }

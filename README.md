@@ -13,7 +13,7 @@
 
 Control windows, files, displays, power, and sound from one native macOS menu bar app. Add the utilities you need, use them independently, or combine settings with Scenes and Presentation. Away provides an authenticated privacy curtain.
 
-The current download, v1.0.0, contains Sound. The other modules are integrated in this repository and are in development toward the next release. The [product status guide](guide/product-status.md) records each module's state.
+The current download, v1.0.0, contains Sound. Source builds include additional utilities in development toward the next release. The [product status guide](guide/product-status.md) distinguishes integrated features from work still under review.
 
 [semper.systems](https://www.semper.systems/)
 
@@ -59,6 +59,7 @@ not download a Semper DMG from an unofficial source.
 ## Architecture Highlights
 
 - **Independent Utilities**: Home provides module summaries, attention items, up to four pinned actions, search, and recent action outcomes for the current session. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
+- **Manual Window Layout**: Five optional actions arrange eligible windows into halves, maximize, center, or restore the preceding placement. Full-height windows and targets are refused, which can limit halves and maximize when both the Dock and menu bar auto-hide. Source integration and native acceptance are tracked in the [product status guide](guide/product-status.md#window-layout).
 - **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Authenticated Away Curtain**: One opaque panel covers each display, ordinary input is filtered, and local widgets can show time, battery, Away duration, and awake-request state.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
@@ -80,6 +81,7 @@ not download a Semper DMG from an unofficial source.
 - Sound requires Screen & System Audio Recording permission for CoreAudio process taps.
 - Microphone permission is used only for input-device monitoring.
 - Accessibility permission is optional for system media-key control.
+- Workspace Restore and Window Layout actions require Accessibility access to read and move app windows.
 
 Away is a Semper privacy curtain, not the macOS Lock Screen or an operating-system security boundary. Force Quit, Semper failure, restart, administrator or Accessibility control, remote access, authorized capture software, and display-change timing can expose the desktop. Its awake request does not prevent lid-close sleep, manual Sleep, or forced low-power sleep.
 
@@ -124,6 +126,9 @@ in your keychain so macOS can recognize later source updates as the same app.
 - [Product Status](guide/product-status.md)
 - [Module Shell](guide/module-shell.md)
 - [Direct Utilities: Workspace Restore, File Shelf, Safe Eject](guide/direct-utilities.md)
+- [Choose Files in File Shelf](guide/shelf-file-selection.md)
+- [Presentation Controls](guide/presentation-controls.md)
+- [Window Layout](guide/window-layout.md)
 - [Awake Sessions](guide/awake-sessions.md)
 - [URL Schemes](guide/url-schemes.md)
 - [App Shortcuts](guide/app-shortcuts.md)

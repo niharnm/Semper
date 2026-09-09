@@ -905,7 +905,7 @@ final class WorkspaceService {
             ownerToken == nil || reservedPlanID == planID
         else { return receipt(planID: planID, reversing: reversing, steps: initial, issue: .busy) }
         let permit: MutationAdmissionPermit?
-        do { permit = try mutationAdmission?.acquire(owner: .manual, mode: .shared) } catch {
+        do { permit = try mutationAdmission?.acquire(owner: .workspaceWindow, mode: .shared) } catch {
             return receipt(planID: planID, reversing: reversing, steps: initial, issue: .mutationsBlocked)
         }
         defer { if let permit { mutationAdmission?.release(permit) } }
@@ -964,8 +964,8 @@ final class WorkspaceService {
             return
         }
         let permit: MutationAdmissionPermit?
-        do { permit = mutatesWindows ? try mutationAdmission?.acquire(owner: .manual, mode: .shared) : nil } catch {
-            errorMessage = "End Away Mode before moving windows."
+        do { permit = mutatesWindows ? try mutationAdmission?.acquire(owner: .workspaceWindow, mode: .shared) : nil } catch {
+            errorMessage = "Finish the active window action or end Away before moving windows."
             return
         }
         defer { if let permit { mutationAdmission?.release(permit) } }

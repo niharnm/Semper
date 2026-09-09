@@ -189,7 +189,7 @@ final class UtilityLifecycle {
             for task in stops { _ = await task.result }
             // Composed sessions restore before their underlying services stop.
             let order: [UtilityModuleID] = [
-                .away, .presentation, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake,
+                .away, .presentation, .scenes, .windowLayout, .workspace, .shelf, .storage, .displays, .sound, .awake,
             ]
             var retainedServices: [UtilityModuleID: String] = [:]
             for id in order {

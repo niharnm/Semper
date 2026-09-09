@@ -1,21 +1,24 @@
 # Semper product status
 
-Semper is one menu bar app with nine utility modules. This page is the shared
-record of what each module does, where it stands, and what remains before
+Semper's source in this change set contains ten utility modules. This page
+records what each module does, where it stands, and what remains before
 release. It changes in the same commit as the work that changes a status.
 
-Snapshot: `main` at db697a7, 2026-09-09. Interaction-fix source was staged at
-`8d6d3c0` on the same date; those fixes reach `main` only when that change set
-is merged. Latest downloadable release: v1.0.0, published 2026-08-26,
-containing Sound only.
+Snapshot: baseline `main` at `6afe10d`, 2026-09-09, including the interaction
+fixes from [PR #108](https://github.com/niharnm/Semper/pull/108). Cleared Window
+Layout source `0f25f65` is staged with that baseline at `e621a11`; its integration
+requires this full change set to merge into `main`. Latest downloadable release:
+v1.0.0, published 2026-08-26, containing Sound only.
 
 ## States
 
 - **Released**: included in a published signed release users can download.
 - **Integrated**: merged on `main` in the shared shell with automated tests.
   Not included in the public binary release; native acceptance remains separate.
-- **Implemented in this change set**: present in the staged source snapshot.
-  This state alone does not establish inclusion on `main` or in a public release.
+- **Implemented in this change set**: included in the staged source snapshot.
+  It becomes integrated only when this change set merges into `main`.
+- **In review**: proposed source outside `main`. Passing source checks alone
+  does not establish integration, native acceptance, or public release.
 - **Planned**: agreed scope with no implementation on `main`.
 
 ## Modules
@@ -26,32 +29,53 @@ containing Sound only.
 | Awake | Keep the Mac awake for a chosen duration, with app and battery stop conditions | Integrated | Shared gates, plus assertion, expiry, and stop-condition checks on hardware | [Source](../Semper/Awake), [guide](awake-sessions.md) |
 | Displays | Read and set supported external display brightness, contrast, volume, and input | Integrated | Shared gates, plus DDC checks on real displays | [Source](../Semper/Displays), [guide](module-shell.md#displays) |
 | Workspace Restore | Return selected app windows to a saved arrangement | Integrated | Shared gates, plus Accessibility permission flows, multi-display, and Spaces checks | [Source](../Semper/Workspace), [guide](direct-utilities.md) |
+| Window Layout | Place one eligible window or restore its preceding placement | Implemented in this change set | Source merge and shared gates; full-height/auto-hide limits, focus, shortcuts, constrained windows and recovery need native verification | [Source](../Semper/WindowLayout), [guide](window-layout.md) |
 | File Shelf | Hold temporary files, links, images, and text between apps | Integrated | Shared gates, plus drop-source, missing-file, and persistence checks | [Source](../Semper/Shelf), [guide](direct-utilities.md) |
 | Safe Eject | Review removable volumes to eject and check each observed result | Integrated | Shared gates, plus disposable-drive single and batch eject checks | [Source](../Semper/Storage), [guide](direct-utilities.md) |
 | Scenes | Save and apply settings across utilities together, with a restore point | Integrated | Shared gates, plus capture, apply, and recovery checks on hardware | [Source](../Semper/Scenes), [guide](module-shell.md) |
 | Away | Cover every display with a privacy curtain that requires authentication to exit | Integrated | Shared gates, plus input-filter permission, authentication, and multi-display checks | [Source](../Semper/Away), [guide](module-shell.md#away) |
 | Presentation | Run a timed session that applies selected display, sound, and window targets | Integrated | Shared gates, plus a full session with reverse-order recovery on hardware | [Source](../Semper/Presentation), [guide](module-shell.md#presentation) |
 
-## Interaction fixes in this change set
+## Integrated interaction fixes
 
-These fixes are implemented at the staged revision above. Their integration
-requires that change set to be merged into `main`; native acceptance and the
-shared release gates remain separate.
+These fixes are included in the `main` snapshot above. Native acceptance and
+the shared release gates remain separate.
 
 | Fix | State | Remaining native verification | Guide |
 | --- | --- | --- | --- |
-| Presentation preparation/start cancellation | Implemented in this change set | Visible cancellation and Escape during preparation/start, pending-work drainage, recovery and retry controls | [Presentation controls](presentation-controls.md) |
-| File Shelf Choose Files | Implemented in this change set | Native picker focus, selection and cancellation, keyboard navigation and Command-O routing in compact and detail views | [File selection](shelf-file-selection.md) |
+| Presentation preparation/start cancellation | Integrated | Visible cancellation and Escape during preparation/start, pending-work drainage, recovery and retry controls | [Presentation controls](presentation-controls.md) |
+| File Shelf Choose Files | Integrated | Native picker focus, selection and cancellation, keyboard navigation and Command-O routing in compact and detail views | [File selection](shelf-file-selection.md) |
 
 ## Next increments
 
-These changes are not included in this change set or the `main` snapshot above
-and are not released.
+This proposed feature is outside both the staged source and baseline `main`
+snapshots above and is not released.
 
 | Increment | State | Acceptance before integration |
 | --- | --- | --- |
-| Window Layout | Planned | Manual halves, maximize, center and previous-placement restore using [Workspace helpers](../Semper/Workspace); verify target identity, constrained windows and later manual changes |
-| File Shelf Resize Image Copy | Planned | Separate local JPEG/PNG copy; correct dimensions, orientation, color and transparency; original unchanged; explicit metadata policy, save failures and cancellation |
+| File Shelf Resize a Copy | In review, [PR #109](https://github.com/niharnm/Semper/pull/109) | Correct pending lifecycle/expiry, cleanup ownership and saved-path findings; verify the final implementation before integration and native acceptance |
+
+## Window Layout
+
+Cleared source `0f25f65` adds left half, right half, maximize, center and
+previous-placement restore with optional shortcuts and Home/search/pinned
+actions. It is included in the staged source snapshot and becomes the tenth
+integrated module when this change set merges into `main`. The baseline main
+snapshot contains nine modules.
+
+Full-height current windows and targets are refused even for ordinary windowed
+apps. Halves and maximize can therefore be unavailable when both the Dock and
+menu bar auto-hide. Eligible smaller windows can use center and restore. After
+an attempted write, an excluded or unreadable result requires manual review
+instead of automatic restore. An excluded full-height readback from that write
+retains its known before/after placement. A refusal without a write preserves
+the preceding placement record instead.
+The review requirement survives pause; acknowledgement, module removal or
+quitting clears it.
+
+Passing source tests does not establish native focus, keyboard, VoiceOver,
+permission, real-window or hardware acceptance. See the
+[Window Layout guide](window-layout.md).
 
 ## Shared release gates
 
