@@ -1150,13 +1150,14 @@ final class UtilityRuntime {
                         guard let self else { throw CancellationError() }
                         try await self.start(.shelf)
                         guard let shelf = self.shelf else { throw CancellationError() }
-                        await ShelfCommandHandler(
+                        let result = await ShelfCommandHandler(
                             service: shelf,
                             openDetail: {
                                 self.destination = .module(.shelf)
                                 self.onOpenDetail?()
                             }
                         ).execute(command)
+                        try result.get()
                     }))
         }
         for command in SafeEjectModule.descriptor.commands {

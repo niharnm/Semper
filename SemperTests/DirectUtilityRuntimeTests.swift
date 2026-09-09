@@ -472,6 +472,39 @@ struct DirectUtilityRuntimeTests {
         }
     }
 
+    @Test("Shelf clear reports persistence failure and completes only after a successful retry")
+    func shelfClearFailure() async throws {
+        try await withRuntime { runtime, probe in
+            try await runtime.start(.shelf)
+            let service = try #require(runtime.shelf)
+            service.setDefaultExpiry(.oneHour)
+            try service.addText("Retained until clear succeeds")
+            service.setPersistence(true)
+            try #require(service.persistenceEnabled)
+            let retained = service.items
+            let store = ShelfStore(root: probe.directory.appendingPathComponent("Shelf"))
+            let manifest = try Data(contentsOf: store.manifest)
+            try FileManager.default.removeItem(at: store.cache)
+            try Data("cache obstacle".utf8).write(to: store.cache)
+            let clear = UtilityActionID(rawValue: ShelfCommand.clear.rawValue)
+
+            #expect(
+                await runtime.commands.execute(clear, confirmed: true)
+                    == .failed(ShelfFailure.storeWrite.localizedDescription))
+            #expect(runtime.commands.recentActions.first?.actionID == clear)
+            #expect(runtime.commands.recentActions.first?.result == .failed)
+            #expect(service.items == retained)
+            #expect(try Data(contentsOf: store.manifest) == manifest)
+
+            try FileManager.default.removeItem(at: store.cache)
+            try store.prepareCache()
+            #expect(await runtime.commands.execute(clear, confirmed: true) == .completed)
+            #expect(runtime.commands.recentActions.first?.result == .completed)
+            #expect(service.items.isEmpty)
+            #expect(try store.load()?.items.isEmpty == true)
+        }
+    }
+
     @Test("Direct service changes update permission and limitation badges without restarting services")
     func liveStatus() async throws {
         try await withRuntime { runtime, probe in
