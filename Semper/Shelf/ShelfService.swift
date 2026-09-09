@@ -16,6 +16,7 @@ final class ShelfService {
     private(set) var checksums: [UUID: ShelfChecksumState] = [:]
     private(set) var isRunning = false
     private(set) var isStopping = false
+    private(set) var stopFailure: ShelfFailure?
     private(set) var isClearing = false
     private(set) var persistenceEnabled = false
     private(set) var defaultExpiry: ShelfExpiry = .quit
@@ -27,16 +28,22 @@ final class ShelfService {
     private var importCleanupNeedsRetry = false
     private var importCancellationCount = 0
 
-    var canClear: Bool { !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry }
+    var canClear: Bool {
+        !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry || imageCopy.needsCleanup
+    }
     var canChooseFiles: Bool {
         isRunning && !isStopping && !isClearing && !storeNeedsReset && !isChoosingFiles
             && importCount == 0 && importCancellationCount == 0 && removingIDs.isEmpty
-            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && items.count < ShelfLimits.items
+            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && !imageCopy.isActive
+            && items.count < ShelfLimits.items
     }
 
     let store: ShelfStore
+    let imageCopy: ShelfImageCopySession
     @ObservationIgnored private let access: any ShelfFileAccess
     @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let waitForExpiry: @Sendable (TimeInterval) async throws -> Void
+    @ObservationIgnored private var expiryBlockedRequests: [UUID: UUID] = [:]
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var scopes: [UUID: URL] = [:]
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
@@ -49,20 +56,26 @@ final class ShelfService {
     @ObservationIgnored private let fileChooser: any ShelfFileChoosing
     @ObservationIgnored private let importer:
         @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload
-    @ObservationIgnored private var stopTask: Task<Void, Never>?
+    @ObservationIgnored private var stopTask: Task<Result<Void, ShelfFailure>, Never>?
     @ObservationIgnored private var invalidReferenceIDs: Set<UUID> = []
 
     init(
         store: ShelfStore = .standard, access: any ShelfFileAccess = NativeShelfFileAccess(),
         now: @escaping @Sendable () -> Date = { Date() },
+        waitForExpiry: @escaping @Sendable (TimeInterval) async throws -> Void = {
+            try await Task.sleep(for: .seconds($0))
+        },
         fileChooser: any ShelfFileChoosing = NativeShelfFileChooser(),
+        imageCopy: ShelfImageCopySession? = nil,
         importer: @escaping @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload =
             ShelfDropImporter.load
     ) {
         self.store = store
         self.access = access
         self.now = now
+        self.waitForExpiry = waitForExpiry
         self.fileChooser = fileChooser
+        self.imageCopy = imageCopy ?? ShelfImageCopySession(access: access)
         self.importer = importer
     }
 
@@ -97,38 +110,67 @@ final class ShelfService {
         scheduleExpiry()
     }
 
-    func pause() async {
-        if let stopTask {
-            await stopTask.value
-            return
-        }
+    @discardableResult
+    func pause() async -> Result<Void, ShelfFailure> {
+        if let stopTask { return await stopTask.value }
+        imageCopy.stop()
         isStopping = true
         isRunning = false
         generation += 1
         expiryTask?.cancel()
         expiryTask = nil
-        let drain = Task { [weak self] in
-            guard let self else { return }
-            _ = await self.cancelWork()
-            if let clearTask = self.clearTask { _ = await clearTask.value }
+        let drain = Task<Result<Void, ShelfFailure>, Never> { [weak self] in
+            guard let self else { return .failure(.cancelled) }
+            defer {
+                self.isStopping = false
+                self.stopTask = nil
+            }
+            let cleanup = await self.cancelWork()
+            let clearResult = await self.clearTask?.value
+            let failure: ShelfFailure?
+            if case .failure(let error) = cleanup {
+                failure = error
+            } else if case .failure(let error) = clearResult {
+                failure = error
+            } else {
+                failure = nil
+            }
+            if let failure {
+                self.stopFailure = failure
+                self.report(failure)
+                self.isRunning = true
+                self.scheduleExpiry()
+                return .failure(failure)
+            }
             for url in self.scopes.values { self.access.end(url) }
             self.scopes.removeAll()
-            self.isStopping = false
-            self.stopTask = nil
+            self.stopFailure = nil
+            return .success(())
         }
         stopTask = drain
-        await drain.value
+        return await drain.value
     }
 
-    func shutdown() async {
-        await pause()
+    @discardableResult
+    func shutdown() async -> Result<Void, ShelfFailure> {
+        if case .failure(let failure) = await pause() { return .failure(failure) }
         let removed = persistenceEnabled ? items.filter { $0.expiry == .quit || $0.hasExpired(at: now()) } : items
-        for item in removed { removeOwnedContent(item) }
+        for item in removed {
+            if case .failure(let failure) = removeOwnedContent(item) {
+                stopFailure = failure
+                isRunning = true
+                refresh()
+                scheduleExpiry()
+                return .failure(failure)
+            }
+        }
         let removedIDs = Set(removed.map(\.id))
         items.removeAll { removedIDs.contains($0.id) }
         fileStates = fileStates.filter { !removedIDs.contains($0.key) }
         checksums = checksums.filter { !removedIDs.contains($0.key) }
+        expiryBlockedRequests = expiryBlockedRequests.filter { !removedIDs.contains($0.key) }
         persist()
+        return .success(())
     }
 
     func refresh() {
@@ -239,8 +281,14 @@ final class ShelfService {
     private func remove(_ id: UUID, onlyIfExpired: Bool) async {
         guard !isClearing else { return }
         let removalClearGeneration = clearGeneration
+        let imageRequest = imageCopy.request?.itemID == id ? imageCopy.request : nil
+        if imageRequest != nil { imageCopy.stop() }
         removingIDs.insert(id)
         defer { removingIDs.remove(id) }
+        if let imageRequest, case .failure(let failure) = await cancelImageCopy(requestID: imageRequest.id) {
+            report(failure)
+            return
+        }
         let worker = hashTasks[id]
         worker?.cancel()
         if worker != nil { checksums[id] = .cancelled }
@@ -252,6 +300,7 @@ final class ShelfService {
         if let url = scopes.removeValue(forKey: id) { access.end(url) }
         removeOwnedContent(item)
         items.removeAll { $0.id == id }
+        expiryBlockedRequests[id] = nil
         fileStates[id] = nil
         invalidReferenceIDs.remove(id)
         checksums[id] = nil
@@ -264,6 +313,7 @@ final class ShelfService {
         if let clearTask {
             return await clearTask.value
         }
+        imageCopy.stop()
         generation += 1
         clearGeneration += 1
         isClearing = true
@@ -301,12 +351,14 @@ final class ShelfService {
             for url in self.scopes.values { self.access.end(url) }
             self.scopes.removeAll()
             self.items.removeAll()
+            self.expiryBlockedRequests.removeAll()
             self.fileStates.removeAll()
             self.invalidReferenceIDs.removeAll()
             self.checksums.removeAll()
             if self.message == ShelfFailure.storeWrite.localizedDescription
                 || self.message == "Clear Shelf to retry temporary image cleanup before adding another drop."
                 || self.message == "Wait for cancelled imports to finish cleaning up before adding another drop."
+                || self.message == "Finish Resize a Copy or retry its cleanup before adding more items."
             {
                 self.message = nil
             }
@@ -318,7 +370,7 @@ final class ShelfService {
 
     func expireItems() async {
         guard !isClearing else { return }
-        let ids = items.filter { $0.hasExpired(at: now()) }.map(\.id)
+        let ids = items.filter { $0.hasExpired(at: now()) && expiryBlockedRequests[$0.id] == nil }.map(\.id)
         for id in ids { await remove(id, onlyIfExpired: true) }
         scheduleExpiry()
     }
@@ -353,6 +405,65 @@ final class ShelfService {
     func cancelChecksum(_ id: UUID) {
         hashTasks[id]?.cancel()
         checksums[id] = .cancelled
+    }
+
+    @discardableResult
+    func cancelImageCopy(requestID: UUID? = nil, retryCleanup: Bool = true) async -> Result<Void, ShelfFailure> {
+        if let requestID, requestID != imageCopy.request?.id { return .success(()) }
+        if !retryCleanup, imageCopy.needsReceiptAcknowledgement { return .failure(.recoveredCopyNeedsAcknowledgement) }
+        if !retryCleanup, imageCopy.needsCleanup { return .failure(.storeWrite) }
+        let request = imageCopy.request
+        let result = await imageCopy.cancel(requestID: requestID)
+        if let request { updateImageExpiryBlock(request, result: result) }
+        return result
+    }
+
+    func acknowledgeUnverifiedImageCopy(requestID: UUID) async -> Result<Void, ShelfFailure> {
+        guard let request = imageCopy.request, request.id == requestID else { return .failure(.cancelled) }
+        let result = await imageCopy.acknowledgeUnverifiedCopy(requestID: requestID)
+        updateImageExpiryBlock(request, result: result)
+        return result
+    }
+
+    @discardableResult
+    func acknowledgeImageCopyReceipt(requestID: UUID) -> Bool {
+        guard let request = imageCopy.request, request.id == requestID,
+            imageCopy.acknowledgeRecoveredReceipt(requestID: requestID)
+        else { return false }
+        if expiryBlockedRequests[request.itemID] == requestID {
+            expiryBlockedRequests[request.itemID] = nil
+            scheduleExpiry()
+        }
+        return true
+    }
+
+    private func updateImageExpiryBlock(_ request: ShelfImageCopyRequest, result: Result<Void, ShelfFailure>) {
+        switch result {
+        case .success:
+            if expiryBlockedRequests[request.itemID] == request.id {
+                expiryBlockedRequests[request.itemID] = nil
+                scheduleExpiry()
+            }
+        case .failure:
+            if imageCopy.request?.id == request.id,
+                imageCopy.needsCleanup || imageCopy.needsReceiptAcknowledgement
+            {
+                expiryBlockedRequests[request.itemID] = request.id
+            }
+        }
+    }
+
+    func canResizeImage(_ item: ShelfItem) -> Bool {
+        isRunning && !isStopping && !isClearing && !storeNeedsReset && !imageCopy.isActive
+            && importTasks.isEmpty && !isChoosingFiles && importCancellationCount == 0
+            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && removingIDs.isEmpty
+            && items.contains(where: { $0.id == item.id })
+            && fileStates[item.id] == .available(isDirectory: false)
+    }
+
+    func prepareImageCopy(_ item: ShelfItem) -> ShelfImageCopyRequest? {
+        guard canResizeImage(item), let url = prepareFileAction(item) else { return nil }
+        return imageCopy.begin(itemID: item.id, name: item.name, source: url)
     }
 
     @discardableResult
@@ -411,6 +522,10 @@ final class ShelfService {
         }
         guard count <= ShelfLimits.items - items.count - importTasks.count else {
             report(ShelfFailure.full)
+            return false
+        }
+        guard !imageCopy.isActive else {
+            message = "Finish Resize a Copy or retry its cleanup before adding more items."
             return false
         }
         guard importTasks.isEmpty, !isChoosingFiles else {
@@ -579,7 +694,9 @@ final class ShelfService {
     }
 
     private func cancelWork() async -> Result<Void, ShelfFailure> {
+        imageCopy.stop()
         let importCleanup = await cancelImports()
+        let imageCleanup = await cancelImageCopy()
         let workers = hashTasks
         for (id, task) in workers {
             task.cancel()
@@ -589,7 +706,8 @@ final class ShelfService {
             _ = await task.result
             hashTasks[id] = nil
         }
-        return importCleanup
+        if case .failure = importCleanup { return importCleanup }
+        return imageCleanup
     }
 
     private func reconcileImportCleanup() {
@@ -638,10 +756,13 @@ final class ShelfService {
     private func scheduleExpiry() {
         expiryTask?.cancel()
         expiryTask = nil
-        guard isRunning, !isClearing, let deadline = items.compactMap(\.expiresAt).min() else { return }
+        guard isRunning, !isClearing,
+            let deadline = items.filter({ expiryBlockedRequests[$0.id] == nil }).compactMap(\.expiresAt).min()
+        else { return }
         let delay = min(86_400, max(0, deadline.timeIntervalSince(now())))
+        let waitForExpiry = waitForExpiry
         expiryTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            do { try await waitForExpiry(delay) } catch { return }
             guard !Task.isCancelled, let self, self.isRunning else { return }
             await self.expireItems()
         }
