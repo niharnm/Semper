@@ -3520,7 +3520,8 @@ footer p:last-child {
 .hero-release-note a,
 .module-description a,
 .module-footnote a,
-.comparison-table a {
+.comparison-table a,
+.benchmark-note a {
   text-decoration: underline;
   text-underline-offset: 0.22em;
 }
@@ -3538,7 +3539,8 @@ footer p:last-child {
 .module-jump:hover,
 .module-description a:hover,
 .module-footnote a:hover,
-.comparison-table a:hover {
+.comparison-table a:hover,
+.benchmark-note a:hover {
   color: var(--blue);
 }
 
