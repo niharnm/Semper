@@ -221,7 +221,7 @@ struct AppDelegateAwayTerminationTests {
 
     private func waitForEvent(_ events: AsyncStream<Void>) async throws {
         var iterator = events.makeAsyncIterator()
-        let event = await iterator.next()
+        let event: Void? = await iterator.next()
         try Task.checkCancellation()
         try #require(event != nil)
     }
