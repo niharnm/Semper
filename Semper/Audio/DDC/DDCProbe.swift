@@ -213,10 +213,10 @@ nonisolated enum DDCProbeRunner {
         on queue: DispatchQueue,
         input: DDCProbeInput,
         operation: @escaping Operation = DDCProbeWorker.run,
-        completion: @escaping @MainActor @Sendable (DDCProbeResult) -> Void
+        completion: @escaping @MainActor @Sendable (DDCProbeResult?) -> Void
     ) {
         queue.async { @Sendable in
-            guard let result = execute(input: input, operation: operation) else { return }
+            let result = execute(input: input, operation: operation)
             Task { @MainActor in
                 completion(result)
             }
