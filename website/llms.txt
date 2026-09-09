@@ -14,8 +14,8 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Source code, tests, and build instructions are public.
 - The published download checked September 9, 2026 is v1.0.0, with Sound capabilities.
 - Release artifact: https://github.com/niharnm/Semper/releases/tag/v1.0.0
-- Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation are in development. None of these additional modules is included in v1.0.0.
-- Source integration of the expanded modules is complete. Checks for a public release are still in progress.
+- Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, Away, Presentation, and Window Layout are in development. None of these additional modules is included in v1.0.0.
+- Source builds include ten modules. Checks for a public release are still in progress.
 - Semper currently requires macOS 15.4 or later.
 - Semper is available to macOS users and to developers who want to build from source.
 - Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
@@ -39,7 +39,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Screen & System Audio Recording permission is required for Core Audio process taps.
 - Microphone permission is used only for input-device monitoring.
 - Accessibility permission is optional for Sound's media-key control.
-- In source builds, Workspace Restore requires Accessibility permission to read and move selected windows.
+- In source builds, Workspace Restore and Window Layout require Accessibility permission to read and move selected windows. Window Layout requests access on the first layout action if needed.
 - In a source build, open Semper from its menu bar icon. From Home, choose Sound, then Open Sound to start its audio controls. Browsing Home or adding a module does not start Sound.
 
 ## Important limits
@@ -51,6 +51,13 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Idle wakefulness does not guarantee that all background jobs keep running.
 - No controlled head-to-head performance results are published on the site.
 - Comparisons: https://www.semper.systems/#compare
+
+## Window Layout in source builds
+
+- Five manual actions for one eligible standard app window: Left Half, Right Half, Maximize, Center, and Restore Previous Placement.
+- Actions support Home search, pins, and optional shortcuts. No shortcut is assigned by default. Maximize does not enter full screen.
+- Only nonminimized windows with readable geometry and move/resize support qualify. Full-height windows and targets are refused, including ordinary windows. Halves and Maximize can be unavailable when both the Dock and menu bar auto-hide.
+- Restore skips later manual changes, missing windows, and changed display arrangements. After an excluded post-write result or an unverifiable write, review the window and confirm Keep Current Placement before another action. This discards the preceding placement record.
 
 ## Contributions
 
@@ -67,6 +74,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Product: https://www.semper.systems/
 - Module overview and availability: https://www.semper.systems/#modules
 - Source-build module guide: https://github.com/niharnm/Semper/blob/main/guide/module-shell.md
+- Window Layout source guide: https://github.com/niharnm/Semper/blob/main/guide/window-layout.md
 - Mac per-app volume guide: https://www.semper.systems/mac-volume-mixer.html
 - Project fact sheet: https://www.semper.systems/about.html
 - Privacy: https://www.semper.systems/privacy.html
