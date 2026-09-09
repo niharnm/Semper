@@ -137,6 +137,14 @@ final class AudioEngine {
     private var audioProcessingTransitionTask: Task<Void, Never>?
     private var audioProcessingTransitionGeneration: UInt64 = 0
     private var permissionPersistenceFailurePending = false
+    private let mutationAdmission = AudioMutationAdmission()
+    private var sceneMutationAdmission: AudioMutationLease?
+    var mutationAdmissionError: (any Error)? { mutationAdmission.lastError }
+
+    func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
+        try mutationAdmission.install(gate)
+    }
+
     private var isEngineStopped = false
     private var shutdownTask: Task<Void, Never>?
     private(set) var shutdownCleanupResult = TapResourceCleanupResult.empty
@@ -296,6 +304,8 @@ final class AudioEngine {
     }
 
     func beginOutputVolumeLimitChange(for deviceUID: String, to limit: Float) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         rollbackPendingOutputVolumeLimitChange(for: deviceUID)
         pendingOutputVolumeLimitChanges[deviceUID] = PendingOutputVolumeLimitChange(
             previousLimit: settingsManager.outputVolumeLimit(for: deviceUID)
@@ -308,6 +318,8 @@ final class AudioEngine {
     }
 
     func commitOutputVolumeLimitChange(for deviceUID: String, to limit: Float?) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
         settingsManager.setOutputVolumeLimit(for: deviceUID, to: limit)
     }
@@ -316,6 +328,8 @@ final class AudioEngine {
         for deviceUID: String,
         commandResult: AudioCommandResult
     ) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         switch commandResult {
         case .applied:
             pendingOutputVolumeLimitChanges.removeValue(forKey: deviceUID)
@@ -343,6 +357,8 @@ final class AudioEngine {
         for device: AudioDevice,
         to gain: Float
     ) -> MasterOutputVolumeWriteResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .rejected }
+        defer { admission.finish() }
         let maximumGain = maximumSelectableOutputGain(for: device)
         let clampedGain = max(0, min(maximumGain, gain))
         let previousGain = outputMasterGains[device.uid]
@@ -447,6 +463,8 @@ final class AudioEngine {
     }
 
     func setOutputBalance(for deviceUID: String, to balance: Float) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard let device = deviceMonitor.device(for: deviceUID),
               outputCapabilities(for: device).supportsBalance else {
             return
@@ -518,6 +536,8 @@ final class AudioEngine {
     /// Registers any output devices not yet in the priority list.
     /// Call this when devices change (not from computed properties).
     func registerNewDevicesInPriority() {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         for device in outputDevices {
             settingsManager.ensureDeviceInPriority(device.uid)
         }
@@ -744,7 +764,8 @@ final class AudioEngine {
     }
 
     func handleAudioPermissionChange() {
-        guard !isEngineStopped else { return }
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         if permission.status == .authorized {
             if settingsManager.audioProcessingMode == .resumeRequested {
                 startAudioProcessingTransitionIfNeeded()
@@ -772,7 +793,8 @@ final class AudioEngine {
     private func wireCallbacks() {
         // Sync device volume changes to taps for VU meter accuracy
         deviceVolumeMonitor.onVolumeChanged = { [weak self] deviceID, newVolume in
-            guard let self else { return }
+            guard let self, !self.isEngineStopped, let admission = self.mutationAdmission.begin() else { return }
+            defer { admission.finish() }
             guard let deviceUID = self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else { return }
             let tier = self.deviceVolumeMonitor.outputVolumeBackend(for: deviceID)
             if tier != .ddc {
@@ -803,7 +825,8 @@ final class AudioEngine {
         }
 
         deviceVolumeMonitor.onMuteChanged = { [weak self] deviceID, isMuted in
-            guard let self else { return }
+            guard let self, !self.isEngineStopped, let admission = self.mutationAdmission.begin() else { return }
+            defer { admission.finish() }
             guard let deviceUID = self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else { return }
             if self.deviceVolumeMonitor.outputVolumeBackend(for: deviceID) != .ddc {
                 self.onCommandValueObserved?(.outputMute(deviceUID), .flag(isMuted))
@@ -1116,10 +1139,20 @@ final class AudioEngine {
     /// Hide an active app so Semper ignores it entirely. Persists the ignore,
     /// then tears down the live tap so audio returns to natural volume.
     func ignoreApp(_ app: AudioApp) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.recordIgnore(app)
 
         if let tap = taps.removeValue(forKey: app.id) {
-            tap.invalidate()
+            let id = UUID()
+            guard let cleanupAdmission = mutationAdmission.begin() else { return }
+            tapMaintenanceTasks[id] = Task { @MainActor [weak self] in
+                defer {
+                    cleanupAdmission.finish()
+                    self?.tapMaintenanceTasks.removeValue(forKey: id)
+                }
+                _ = await tap.invalidateAsync()
+            }
         }
         appDeviceRouting.removeValue(forKey: app.id)
         followsDefault.remove(app.id)
@@ -1129,6 +1162,8 @@ final class AudioEngine {
     /// Unhide an app by its persistence identifier.
     /// Immediately creates a tap if the app is currently running.
     func unignoreApp(_ identifier: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.clearIgnore(identifier)
         applyPersistedSettings()
     }
@@ -1145,6 +1180,8 @@ final class AudioEngine {
     }
 
     func setVolumeForInactive(identifier: String, to volume: Float) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setVolumeForInactive(identifier: identifier, to: volume)
     }
 
@@ -1153,6 +1190,8 @@ final class AudioEngine {
     }
 
     func setBoostForInactive(identifier: String, to boost: BoostLevel) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setBoostForInactive(identifier: identifier, to: boost)
     }
 
@@ -1161,6 +1200,8 @@ final class AudioEngine {
     }
 
     func setMuteForInactive(identifier: String, to muted: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setMuteForInactive(identifier: identifier, to: muted)
     }
 
@@ -1169,6 +1210,8 @@ final class AudioEngine {
     }
 
     func setEQSettingsForInactive(_ settings: EQSettings, identifier: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setEQSettingsForInactive(settings, identifier: identifier)
     }
 
@@ -1177,6 +1220,8 @@ final class AudioEngine {
     }
 
     func setDeviceRoutingForInactive(identifier: String, deviceUID: String?) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setDeviceRoutingForInactive(identifier: identifier, deviceUID: deviceUID)
     }
 
@@ -1189,6 +1234,8 @@ final class AudioEngine {
     }
 
     func setDeviceSelectionModeForInactive(identifier: String, to mode: DeviceSelectionMode) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setDeviceSelectionModeForInactive(identifier: identifier, to: mode)
     }
 
@@ -1197,6 +1244,8 @@ final class AudioEngine {
     }
 
     func setSelectedDeviceUIDsForInactive(identifier: String, to uids: Set<String>) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         appListCoordinator.setSelectedDeviceUIDsForInactive(identifier: identifier, to: uids)
     }
 
@@ -1401,6 +1450,8 @@ final class AudioEngine {
     func requestAudioProcessingMode(
         _ requestedMode: AudioProcessingMode
     ) -> AudioProcessingModeRequestResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .rejected }
+        defer { admission.finish() }
         switch requestedMode {
         case .bypassed:
             guard audioProcessingState != .bypassed || !taps.isEmpty else {
@@ -1488,7 +1539,9 @@ final class AudioEngine {
         guard !isEngineStopped, audioProcessingTransitionTask == nil else { return }
         audioProcessingTransitionGeneration &+= 1
         let generation = audioProcessingTransitionGeneration
+        guard let taskAdmission = mutationAdmission.begin() else { return }
         audioProcessingTransitionTask = Task { @MainActor [weak self] in
+            defer { taskAdmission.finish() }
             guard let self else { return }
             await self.reconcileAudioProcessing(generation: generation)
             if self.audioProcessingTransitionGeneration == generation {
@@ -1625,7 +1678,9 @@ final class AudioEngine {
     ) {
         guard canCreateProcessTaps else { return }
         let id = UUID()
+        guard let taskAdmission = mutationAdmission.begin() else { return }
         let task = Task { @MainActor [weak self] in
+            defer { taskAdmission.finish() }
             guard let self else { return }
             defer { self.tapMaintenanceTasks.removeValue(forKey: id) }
             guard !Task.isCancelled, self.canCreateProcessTaps else { return }
@@ -1672,6 +1727,8 @@ final class AudioEngine {
     /// Resets all persisted settings and synchronizes in-memory engine state.
     /// Active taps are kept alive but reverted to defaults (unity volume, unmuted, flat EQ).
     func handleSettingsReset() {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // 1. Clear persisted state
         settingsManager.resetAllSettings()
         outputMasterGains.removeAll()
@@ -1704,6 +1761,8 @@ final class AudioEngine {
     }
 
     func setVolume(for app: AudioApp, to volume: Float) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         volumeState.setVolume(for: app.id, to: volume, identifier: app.persistenceIdentifier)
         if let deviceUID = appDeviceRouting[app.id] {
             ensureTapExists(for: app, deviceUID: deviceUID)
@@ -1726,6 +1785,8 @@ final class AudioEngine {
     // MARK: - Boost
 
     func setBoost(for app: AudioApp, to boost: BoostLevel) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         volumeState.setBoost(for: app.id, to: boost, identifier: app.persistenceIdentifier)
         if let tap = taps[app.id] {
             tap.volume = effectiveVolume(for: app.id, deviceUIDs: tap.currentDeviceUIDs)
@@ -1778,6 +1839,8 @@ final class AudioEngine {
     }
 
     private func applyTapOutputState(to tap: any ProcessTapControlling, for pid: pid_t, deviceUIDs: [String]? = nil) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let resolvedUIDs = deviceUIDs ?? tap.currentDeviceUIDs
         tap.volume = effectiveVolume(for: pid, deviceUIDs: resolvedUIDs)
         tap.isMuted = volumeState.getMute(for: pid)
@@ -1810,6 +1873,8 @@ final class AudioEngine {
     }
 
     private func refreshTapOutputStates(forAppIdentifiers identifiers: Set<String>) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         for tap in taps.values where identifiers.contains(tap.app.persistenceIdentifier) {
             applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: tap.currentDeviceUIDs)
             tap.updateLoudnessCompensation(
@@ -1820,6 +1885,8 @@ final class AudioEngine {
     }
 
     func toggleMute(for app: AudioApp) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let current = volumeState.getMute(for: app.id)
         setMute(for: app, to: !current)
     }
@@ -1840,6 +1907,8 @@ final class AudioEngine {
     }
 
     func setMute(for app: AudioApp, to muted: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         volumeState.setMute(for: app.id, to: muted, identifier: app.persistenceIdentifier)
         taps[app.id]?.isMuted = muted
     }
@@ -1850,6 +1919,8 @@ final class AudioEngine {
 
     /// Update EQ settings for an app
     func setEQSettings(_ settings: EQSettings, for app: AudioApp) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard let tap = taps[app.id] else { return }
         tap.updateEQSettings(settings)
         settingsManager.setEQSettings(settings, for: app.persistenceIdentifier)
@@ -1868,6 +1939,8 @@ final class AudioEngine {
     }
 
     func setAutoEQProfile(for deviceUID: String, profileID: String?) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         if let profileID {
             settingsManager.setAutoEQSelection(for: deviceUID, to: AutoEQSelection(profileID: profileID, isEnabled: true))
         } else {
@@ -1877,6 +1950,8 @@ final class AudioEngine {
     }
 
     func setAutoEQEnabled(for deviceUID: String, enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard var selection = settingsManager.getAutoEQSelection(for: deviceUID) else { return }
         selection.isEnabled = enabled
         settingsManager.setAutoEQSelection(for: deviceUID, to: selection)
@@ -1892,6 +1967,8 @@ final class AudioEngine {
     }
 
     func setAutoEQPreampEnabled(_ enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         settingsManager.autoEQPreampEnabled = enabled
         for tap in taps.values {
             tap.setAutoEQPreampEnabled(enabled)
@@ -1899,12 +1976,16 @@ final class AudioEngine {
     }
 
     func setLoudnessCompensationEnabled(_ enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         for tap in taps.values {
             tap.updateLoudnessCompensation(volume: effectiveLoudnessVolume(for: tap), enabled: enabled)
         }
     }
 
     func setLoudnessEqualizationEnabled(_ enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         var settings = LoudnessEqualizerSettings()
         settings.enabled = enabled
         for tap in taps.values {
@@ -1913,6 +1994,8 @@ final class AudioEngine {
     }
 
     func setMonoAudioEnabled(_ enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         for tap in taps.values {
             tap.updateMonoAudio(enabled)
         }
@@ -1950,6 +2033,8 @@ final class AudioEngine {
     /// Skips AutoEQ entirely for devices that don't support it (speakers, HDMI, etc.).
     /// If the profile isn't loaded yet, triggers an async fetch and applies when ready.
     private func applyAutoEQToTap(_ tap: any ProcessTapControlling) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard let deviceUID = tap.currentDeviceUID else { return }
 
         // Skip AutoEQ for non-headphone devices (or if device not found in monitor)
@@ -1978,8 +2063,9 @@ final class AudioEngine {
 
         // Profile not loaded yet — fetch asynchronously
         tap.updateAutoEQProfile(nil)
-        Task { @MainActor in
+        startTapMaintenanceTask { [self] in
             guard let profile = await autoEQProfileManager.resolveProfile(for: selection.profileID) else { return }
+            guard !Task.isCancelled, !isEngineStopped else { return }
             // Verify tap still exists and is still routed to the same device
             guard tap.currentDeviceUID == deviceUID else { return }
             guard let latestSelection = settingsManager.getAutoEQSelection(for: deviceUID),
@@ -1995,6 +2081,9 @@ final class AudioEngine {
     }
 
     func beginSceneTransaction() -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        var accepted = false
+        defer { if !accepted { admission.finish() } }
         guard activeSceneTransactionGeneration == nil,
               pendingSafeOutputSwitch == nil,
               pendingDefaultOutputConfirmation == nil else {
@@ -2002,6 +2091,8 @@ final class AudioEngine {
         }
         nextSceneTransactionGeneration &+= 1
         activeSceneTransactionGeneration = nextSceneTransactionGeneration
+        sceneMutationAdmission = admission
+        accepted = true
         return true
     }
 
@@ -2009,6 +2100,8 @@ final class AudioEngine {
         guard let generation = activeSceneTransactionGeneration else { return }
         settleOrCancelDefaultOutputConfirmation(ownedBySceneTransaction: generation)
         activeSceneTransactionGeneration = nil
+        sceneMutationAdmission?.finish()
+        sceneMutationAdmission = nil
     }
 
     /// Switches only when the destination already satisfies its live volume
@@ -2018,6 +2111,8 @@ final class AudioEngine {
     func requestPreparedDefaultOutputDeviceSwitch(
         _ deviceID: AudioDeviceID
     ) -> DefaultOutputSwitchResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .rejected }
+        defer { admission.finish() }
         guard let sceneTransactionGeneration = activeSceneTransactionGeneration,
               pendingSafeOutputSwitch == nil,
               let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
@@ -2052,6 +2147,8 @@ final class AudioEngine {
         _ deviceID: AudioDeviceID,
         reportsCommandResult: Bool
     ) -> DefaultOutputSwitchResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .rejected }
+        defer { admission.finish() }
         guard activeSceneTransactionGeneration == nil,
               let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
               isAliveCheck(deviceID) else {
@@ -2099,7 +2196,9 @@ final class AudioEngine {
                 state: state
             )
             deviceVolumeMonitor.setVolume(for: deviceID, to: limit)
+            guard let taskAdmission = mutationAdmission.begin() else { return .rejected }
             safeOutputSwitchTimeoutTask = Task { @MainActor [weak self] in
+                defer { taskAdmission.finish() }
                 try? await Task.sleep(for: SafeOutputSwitchState.preflightTimeout)
                 guard let self, !Task.isCancelled else { return }
                 self.finishSafeOutputPreflight(generation: generation, writeSucceeded: nil)
@@ -2213,6 +2312,8 @@ final class AudioEngine {
         reportsCommandResult: Bool,
         sceneTransactionGeneration: UInt64? = nil
     ) -> DefaultOutputSwitchResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .rejected }
+        defer { admission.finish() }
         guard deviceVolumeMonitor.setDefaultDevice(device.id) else { return .rejected }
         let echoToken = outputEchoTracker.increment(device.uid)
         if deviceVolumeMonitor.defaultDeviceUID == device.uid {
@@ -2231,7 +2332,9 @@ final class AudioEngine {
             reportsCommandResult: reportsCommandResult,
             sceneTransactionGeneration: sceneTransactionGeneration
         )
+        guard let taskAdmission = mutationAdmission.begin() else { return .rejected }
         defaultOutputConfirmationTimeoutTask = Task { @MainActor [weak self] in
+            defer { taskAdmission.finish() }
             try? await Task.sleep(for: .milliseconds(500))
             guard let self, !Task.isCancelled else { return }
             self.finishDefaultOutputConfirmation(generation: generation)
@@ -2300,6 +2403,8 @@ final class AudioEngine {
     ///   - app: The app to route
     ///   - deviceUID: The device UID to route to, or nil to follow system default
     func setDevice(for app: AudioApp, deviceUID: String?) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let shouldFollowDefault = deviceUID == nil
         guard let targetUID = deviceUID ?? deviceVolumeMonitor.defaultDeviceUID else {
             settingsManager.setFollowDefault(for: app.persistenceIdentifier)
@@ -2339,7 +2444,9 @@ final class AudioEngine {
         )
 
         if let tap = taps[app.id] {
+            guard let taskAdmission = mutationAdmission.begin() else { return }
             let task = Task { @MainActor [weak self] in
+                defer { taskAdmission.finish() }
                 if let predecessor = operation.predecessor {
                     await predecessor.value
                 }
@@ -2469,6 +2576,8 @@ final class AudioEngine {
     /// Sets the device selection mode for an app.
     /// Triggers tap reconfiguration when mode changes.
     func setDeviceSelectionMode(for app: AudioApp, to mode: DeviceSelectionMode) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let previousMode = volumeState.getDeviceSelectionMode(for: app.id)
         let previousUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
         if mode == .multi,
@@ -2487,7 +2596,9 @@ final class AudioEngine {
         let key = AudioControlKey.appDeviceMode(.active(app))
         let operation = beginAppRouteOperation(for: app, key: key)
         let generation = operation.generation
+        guard let taskAdmission = mutationAdmission.begin() else { return }
         let task = Task { @MainActor [weak self] in
+            defer { taskAdmission.finish() }
             if let predecessor = operation.predecessor {
                 await predecessor.value
             }
@@ -2534,6 +2645,8 @@ final class AudioEngine {
     /// Sets the selected device UIDs for multi-mode.
     /// Triggers tap reconfiguration when in multi mode.
     func setSelectedDeviceUIDs(for app: AudioApp, to uids: Set<String>) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let previousUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
         guard previousUIDs != uids else { return }
         volumeState.setSelectedDeviceUIDs(for: app.id, to: uids, identifier: app.persistenceIdentifier)
@@ -2542,7 +2655,9 @@ final class AudioEngine {
         let key = AudioControlKey.appDevices(.active(app))
         let operation = beginAppRouteOperation(for: app, key: key)
         let generation = operation.generation
+        guard let taskAdmission = mutationAdmission.begin() else { return }
         let task = Task { @MainActor [weak self] in
+            defer { taskAdmission.finish() }
             if let predecessor = operation.predecessor {
                 await predecessor.value
             }
@@ -2588,6 +2703,8 @@ final class AudioEngine {
         for app: AudioApp,
         generation: UInt64? = nil
     ) async -> AppRouteUpdateResult {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return .superseded }
+        defer { admission.finish() }
         guard !Task.isCancelled,
               generation.map({ isCurrentAppRouteOperation(for: app.id, generation: $0) }) ?? true else {
             return .superseded
@@ -2673,6 +2790,8 @@ final class AudioEngine {
     /// Creates a tap with the specified device UIDs
     @discardableResult
     private func ensureTapWithDevices(for app: AudioApp, deviceUIDs: [String]) -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         guard !deviceUIDs.isEmpty else { return false }
         if let tap = taps[app.id] {
             appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
@@ -2720,6 +2839,8 @@ final class AudioEngine {
     }
 
     func applyPersistedSettings() {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard canCreateProcessTaps else { return }
 
         // Warm the AutoEQ cache for every (app, device) selection so that subsequent
@@ -2857,6 +2978,8 @@ final class AudioEngine {
 
     @discardableResult
     private func ensureTapExists(for app: AudioApp, deviceUID: String) -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         if let tap = taps[app.id] {
             appRouteLifecycles[app.id] = .active(deviceUIDs: tap.currentDeviceUIDs)
             return true
@@ -2976,6 +3099,8 @@ final class AudioEngine {
     /// Routes all followsDefault apps to the given device UID and switches their taps.
     /// Early-exits if all apps are already routed to the target (avoids unnecessary tap switches).
     private func routeFollowsDefaultApps(to targetUID: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard !followsDefault.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
 
         for pid in followsDefault {
@@ -3008,6 +3133,8 @@ final class AudioEngine {
 
     /// Called when device disappears - updates routing and switches taps immediately
     private func handleDeviceDisconnected(_ deviceUID: String, name deviceName: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // Clean up alive watcher — use UID lookup since device is already removed from monitor
         removeAliveWatcher(forUID: deviceUID)
 
@@ -3127,6 +3254,8 @@ final class AudioEngine {
 
     /// Called when a device appears - switches pinned apps back to their preferred device
     private func handleDeviceConnected(_ deviceUID: String, name deviceName: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // Register newly connected device in priority list
         settingsManager.ensureDeviceInPriority(deviceUID)
 
@@ -3373,6 +3502,8 @@ final class AudioEngine {
 
     /// Called when system default output device changes - switches apps that follow default
     private func handleDefaultDeviceChanged(_ newDefaultUID: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // State machine: if we're waiting for macOS to auto-switch after a device connect,
         // check whether this change is the expected auto-switch or user intent.
         if case .pendingAutoSwitch(let pendingUID, let timeoutTask) = outputPriorityState {
@@ -3517,9 +3648,15 @@ final class AudioEngine {
                     return
                 }
 
+                guard !self.isEngineStopped, let admission = self.mutationAdmission.begin() else {
+                    self.pendingCleanup.removeValue(forKey: pid)
+                    return
+                }
+                defer { admission.finish() }
+
                 // Now safe to cleanup
                 if let tap = self.taps.removeValue(forKey: pid) {
-                    tap.invalidate()
+                    _ = await tap.invalidateAsync()
                     self.logger.debug("Cleaned up stale tap for PID \(pid)")
                 }
                 self.appDeviceRouting.removeValue(forKey: pid)
@@ -3621,6 +3758,8 @@ final class AudioEngine {
     /// Async: awaits full CoreAudio resource teardown before creating the replacement tap
     /// to prevent orphaned IO procs from accumulating (issue #176).
     private func recreateTap(for pid: pid_t) async {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard canCreateProcessTaps else { return }
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
         let deviceUIDs = oldTap.currentDeviceUIDs
@@ -3665,6 +3804,8 @@ final class AudioEngine {
     /// sample rate (A2DP↔SCO), so each tap's IOProc re-rates to match. Falls back to a full tap
     /// recreate if the in-controller recreation throws.
     private func handleBTDeviceSampleRateChanged(uid: String, newRate: Double) async {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard canCreateProcessTaps else { return }
         logger.info("[RATE] BT output \(uid, privacy: .public) → \(newRate, format: .fixed(precision: 0)) Hz — recreating affected taps (clean dip)")
         let affected = taps.filter { $0.value.currentDeviceUIDs.contains(uid) }
@@ -3708,6 +3849,8 @@ final class AudioEngine {
 
     @discardableResult
     func setInputPolicyRequest(deviceUID: String, owner: InputPolicyOwner) -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         guard deviceMonitor.inputDevices.contains(where: { $0.uid == deviceUID }) else {
             return false
         }
@@ -3720,6 +3863,8 @@ final class AudioEngine {
     }
 
     func removeInputPolicyRequest(owner: InputPolicyOwner) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         inputPolicyCoordinator.removeRequest(owner: owner)
         if explicitInputOverrideOwner == owner {
             inputPolicyCoordinator.removeRequest(owner: .explicitUser)
@@ -3733,6 +3878,8 @@ final class AudioEngine {
         protectedUID: String,
         restoreOriginal: Bool
     ) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let currentUID = deviceVolumeMonitor.defaultInputDeviceUID
         inputPolicyCoordinator.removeRequest(owner: .bluetoothGuard)
         if explicitInputOverrideOwner == .bluetoothGuard {
@@ -3769,6 +3916,8 @@ final class AudioEngine {
 
     @discardableResult
     private func applyResolvedInputPolicy() -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         let availableUIDs = Set(deviceMonitor.inputDevices.map(\.uid))
         let resolution = inputPolicyCoordinator.resolve(
             availableUIDs: availableUIDs,
@@ -3788,6 +3937,8 @@ final class AudioEngine {
     /// Handles changes to the default input device.
     /// Uses state machine to distinguish auto-switch (from device connection) vs user action.
     private func handleDefaultInputDeviceChanged(_ newDefaultInputUID: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // State machine: if we're waiting for macOS to auto-switch after input device connect,
         // check whether this change is the expected auto-switch or user intent.
         if case .pendingAutoSwitch(let pendingUID, let timeoutTask) = inputPriorityState {
@@ -3875,9 +4026,23 @@ final class AudioEngine {
         applyResolvedInputPolicy()
     }
 
+    func setInputLockEnabled(_ enabled: Bool) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
+        guard settingsManager.appSettings.lockInputDevice != enabled else { return }
+        settingsManager.appSettings.lockInputDevice = enabled
+        if enabled {
+            handleInputLockEnabled()
+        } else {
+            handleInputLockDisabled()
+        }
+    }
+
     /// Called when the user toggles lockInputDevice ON in settings.
     /// Captures the current default input device as the locked and preferred device.
     func handleInputLockEnabled() {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard let currentUID = deviceVolumeMonitor.defaultInputDeviceUID,
               let device = deviceMonitor.inputDevice(for: currentUID) else {
             return
@@ -3889,6 +4054,8 @@ final class AudioEngine {
     }
 
     func handleInputLockDisabled() {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         inputPolicyCoordinator.removeRequest(owner: .inputLock)
         applyResolvedInputPolicy()
     }
@@ -3897,6 +4064,8 @@ final class AudioEngine {
     /// Persists the choice and applies the change.
     @discardableResult
     func setLockedInputDevice(_ device: AudioDevice) -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         logger.info("User locked input device to: \(device.name)")
 
         let previousOwner = inputPolicyCoordinator.resolve(
@@ -3928,6 +4097,8 @@ final class AudioEngine {
 
     @discardableResult
     func setTemporaryInputDevice(_ device: AudioDevice) -> Bool {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         let success = deviceVolumeMonitor.setDefaultInputDevice(device.id)
         if success {
             inputEchoTracker.increment(device.uid)
@@ -3936,6 +4107,8 @@ final class AudioEngine {
     }
 
     func restoreInputDevicePolicy(lockedUID: String?, preferredUID: String?) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         inputPolicyCoordinator.removeRequest(owner: .explicitUser)
         explicitInputOverrideOwner = nil
         settingsManager.setLockedInputDeviceUID(lockedUID)
@@ -3946,6 +4119,8 @@ final class AudioEngine {
 
     /// Called when an input device connects — restores locked/preferred device and guards against auto-switch.
     private func handleInputDeviceConnected(_ deviceUID: String, name deviceName: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         let lockEnabled = settingsManager.appSettings.lockInputDevice
 
         // If the reconnected device is the user's preferred device, restore the lock to it
@@ -3998,6 +4173,8 @@ final class AudioEngine {
 
     /// Handles input device disconnect — uses priority fallback, then built-in mic.
     private func handleInputDeviceDisconnected(_ deviceUID: String) {
+        guard !isEngineStopped, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // If we were waiting for macOS to auto-switch to this device, cancel — it's gone
         if case .pendingAutoSwitch(let uid, let task) = inputPriorityState, uid == deviceUID {
             task.cancel()

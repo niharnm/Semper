@@ -146,6 +146,110 @@ struct AlertVolumeShutdownTests {
         #expect(fixture.monitor.alertVolume == 0.6)
     }
 
+    @Test("Shutdown preserves the pending manual edit that supersedes confirmed quieting", arguments: [false, true])
+    func preservesPendingManualChange(rejectManualWrite: Bool) async throws {
+        let writer = AlertVolumeTestWriter()
+        let fixture = makeFixture(writer: writer)
+        defer {
+            fixture.settings.flushSync()
+            removeSettingsDirectory(fixture.directory)
+        }
+        let quiet = try #require(fixture.monitor.flushAlertVolumeWrite {
+            fixture.callMode.start(applicationIdentifier: "us.zoom.xos", displayName: "Zoom")
+        })
+        #expect(await quiet.value)
+        #expect(writer.applied == [25])
+        if rejectManualWrite { writer.rejectedPercent = 60 }
+        fixture.monitor.setAlertVolume(0.6)
+
+        let shutdownWrite = fixture.monitor.flushAlertVolumeWrite(
+            preservingPendingWrite: fixture.callMode.isActive,
+            producedBy: fixture.callMode.shutdown
+        )
+        fixture.monitor.stop()
+        #expect(await fixture.monitor.drainAlertVolumeWrites())
+
+        #expect(shutdownWrite != nil)
+        #expect(await shutdownWrite?.value == !rejectManualWrite)
+        #expect(writer.started == [25, 60])
+        #expect(writer.applied == (rejectManualWrite ? [25] : [25, 60]))
+        #expect(!fixture.callMode.isActive)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(writer.started == [25, 60])
+        #expect(await shutdownWrite?.value == !rejectManualWrite)
+    }
+
+    @Test("Shutdown retains the result of an in-flight manual edit")
+    func reportsInFlightManualWriteFailure() async throws {
+        let writer = AlertVolumeTestWriter()
+        let fixture = makeFixture(writer: writer)
+        defer {
+            writer.releaseWrite()
+            fixture.settings.flushSync()
+            removeSettingsDirectory(fixture.directory)
+        }
+        let quiet = try #require(fixture.monitor.flushAlertVolumeWrite {
+            fixture.callMode.start(applicationIdentifier: "us.zoom.xos", displayName: "Zoom")
+        })
+        #expect(await quiet.value)
+        writer.heldPercent = 60
+        writer.rejectedPercent = 60
+        _ = fixture.monitor.flushAlertVolumeWrite { fixture.monitor.setAlertVolume(0.6) }
+        await writer.waitForStart(60)
+
+        let shutdownWrite = fixture.monitor.flushAlertVolumeWrite(
+            preservingPendingWrite: fixture.callMode.isActive,
+            producedBy: fixture.callMode.shutdown
+        )
+        fixture.monitor.stop()
+        writer.releaseWrite()
+        #expect(await fixture.monitor.drainAlertVolumeWrites())
+
+        #expect(shutdownWrite != nil)
+        #expect(await shutdownWrite?.value == false)
+        #expect(writer.applied == [25])
+    }
+
+    @Test("A completed manual failure remains reportable until a later edit succeeds", arguments: [false, true])
+    func retainsCompletedManualFailure(laterEditSucceeds: Bool) async throws {
+        let writer = AlertVolumeTestWriter()
+        let fixture = makeFixture(writer: writer)
+        defer {
+            fixture.settings.flushSync()
+            removeSettingsDirectory(fixture.directory)
+        }
+        let quiet = try #require(fixture.monitor.flushAlertVolumeWrite {
+            fixture.callMode.start(applicationIdentifier: "us.zoom.xos", displayName: "Zoom")
+        })
+        #expect(await quiet.value)
+        writer.rejectedPercent = 60
+        let failedManualEdit = try #require(fixture.monitor.flushAlertVolumeWrite {
+            fixture.monitor.setAlertVolume(0.6)
+        })
+        #expect(await failedManualEdit.value == false)
+        if laterEditSucceeds {
+            let successfulManualEdit = try #require(fixture.monitor.flushAlertVolumeWrite {
+                fixture.monitor.setAlertVolume(0.8)
+            })
+            #expect(await successfulManualEdit.value)
+        }
+
+        let shutdownWrite = fixture.monitor.flushAlertVolumeWrite(
+            preservingPendingWrite: fixture.callMode.isActive,
+            producedBy: fixture.callMode.shutdown
+        )
+        fixture.monitor.stop()
+        #expect(await fixture.monitor.drainAlertVolumeWrites())
+        if laterEditSucceeds {
+            #expect(shutdownWrite == nil)
+            #expect(writer.applied == [25, 80])
+        } else {
+            #expect(shutdownWrite != nil)
+            #expect(await shutdownWrite?.value == false)
+            #expect(writer.applied == [25])
+        }
+    }
+
     @Test("Shutdown does not promote an unrelated pending write")
     func cancelsUnrelatedPendingWrite() async throws {
         let writer = AlertVolumeTestWriter()

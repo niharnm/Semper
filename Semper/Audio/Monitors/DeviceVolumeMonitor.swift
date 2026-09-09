@@ -212,13 +212,25 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Debounced volume log tasks — log settled value at .info after 300ms instead of every change at .debug
     private var pendingVolumeLogTasks: [AudioDeviceID: Task<Void, Never>] = [:]
 
+    private let mutationAdmission = AudioMutationAdmission()
+    private var stoppedMutations = false
+    private var unsettledAlertAdmissions: [AudioMutationLease] = []
+    var mutationAdmissionError: (any Error)? { mutationAdmission.lastError }
+
+    func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
+        try mutationAdmission.install(gate)
+    }
+
     /// Debounce task for alert volume writes (NSAppleScript is heavy — throttle during drag)
     private var alertVolumeDebounceTask: Task<Void, Never>?
-    private var pendingAlertVolumeWrite: (id: UUID, percent: Int)?
+    private var pendingAlertVolumeWrite: (id: UUID, percent: Int, admission: AudioMutationLease)?
     private var alertVolumeWriteTask: Task<Bool, Never>?
+    private var failedAlertVolumeWriteTask: Task<Bool, Never>?
+    private var failedAlertVolumePercent: Int?
     private var alertVolumeWriteID: UUID?
     private var acceptsAlertVolumeWrites = true
     private let alertVolumeWriter: AlertVolumeWriter
+    private let alertVolumeIsDrained: @MainActor () -> Bool
 
     private var defaultDeviceAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -267,12 +279,14 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         deviceMonitor: AudioDeviceMonitor,
         settingsManager: SettingsManager,
         ddcController: DDCController? = nil,
-        alertVolumeWriter: @escaping AlertVolumeWriter = DeviceVolumeMonitor.writeSystemAlertVolume
+        alertVolumeWriter: @escaping AlertVolumeWriter = DeviceVolumeMonitor.writeSystemAlertVolume,
+        alertVolumeIsDrained: (@MainActor () -> Bool)? = nil
     ) {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
         self.ddcController = ddcController
         self.alertVolumeWriter = alertVolumeWriter
+        self.alertVolumeIsDrained = alertVolumeIsDrained ?? { Self.systemAlertVolumeWriter.isDrained }
         ddcController?.onWriteResult = { [weak self] deviceID, result in
             self?.handleDDCWriteResult(deviceID: deviceID, result: result)
         }
@@ -281,11 +295,13 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     init(
         deviceMonitor: AudioDeviceMonitor,
         settingsManager: SettingsManager,
-        alertVolumeWriter: @escaping AlertVolumeWriter = DeviceVolumeMonitor.writeSystemAlertVolume
+        alertVolumeWriter: @escaping AlertVolumeWriter = DeviceVolumeMonitor.writeSystemAlertVolume,
+        alertVolumeIsDrained: (@MainActor () -> Bool)? = nil
     ) {
         self.deviceMonitor = deviceMonitor
         self.settingsManager = settingsManager
         self.alertVolumeWriter = alertVolumeWriter
+        self.alertVolumeIsDrained = alertVolumeIsDrained ?? { Self.systemAlertVolumeWriter.isDrained }
     }
     #endif
 
@@ -389,6 +405,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     }
 
     func start() {
+        stoppedMutations = false
         guard defaultDeviceListenerBlock == nil else { return }
         acceptsAlertVolumeWrites = true
 
@@ -477,6 +494,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     }
 
     func stop() {
+        stoppedMutations = true
         logger.debug("Stopping device volume monitor")
 
         // Stop the device list observation loops
@@ -526,6 +544,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         acceptsAlertVolumeWrites = false
         alertVolumeDebounceTask?.cancel()
         alertVolumeDebounceTask = nil
+        pendingAlertVolumeWrite?.admission.finish()
         pendingAlertVolumeWrite = nil
 
         volumes.removeAll()
@@ -579,6 +598,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets the volume for a specific device
     func setVolume(for deviceID: AudioDeviceID, to volume: Float) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set volume: invalid device ID")
             return
@@ -622,6 +643,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Sets a device as the macOS system default output device
     @discardableResult
     func setDefaultDevice(_ deviceID: AudioDeviceID) -> Bool {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set default device: invalid device ID")
             return false
@@ -639,6 +662,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets the mute state for a specific device
     func setMute(for deviceID: AudioDeviceID, to muted: Bool) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set mute: invalid device ID")
             return
@@ -718,6 +743,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets the volume for a specific input device
     func setInputVolume(for deviceID: AudioDeviceID, to volume: Float) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set input volume: invalid device ID")
             return
@@ -733,6 +760,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets the mute state for a specific input device
     func setInputMute(for deviceID: AudioDeviceID, to muted: Bool) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set input mute: invalid device ID")
             return
@@ -749,6 +778,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Sets a device as the macOS system default input device
     @discardableResult
     func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return false }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set default input device: invalid device ID")
             return false
@@ -871,6 +902,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets the system output device (for alerts, notifications, system sounds)
     func setSystemDevice(_ deviceID: AudioDeviceID) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard deviceID.isValid else {
             logger.warning("Cannot set system device: invalid device ID")
             return
@@ -886,6 +919,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets system sounds to follow macOS default output device
     func setSystemFollowDefault() {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         isSystemFollowingDefault = true
         settingsManager.setSystemSoundsFollowDefault(true)
 
@@ -898,6 +933,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
     /// Sets system sounds to explicit device (stops following default)
     func setSystemDeviceExplicit(_ deviceID: AudioDeviceID) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         isSystemFollowingDefault = false
         settingsManager.setSystemSoundsFollowDefault(false)
         setSystemDevice(deviceID)
@@ -925,7 +962,9 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// AppleScript call by 100ms to avoid blocking during rapid slider drags.
     /// - Parameter volume: Alert volume from 0.0 to 1.0
     func setAlertVolume(_ volume: Float) {
-        guard acceptsAlertVolumeWrites else { return }
+        guard acceptsAlertVolumeWrites, let admission = mutationAdmission.begin() else { return }
+        var retained = false
+        defer { if !retained { admission.finish() } }
         let clamped = max(0, min(1, volume))
         let pct = Int(round(clamped * 100))
         let newVolume = Float(pct) / 100.0
@@ -939,7 +978,9 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
         alertVolumeDebounceTask?.cancel()
         let writeID = UUID()
-        pendingAlertVolumeWrite = (writeID, pct)
+        pendingAlertVolumeWrite?.admission.finish()
+        pendingAlertVolumeWrite = (writeID, pct, admission)
+        retained = true
         alertVolumeDebounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(100))
             guard !Task.isCancelled, let self,
@@ -948,18 +989,38 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         }
     }
 
-    func flushAlertVolumeWrite(producedBy operation: () -> Void) -> Task<Bool, Never>? {
-        // Leave preexisting edits cancelable; only promote this operation's write.
+    func flushAlertVolumeWrite(
+        preservingPendingWrite: Bool = false,
+        producedBy operation: () -> Void
+    ) -> Task<Bool, Never>? {
         let previousWriteID = pendingAlertVolumeWrite?.id
         operation()
-        guard let pendingAlertVolumeWrite, pendingAlertVolumeWrite.id != previousWriteID else { return nil }
-        return submitPendingAlertVolumeWrite()
+        if let pendingAlertVolumeWrite {
+            guard preservingPendingWrite || pendingAlertVolumeWrite.id != previousWriteID else { return nil }
+            return submitPendingAlertVolumeWrite()
+        }
+        return preservingPendingWrite ? (alertVolumeWriteTask ?? failedAlertVolumeWriteTask) : nil
     }
 
     @discardableResult
     func drainAlertVolumeWrites() async -> Bool {
         _ = await alertVolumeWriteTask?.value
-        return Self.systemAlertVolumeWriter.isDrained
+        let drained = alertVolumeIsDrained()
+        if drained {
+            for admission in unsettledAlertAdmissions { admission.finish() }
+            unsettledAlertAdmissions.removeAll()
+        }
+        return drained
+    }
+
+    func retryFailedAlertVolumeWrite() -> Task<Bool, Never>? {
+        if let alertVolumeWriteTask { return alertVolumeWriteTask }
+        guard alertVolumeIsDrained() else { return failedAlertVolumeWriteTask }
+        if pendingAlertVolumeWrite != nil { return submitPendingAlertVolumeWrite() }
+        guard let percent = failedAlertVolumePercent else { return nil }
+        guard let admission = mutationAdmission.begin() else { return failedAlertVolumeWriteTask }
+        pendingAlertVolumeWrite = (UUID(), percent, admission)
+        return submitPendingAlertVolumeWrite()
     }
 
     @discardableResult
@@ -971,9 +1032,17 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
         let previousTask = alertVolumeWriteTask
         let writer = alertVolumeWriter
+        let isDrained = alertVolumeIsDrained
         let logger = logger
         alertVolumeWriteID = pending.id
         let task = Task { @MainActor [weak self] in
+            defer {
+                if isDrained() {
+                    pending.admission.finish()
+                } else {
+                    self?.unsettledAlertAdmissions.append(pending.admission)
+                }
+            }
             _ = await previousTask?.value
             let succeeded: Bool
             do {
@@ -984,6 +1053,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
                 succeeded = false
             }
             if self?.alertVolumeWriteID == pending.id {
+                self?.failedAlertVolumeWriteTask = succeeded ? nil : self?.alertVolumeWriteTask
+                self?.failedAlertVolumePercent = succeeded ? nil : pending.percent
                 self?.alertVolumeWriteTask = nil
                 self?.alertVolumeWriteID = nil
             }
@@ -1239,6 +1310,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Extracted from `readAllStates()` so a tier override change can refresh
     /// one device without enumerating the whole device list.
     private func readOneState(for deviceID: AudioDeviceID, device: AudioDevice) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         // Skip devices that HAL reports as dead (mid-disconnect)
         guard deviceID.isDeviceAlive() else { return }
 
@@ -1299,6 +1372,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Syncs mute authority across the tier boundary so the user's mute intent
     /// survives the transition in either direction without a user-visible jump.
     func applyTierOverrideChange(for deviceID: AudioDeviceID) {
+        guard !stoppedMutations, let admission = mutationAdmission.begin() else { return }
+        defer { admission.finish() }
         guard let device = deviceMonitor.device(for: deviceID) else { return }
         let newBackend = outputVolumeBackend(for: deviceID)
         let previousMute = muteStates[deviceID] ?? false

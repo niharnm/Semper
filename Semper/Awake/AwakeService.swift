@@ -42,6 +42,24 @@ struct AwakeSession: Equatable, Sendable {
     let keepsDisplayAwake: Bool
     let startedAt: Date
     let endsAt: Date?
+    let reason: String
+    let conditions: AwakeStopConditions
+
+    init(
+        duration: AwakeDuration,
+        keepsDisplayAwake: Bool,
+        startedAt: Date,
+        endsAt: Date?,
+        reason: String = "Manual Awake session",
+        conditions: AwakeStopConditions = AwakeStopConditions()
+    ) {
+        self.duration = duration
+        self.keepsDisplayAwake = keepsDisplayAwake
+        self.startedAt = startedAt
+        self.endsAt = endsAt
+        self.reason = reason
+        self.conditions = conditions
+    }
 }
 
 enum AwakeServiceFailure: Error, Equatable, Sendable {
@@ -148,11 +166,18 @@ final class AwakeService {
     @ObservationIgnored private let scheduler: any AwakeExpiryScheduling
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let workspaceNotificationCenter: NotificationCenter
+    @ObservationIgnored private let conditionMonitor: any AwakeConditionMonitoring
+    @ObservationIgnored private let manualMutationAllowed: @MainActor () -> Bool
 
     private(set) var session: AwakeSession?
     private(set) var keepDisplayAwake = false
     private(set) var failure: AwakeServiceFailure?
     private(set) var leaseStates: [AwakeLeaseOwner: AwakeLeaseState] = [:]
+    private(set) var conditions = AwakeStopConditions()
+    private(set) var sessionReason = ""
+    private(set) var conditionSnapshot: AwakeConditionSnapshot?
+    private(set) var lastSessionEndReason: AwakeSessionEndReason?
+    private(set) var manualMutationRejected = false
 
     @ObservationIgnored private var ownedAssertions: OwnedAssertions?
     @ObservationIgnored private var leases: [AwakeLeaseOwner: LeaseRecord] = [:]
@@ -161,17 +186,22 @@ final class AwakeService {
     @ObservationIgnored private var pendingLeaseReleaseIDsByToken: [AwakeLeaseToken: Set<PowerAssertionID>] = [:]
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var didShutDown = false
+    @ObservationIgnored private var conditionObservationID: UUID?
 
     init(
         backend: any PowerAssertionCreating,
         scheduler: any AwakeExpiryScheduling = AwakeExpiryTimer(),
         now: @escaping () -> Date = Date.init,
-        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        conditionMonitor: any AwakeConditionMonitoring = NativeAwakeConditionMonitor(),
+        manualMutationAllowed: @escaping @MainActor () -> Bool = { true }
     ) {
         self.backend = backend
         self.scheduler = scheduler
         self.now = now
         self.workspaceNotificationCenter = workspaceNotificationCenter
+        self.conditionMonitor = conditionMonitor
+        self.manualMutationAllowed = manualMutationAllowed
         subscribeToWake()
     }
 
@@ -227,6 +257,7 @@ final class AwakeService {
             return existing.token
         }
 
+        let token = AwakeLeaseToken(owner: owner, generation: UUID())
         let acquired: OwnedAssertions
         switch acquireAssertions(
             keepDisplayAwake: keepsDisplayAwake,
@@ -235,7 +266,7 @@ final class AwakeService {
             systemReason: owner.systemReason,
             displayReason: owner.displayReason,
             trackLeaseCleanup: true,
-            leaseToken: nil
+            leaseToken: token
         ) {
         case .success(let assertions):
             acquired = assertions
@@ -244,7 +275,6 @@ final class AwakeService {
             throw .couldNotAcquire
         }
 
-        let token = AwakeLeaseToken(owner: owner, generation: UUID())
         let state = AwakeLeaseState(owner: owner, keepsDisplayAwake: keepsDisplayAwake, deadline: deadline)
         leases[owner] = LeaseRecord(token: token, state: state, assertions: acquired)
         leaseStates[owner] = state
@@ -327,8 +357,79 @@ final class AwakeService {
         return true
     }
 
+    @discardableResult
+    func retryReleaseLease(_ token: AwakeLeaseToken) -> Bool {
+        guard !didShutDown else { return pendingLeaseReleaseIDsByToken[token] == nil }
+        guard let pending = pendingLeaseReleaseIDsByToken[token] else { return true }
+        let remaining = releaseAssertionIDs(pending.sorted())
+        pendingLeaseReleaseIDs.subtract(pending.subtracting(remaining))
+        pendingLeaseReleaseIDsByToken[token] = remaining.isEmpty ? nil : remaining
+        if pendingSessionReleaseIDs.isEmpty, pendingLeaseReleaseIDs.isEmpty {
+            if failure == .couldNotRelease { failure = nil }
+        } else {
+            failure = .couldNotRelease
+        }
+        return remaining.isEmpty
+    }
+
+    func hasPendingLeaseCleanup(owner: AwakeLeaseOwner) -> Bool {
+        pendingLeaseReleaseIDsByToken.keys.contains { $0.owner == owner }
+    }
+
+    @discardableResult
+    func retryPendingLeaseCleanup(owner: AwakeLeaseOwner) -> Bool {
+        let tokens = pendingLeaseReleaseIDsByToken.keys.filter { $0.owner == owner }
+        for token in tokens {
+            _ = retryReleaseLease(token)
+        }
+        return !hasPendingLeaseCleanup(owner: owner)
+    }
+
+    func availableApplications() -> [AwakeApplication] {
+        conditionMonitor.availableApplications()
+    }
+
+    func setConditions(_ conditions: AwakeStopConditions) {
+        guard !didShutDown, admitManualMutation(), conditions != self.conditions else { return }
+        self.conditions = conditions
+        lastSessionEndReason = nil
+        guard let current = session else { return }
+        if let endsAt = current.endsAt, now() >= endsAt {
+            endManualSession(reason: .expired)
+            return
+        }
+        session = AwakeSession(
+            duration: current.duration,
+            keepsDisplayAwake: current.keepsDisplayAwake,
+            startedAt: current.startedAt,
+            endsAt: current.endsAt,
+            reason: current.reason,
+            conditions: conditions
+        )
+        restartConditionObservation()
+    }
+
+    func setSessionReason(_ reason: String) {
+        guard !didShutDown, admitManualMutation() else { return }
+        sessionReason = String(reason.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard let current = session else { return }
+        session = AwakeSession(
+            duration: current.duration,
+            keepsDisplayAwake: current.keepsDisplayAwake,
+            startedAt: current.startedAt,
+            endsAt: current.endsAt,
+            reason: effectiveSessionReason,
+            conditions: current.conditions
+        )
+    }
+
     func start(_ duration: AwakeDuration) {
-        guard !didShutDown, failure != .couldNotRelease else { return }
+        guard !didShutDown, admitManualMutation(), failure != .couldNotRelease else { return }
+        if conditions.needsObservation,
+           let reason = endReason(for: conditionMonitor.snapshot(for: conditions)) {
+            endManualSession(reason: reason)
+            return
+        }
         let acquired: OwnedAssertions
         switch acquireAssertions(
             keepDisplayAwake: keepDisplayAwake,
@@ -352,14 +453,19 @@ final class AwakeService {
             duration: duration,
             keepsDisplayAwake: keepDisplayAwake,
             startedAt: startedAt,
-            endsAt: duration.timeInterval.map(startedAt.addingTimeInterval)
+            endsAt: duration.timeInterval.map(startedAt.addingTimeInterval),
+            reason: effectiveSessionReason,
+            conditions: conditions
         )
         failure = nil
+        lastSessionEndReason = nil
         rescheduleExpiry()
+        restartConditionObservation()
     }
 
     func setKeepDisplayAwake(_ keep: Bool) {
         guard !didShutDown,
+              admitManualMutation(),
               failure != .couldNotRelease,
               keep != keepDisplayAwake else { return }
         guard let current = session else {
@@ -369,7 +475,7 @@ final class AwakeService {
 
         let currentDate = now()
         if let endsAt = current.endsAt, currentDate >= endsAt {
-            stop()
+            endManualSession(reason: .expired)
             keepDisplayAwake = keep
             return
         }
@@ -397,13 +503,23 @@ final class AwakeService {
             duration: current.duration,
             keepsDisplayAwake: keep,
             startedAt: current.startedAt,
-            endsAt: current.endsAt
+            endsAt: current.endsAt,
+            reason: current.reason,
+            conditions: current.conditions
         )
         failure = nil
     }
 
     func stop() {
+        guard !didShutDown, admitManualMutation() else { return }
+        endManualSession(reason: nil)
+    }
+
+    private func endManualSession(reason: AwakeSessionEndReason?) {
         defer { rescheduleExpiry() }
+        stopConditionObservation()
+        manualMutationRejected = false
+        lastSessionEndReason = reason
         guard session != nil || ownedAssertions != nil else { return }
         session = nil
         // Releasing this session cannot resolve an earlier assertion cleanup failure.
@@ -419,7 +535,9 @@ final class AwakeService {
         guard !didShutDown else { return }
         let currentDate = now()
         if let endsAt = session?.endsAt, currentDate >= endsAt {
-            stop()
+            endManualSession(reason: .expired)
+        } else if session != nil, conditions.needsObservation {
+            handleConditionSnapshot(conditionMonitor.snapshot(for: conditions))
         }
         for record in Array(leases.values) {
             if let deadline = record.state.deadline, currentDate >= deadline {
@@ -432,6 +550,8 @@ final class AwakeService {
     func shutdown() {
         guard !didShutDown else { return }
         didShutDown = true
+        stopConditionObservation()
+        manualMutationRejected = false
         if let wakeObserver {
             workspaceNotificationCenter.removeObserver(wakeObserver)
         }
@@ -451,6 +571,60 @@ final class AwakeService {
             failure = .couldNotRelease
         }
         retryPendingReleasesAtShutdown()
+    }
+
+    private var effectiveSessionReason: String {
+        sessionReason.isEmpty ? "Manual Awake session" : sessionReason
+    }
+
+    private func admitManualMutation() -> Bool {
+        let allowed = manualMutationAllowed()
+        manualMutationRejected = !allowed
+        return allowed
+    }
+
+    private func restartConditionObservation() {
+        stopConditionObservation()
+        guard session != nil, conditions.needsObservation, !didShutDown else { return }
+        let observationID = UUID()
+        conditionObservationID = observationID
+        do {
+            try conditionMonitor.start(conditions: conditions) { [weak self] snapshot in
+                guard let self, self.conditionObservationID == observationID,
+                      !self.didShutDown, self.session != nil else { return }
+                self.handleConditionSnapshot(snapshot)
+            }
+        } catch {
+            endManualSession(reason: .conditionMonitoringUnavailable)
+        }
+    }
+
+    private func stopConditionObservation() {
+        conditionObservationID = nil
+        conditionMonitor.stop()
+        conditionSnapshot = nil
+    }
+
+    private func handleConditionSnapshot(_ snapshot: AwakeConditionSnapshot) {
+        conditionSnapshot = snapshot
+        if let reason = endReason(for: snapshot) {
+            endManualSession(reason: reason)
+        }
+    }
+
+    private func endReason(for snapshot: AwakeConditionSnapshot) -> AwakeSessionEndReason? {
+        if let application = conditions.application, snapshot.selectedApplicationRunning != true {
+            return .selectedApplicationExited(application.name)
+        }
+        guard let threshold = conditions.batteryThreshold else { return nil }
+        switch snapshot.battery {
+        case .battery(let percentage) where percentage <= threshold.rawValue:
+            return .batteryThresholdReached(threshold.rawValue)
+        case .unknown:
+            return .batteryStateUnavailable
+        default:
+            return nil
+        }
     }
 
     private func subscribeToWake() {
@@ -537,6 +711,7 @@ final class AwakeService {
         guard releaseAssertions(previous) else {
             _ = releaseAssertions(replacement)
             session = nil
+            stopConditionObservation()
             rescheduleExpiry()
             failure = .couldNotRelease
             return false

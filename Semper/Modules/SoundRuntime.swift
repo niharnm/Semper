@@ -10,7 +10,7 @@ enum SoundRuntimeShutdownError: LocalizedError {
         case .audioResourceCleanup:
             "Sound could not release every audio resource. Quit Semper before starting Sound again."
         case .alertVolumeRestoration:
-            "Sound could not restore the alert volume. Check the alert volume in System Settings."
+            "Sound could not apply the last alert-volume setting. Retry Stop to try it again."
         }
     }
 }
@@ -37,6 +37,7 @@ final class SoundRuntime {
     private let appShortcutController: AppShortcutController
     private var startupTask: Task<Void, Never>?
     private var alertVolumeRestorationTask: Task<Bool, Never>?
+    private var shutdownDrainFailed = false
     private(set) var isShutDown = false
 
     init(
@@ -272,7 +273,11 @@ final class SoundRuntime {
         feedbackPlayer.shutdown()
         audioEngine.onCallModeActivitiesChanged = nil
         callMode.handleActivities([])
-        alertVolumeRestorationTask = deviceVolumeMonitor.flushAlertVolumeWrite(producedBy: callMode.shutdown)
+        // An accepted alert edit remains an obligation after its Call Mode session ends.
+        alertVolumeRestorationTask = deviceVolumeMonitor.flushAlertVolumeWrite(
+            preservingPendingWrite: true,
+            producedBy: callMode.shutdown
+        )
         bluetoothHDGuard.shutdown()
         audioEngine.shutdown()
         audioCommands.shutdown()
@@ -280,14 +285,26 @@ final class SoundRuntime {
     }
 
     func shutdownAndDrain() async throws {
+        let retryAlertWrite = shutdownDrainFailed
         shutdown()
         await audioEngine.shutdownAndDrain()
         let alertWritesDrained = await deviceVolumeMonitor.drainAlertVolumeWrites()
         guard audioEngine.shutdownCleanupResult.failureCount == 0, alertWritesDrained else {
+            shutdownDrainFailed = true
             throw SoundRuntimeShutdownError.audioResourceCleanup
         }
+        if retryAlertWrite, let retry = deviceVolumeMonitor.retryFailedAlertVolumeWrite() {
+            alertVolumeRestorationTask = retry
+            _ = await retry.value
+            guard await deviceVolumeMonitor.drainAlertVolumeWrites() else {
+                shutdownDrainFailed = true
+                throw SoundRuntimeShutdownError.audioResourceCleanup
+            }
+        }
         if await alertVolumeRestorationTask?.value == false {
+            shutdownDrainFailed = true
             throw SoundRuntimeShutdownError.alertVolumeRestoration
         }
+        shutdownDrainFailed = false
     }
 }
