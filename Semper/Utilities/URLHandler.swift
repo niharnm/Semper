@@ -23,16 +23,19 @@ protocol URLHandlerEngine {
 final class URLHandler {
     private let audioEngine: any URLHandlerEngine
     private let audioCommands: any AudioCommandDispatching
+    private let sceneCommands: (any SceneCommandHandling)?
     private let checkForUpdates: () -> Void
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "URLHandler")
 
     init(
         audioEngine: any URLHandlerEngine,
         audioCommands: any AudioCommandDispatching,
+        sceneCommands: (any SceneCommandHandling)? = nil,
         checkForUpdates: @escaping () -> Void = {}
     ) {
         self.audioEngine = audioEngine
         self.audioCommands = audioCommands
+        self.sceneCommands = sceneCommands
         self.checkForUpdates = checkForUpdates
     }
     
@@ -62,6 +65,10 @@ final class URLHandler {
         // Other actions
         case "set-device":
             handleSetDevice(queryItems: queryItems)
+        case "apply-scene":
+            handleApplyScene(queryItems: queryItems)
+        case "restore-scene":
+            handleRestoreScene()
         case "update":
             checkForUpdates()
         case "reset":
@@ -119,17 +126,17 @@ final class URLHandler {
             let gain = Float(volumePercent) / 100.0
 
             if let app = findApp(by: identifier) {
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppVolume(target: .active(app), volume: gain),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Set volume for \(app.name) to \(volumePercent)%")
             } else {
                 // App not active - persist for when it launches
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppVolume(target: .persisted(identifier), volume: gain),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Set volume for inactive app \(identifier) to \(volumePercent)%")
             }
         }
@@ -169,10 +176,10 @@ final class URLHandler {
         }
 
         let newGain = VolumeMapping.sliderToGain(sliderPosition)
-        audioCommands.dispatch(
+        guard dispatchAudioCommand(
             .setAppVolume(target: .active(app), volume: newGain),
             context: AudioCommandContext(source: .url)
-        )
+        ) else { return }
         let newPercent = Int(round(newGain * 100))
         logger.info("Stepped volume \(direction) for \(app.name) to \(newPercent)%")
     }
@@ -219,16 +226,16 @@ final class URLHandler {
 
         for (identifier, muted) in pairs {
             if let app = findApp(by: identifier) {
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppMute(target: .active(app), muted: muted),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Set mute for \(app.name) to \(muted)")
             } else {
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppMute(target: .persisted(identifier), muted: muted),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Set mute for inactive app \(identifier) to \(muted)")
             }
         }
@@ -249,23 +256,66 @@ final class URLHandler {
         for identifier in identifiers {
             if let app = findApp(by: identifier) {
                 let current = audioEngine.getMute(for: app)
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppMute(target: .active(app), muted: !current),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Toggled mute for \(app.name) to \(!current)")
             } else {
                 let current = audioEngine.getMuteForInactive(identifier: identifier)
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppMute(target: .persisted(identifier), muted: !current),
                     context: AudioCommandContext(source: .url)
-                )
+                ) else { return }
                 logger.info("Toggled mute for inactive app \(identifier) to \(!current)")
             }
         }
     }
 
     // MARK: - Other Actions
+
+    /// Apply a saved scene by its stable identifier.
+    /// URL format: semper://apply-scene?id=<UUID>
+    private func handleApplyScene(queryItems: [URLQueryItem]) {
+        guard let rawID = queryItems.first(where: {
+            $0.name.caseInsensitiveCompare("id") == .orderedSame
+        })?.value,
+        let sceneID = UUID(uuidString: rawID) else {
+            logger.error("apply-scene: missing or invalid id parameter")
+            return
+        }
+        guard let sceneCommands else {
+            logger.error("apply-scene: scene controls are unavailable")
+            return
+        }
+
+        Task { @MainActor [logger] in
+            do {
+                let execution = try await sceneCommands.applyScene(id: sceneID)
+                logger.info("apply-scene: \(execution.message, privacy: .public)")
+            } catch {
+                logger.error("apply-scene failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Restore the system state recorded before the active scene.
+    /// URL format: semper://restore-scene
+    private func handleRestoreScene() {
+        guard let sceneCommands else {
+            logger.error("restore-scene: scene controls are unavailable")
+            return
+        }
+
+        Task { @MainActor [logger] in
+            do {
+                let execution = try await sceneCommands.restoreScene()
+                logger.info("restore-scene: \(execution.message, privacy: .public)")
+            } catch {
+                logger.error("restore-scene failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
 
     /// Set output device for an app
     /// URL format: semper://set-device?app=com.a&device=<deviceUID>
@@ -285,10 +335,10 @@ final class URLHandler {
             return
         }
 
-        audioCommands.dispatch(
+        guard dispatchAudioCommand(
             .setAppDevice(target: .active(app), deviceUID: deviceUID),
             context: AudioCommandContext(source: .url)
-        )
+        ) else { return }
         logger.info("Routed \(app.name) to device \(deviceUID)")
     }
 
@@ -304,39 +354,39 @@ final class URLHandler {
             let apps = audioEngine.apps
             for app in apps {
                 let transactionID = UUID()
-                audioCommands.dispatch(
+                guard dispatchAudioCommand(
                     .setAppVolume(target: .active(app), volume: 1),
                     context: AudioCommandContext(source: .url, transactionID: transactionID)
-                )
-                audioCommands.dispatch(
+                ) else { return }
+                guard dispatchAudioCommand(
                     .setAppMute(target: .active(app), muted: false),
                     context: AudioCommandContext(source: .url, transactionID: transactionID)
-                )
+                ) else { return }
             }
             logger.info("Reset all \(apps.count) apps to 100% (unmuted)")
         } else {
             for identifier in identifiers {
                 if let app = findApp(by: identifier) {
                     let transactionID = UUID()
-                    audioCommands.dispatch(
+                    guard dispatchAudioCommand(
                         .setAppVolume(target: .active(app), volume: 1),
                         context: AudioCommandContext(source: .url, transactionID: transactionID)
-                    )
-                    audioCommands.dispatch(
+                    ) else { return }
+                    guard dispatchAudioCommand(
                         .setAppMute(target: .active(app), muted: false),
                         context: AudioCommandContext(source: .url, transactionID: transactionID)
-                    )
+                    ) else { return }
                     logger.info("Reset \(app.name) to 100% (unmuted)")
                 } else {
                     let transactionID = UUID()
-                    audioCommands.dispatch(
+                    guard dispatchAudioCommand(
                         .setAppVolume(target: .persisted(identifier), volume: 1),
                         context: AudioCommandContext(source: .url, transactionID: transactionID)
-                    )
-                    audioCommands.dispatch(
+                    ) else { return }
+                    guard dispatchAudioCommand(
                         .setAppMute(target: .persisted(identifier), muted: false),
                         context: AudioCommandContext(source: .url, transactionID: transactionID)
-                    )
+                    ) else { return }
                     logger.info("Reset inactive app \(identifier) to 100% (unmuted)")
                 }
             }
@@ -344,6 +394,22 @@ final class URLHandler {
     }
 
     // MARK: - Helpers
+
+    private func dispatchAudioCommand(
+        _ command: AudioCommand,
+        context: AudioCommandContext
+    ) -> Bool {
+        switch audioCommands.dispatch(command, context: context) {
+        case .applied, .accepted, .unchanged:
+            return true
+        case .rejected(.sceneOperationInProgress):
+            logger.notice("Audio URL command ignored while a scene operation is running")
+            return false
+        case .rejected(let rejection):
+            logger.error("Audio URL command rejected: \(String(describing: rejection), privacy: .public)")
+            return false
+        }
+    }
 
     /// Find an app by bundle ID or persistence identifier
     private func findApp(by identifier: String) -> AudioApp? {

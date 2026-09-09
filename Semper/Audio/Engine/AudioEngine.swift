@@ -100,10 +100,13 @@ final class AudioEngine {
         let deviceUID: String
         let echoToken: Int
         let reportsCommandResult: Bool
+        let sceneTransactionGeneration: UInt64?
     }
     private var nextDefaultOutputConfirmationGeneration: UInt64 = 0
     private var pendingDefaultOutputConfirmation: PendingDefaultOutputConfirmation?
     private var defaultOutputConfirmationTimeoutTask: Task<Void, Never>?
+    private var nextSceneTransactionGeneration: UInt64 = 0
+    private var activeSceneTransactionGeneration: UInt64?
 
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
@@ -164,6 +167,18 @@ final class AudioEngine {
 
     var outputDevices: [AudioDevice] {
         deviceMonitor.outputDevices
+    }
+
+    func isDefaultOutputRouteSettled(on deviceUID: String) -> Bool {
+        guard deviceVolumeMonitor.defaultDeviceUID == deviceUID else { return false }
+        if deviceVolumeMonitor.isSystemFollowingDefault,
+           deviceVolumeMonitor.systemDeviceUID != deviceUID {
+            return false
+        }
+        return followsDefault.allSatisfy { processID in
+            guard let tap = taps[processID] else { return true }
+            return tap.currentDeviceUIDs == [deviceUID]
+        }
     }
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
@@ -1979,11 +1994,66 @@ final class AudioEngine {
         beginDefaultOutputSwitch(deviceID, reportsCommandResult: true)
     }
 
+    func beginSceneTransaction() -> Bool {
+        guard activeSceneTransactionGeneration == nil,
+              pendingSafeOutputSwitch == nil,
+              pendingDefaultOutputConfirmation == nil else {
+            return false
+        }
+        nextSceneTransactionGeneration &+= 1
+        activeSceneTransactionGeneration = nextSceneTransactionGeneration
+        return true
+    }
+
+    func endSceneTransaction() {
+        guard let generation = activeSceneTransactionGeneration else { return }
+        settleOrCancelDefaultOutputConfirmation(ownedBySceneTransaction: generation)
+        activeSceneTransactionGeneration = nil
+    }
+
+    /// Switches only when the destination already satisfies its live volume
+    /// limit. Scene transactions prepare and journal that volume first, so
+    /// this path must never lower it as an implicit part of routing.
+    @discardableResult
+    func requestPreparedDefaultOutputDeviceSwitch(
+        _ deviceID: AudioDeviceID
+    ) -> DefaultOutputSwitchResult {
+        guard let sceneTransactionGeneration = activeSceneTransactionGeneration,
+              pendingSafeOutputSwitch == nil,
+              let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
+              isAliveCheck(deviceID) else {
+            return .rejected
+        }
+
+        if let pending = pendingDefaultOutputConfirmation {
+            guard pending.sceneTransactionGeneration == sceneTransactionGeneration else {
+                return .rejected
+            }
+            settleOrCancelDefaultOutputConfirmation(
+                ownedBySceneTransaction: sceneTransactionGeneration
+            )
+        }
+        let readiness = SafeOutputSwitchState(
+            targetDeviceUID: device.uid,
+            volumeLimit: settingsManager.outputVolumeLimit(for: device.uid),
+            observedTargetVolume: deviceVolumeMonitor.confirmedOutputVolume(for: deviceID)
+        )
+        guard case .switchOutput = readiness.action else {
+            return .rejected
+        }
+        return performDefaultOutputSwitch(
+            to: device,
+            reportsCommandResult: false,
+            sceneTransactionGeneration: sceneTransactionGeneration
+        )
+    }
+
     private func beginDefaultOutputSwitch(
         _ deviceID: AudioDeviceID,
         reportsCommandResult: Bool
     ) -> DefaultOutputSwitchResult {
-        guard let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
+        guard activeSceneTransactionGeneration == nil,
+              let device = deviceMonitor.outputDevices.first(where: { $0.id == deviceID }),
               isAliveCheck(deviceID) else {
             return .rejected
         }
@@ -2140,7 +2210,8 @@ final class AudioEngine {
 
     private func performDefaultOutputSwitch(
         to device: AudioDevice,
-        reportsCommandResult: Bool
+        reportsCommandResult: Bool,
+        sceneTransactionGeneration: UInt64? = nil
     ) -> DefaultOutputSwitchResult {
         guard deviceVolumeMonitor.setDefaultDevice(device.id) else { return .rejected }
         let echoToken = outputEchoTracker.increment(device.uid)
@@ -2157,7 +2228,8 @@ final class AudioEngine {
             deviceID: device.id,
             deviceUID: device.uid,
             echoToken: echoToken,
-            reportsCommandResult: reportsCommandResult
+            reportsCommandResult: reportsCommandResult,
+            sceneTransactionGeneration: sceneTransactionGeneration
         )
         defaultOutputConfirmationTimeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
@@ -2165,6 +2237,20 @@ final class AudioEngine {
             self.finishDefaultOutputConfirmation(generation: generation)
         }
         return .accepted
+    }
+
+    private func settleOrCancelDefaultOutputConfirmation(
+        ownedBySceneTransaction sceneTransactionGeneration: UInt64
+    ) {
+        guard let pending = pendingDefaultOutputConfirmation,
+              pending.sceneTransactionGeneration == sceneTransactionGeneration else {
+            return
+        }
+        if deviceVolumeMonitor.defaultDeviceUID == pending.deviceUID {
+            finishDefaultOutputConfirmation(generation: pending.generation)
+        } else {
+            cancelPendingDefaultOutputConfirmation(reportFailure: false)
+        }
     }
 
     private func handleDefaultOutputConfirmation(_ observedDeviceUID: String) {

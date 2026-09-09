@@ -34,6 +34,8 @@ struct MenuBarPopupView: View {
     /// wired in `SemperApp.init`.
     let mediaKeyMonitor: MediaKeyMonitor
     let experimentManager: ExperimentManager
+    var sceneManager: SceneManager? = nil
+    var displayService: DisplayControlService? = nil
 
     var awakeService: AwakeService? = nil
     var showsModuleSwitcher = true
@@ -121,10 +123,26 @@ struct MenuBarPopupView: View {
         audioEngine.settingsManager.appSettings.popupSize.dimensions
     }
 
+    private var displayedModule: SemperModule {
+        showsModuleSwitcher ? selectedModule : .sound
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if showsModuleSwitcher { moduleSwitcherBar }
-            if selectedModule == .sound {
+            switch displayedModule {
+            case .home:
+                ScrollView {
+                    if let sceneManager {
+                        NowPane(sceneManager: sceneManager)
+                    } else {
+                        Text("Scenes is not running.").foregroundStyle(.secondary).padding()
+                    }
+                    popupFooter
+                }
+                .scrollIndicators(.never)
+                .frame(maxHeight: popupDimensions.maxContentHeight)
+            case .sound:
                 popupHeader
                 if audioEngine.audioProcessingState != .active {
                     AudioRecoveryStatusStrip(
@@ -151,9 +169,27 @@ struct MenuBarPopupView: View {
                         }
                     }
                 }
-            } else {
+            case .awake:
                 if let awakeService { AwakeModuleView(awake: awakeService) }
                 popupFooter
+            case .displays:
+                ScrollView {
+                    #if !APP_STORE
+                    if let displayService {
+                        DisplaysPane(
+                            displayService: displayService,
+                            isSceneOperationInProgress: sceneManager?.isBusy == true
+                        )
+                    } else {
+                        Text("Displays is not running.").foregroundStyle(.secondary).padding()
+                    }
+                    #else
+                    DisplaysPane()
+                    #endif
+                    popupFooter
+                }
+                .scrollIndicators(.never)
+                .frame(maxHeight: popupDimensions.maxContentHeight)
             }
         }
         .frame(width: popupDimensions.width)
@@ -272,7 +308,7 @@ struct MenuBarPopupView: View {
             // in-popup pickers don't collapse edit mode.
             exitEditModeSaving()
         }
-        .onChange(of: selectedModule) { _, module in
+        .onChange(of: displayedModule) { _, module in
             hasKeyboardEngaged = false
             selectedRow = nil
             textEntry.buffer = nil
@@ -284,7 +320,7 @@ struct MenuBarPopupView: View {
             }
         }
         // Sound keeps the popup key anchor. Awake leaves keys with its controls.
-        .focusable(selectedModule == .sound)
+        .focusable(displayedModule == .sound)
         .focusEffectDisabled()
         .focused($anchorFocused)
         // [.down, .repeat] is required so holding a key keeps moving the
@@ -359,9 +395,12 @@ struct MenuBarPopupView: View {
                 inputDeviceMenu
             }
             .frame(maxWidth: .infinity)
+            .disabled(sceneManager?.isBusy == true)
 
             audioProcessingButton
+                .disabled(sceneManager?.isBusy == true)
             editPriorityButton
+                .disabled(sceneManager?.isBusy == true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -634,7 +673,9 @@ struct MenuBarPopupView: View {
     private func mainContent(scrollProxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             devicesSection
+                .disabled(sceneManager?.isBusy == true)
             appsSection(scrollProxy: scrollProxy)
+                .disabled(sceneManager?.isBusy == true)
             popupFooter
         }
     }
@@ -1676,7 +1717,7 @@ struct MenuBarPopupView: View {
     }
 
     private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
-        guard selectedModule == .sound else { return .ignored }
+        guard displayedModule == .sound else { return .ignored }
         // `.onKeyPress` also fires for focused descendants; yield while a TextField is editing so its Return commits via onSubmit instead of activating a row.
         if NSApp.keyWindow?.firstResponder is NSTextView { return .ignored }
         // Keyboard entry mode: the popup owns every key so the anchor keeps first responder.

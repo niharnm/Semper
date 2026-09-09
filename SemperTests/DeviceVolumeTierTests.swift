@@ -149,6 +149,8 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     var defaultInputDeviceID: AudioDeviceID = 0
     var defaultDeviceUID: String?
     var defaultInputDeviceUID: String?
+    var systemDeviceUID: String?
+    var isSystemFollowingDefault = false
     var volumes: [AudioDeviceID: Float] = [:]
     var muteStates: [AudioDeviceID: Bool] = [:]
     var inputVolumes: [AudioDeviceID: Float] = [:]

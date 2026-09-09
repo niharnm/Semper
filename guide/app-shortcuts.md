@@ -16,6 +16,8 @@ Available actions:
 - Bypass Audio Processing
 - Resume Audio Processing
 - Undo Last Audio Change
+- Apply Scene
+- Restore Previous Setup
 
 Application parameters are stored by Semper's persistence identifier. Active
 applications and inactive pinned applications are available. If two
@@ -28,3 +30,9 @@ selected output reconnects. It does not silently route to another device.
 
 Existing `semper://` URLs and global keyboard shortcuts remain available and
 continue to use the same audio command dispatcher.
+
+Scene actions use the scene identifier stored by Semper. A scene can include
+Awake, audio output, volume, mute, and supported external display settings.
+Restore leaves a setting alone if it changed after the scene was applied.
+Scene Awake actions own a separate sleep-prevention request. Turning Awake off
+through a scene does not stop a timed Awake session or another utility's request.

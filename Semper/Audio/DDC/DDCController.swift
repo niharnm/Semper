@@ -138,6 +138,22 @@ final class DDCController {
         }
     }
 
+    /// Executes display-control work on the same serial queue as audio DDC traffic.
+    func performSerialized<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        let queue = ddcQueue
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Public API
 
     /// Whether this CoreAudio device has DDC volume control.
