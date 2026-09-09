@@ -187,15 +187,13 @@ struct SafeEjectAPFSTopologyTests {
     }
 
     @Test(.timeLimit(.minutes(1))) func cancellationWaitsForOwnedProcessCleanup() async throws {
-        let process = APFSProcessFixture(waits: true)
+        let process = APFSProcessFixture(waits: true, cancelAfterLaunch: true)
         let reader = SafeEjectAPFSReader(makeProcess: { process }, terminationGrace: .milliseconds(10))
         let task = Task { try await reader.read() }
         defer { task.cancel() }
-        try await process.waitForLaunch()
-        #expect(process.snapshot.launched)
-        task.cancel()
         await #expect(throws: SafeEjectAPFSError.cancelled) { try await task.value }
         let state = process.snapshot
+        #expect(state.launched && !state.launchedOnMainThread)
         #expect(state.closes == 1 && state.terminations == 1 && !state.running)
     }
 
@@ -339,17 +337,19 @@ nonisolated private final class APFSProcessFixture: SafeEjectAPFSProcessControll
     private let waits: Bool
     private let failure: Failure?
     private let ignoresTermination: Bool
+    private let cancelAfterLaunch: Bool
     private let launchSignal: AsyncStream<Void>
     private let launchContinuation: AsyncStream<Void>.Continuation
 
     init(
         output: Data = Data(), waits: Bool = false, failure: Failure? = nil,
-        ignoresTermination: Bool = false
+        ignoresTermination: Bool = false, cancelAfterLaunch: Bool = false
     ) {
         self.output = output
         self.waits = waits
         self.failure = failure
         self.ignoresTermination = ignoresTermination
+        self.cancelAfterLaunch = cancelAfterLaunch
         (launchSignal, launchContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
 
@@ -381,6 +381,7 @@ nonisolated private final class APFSProcessFixture: SafeEjectAPFSProcessControll
         launchContinuation.yield(())
         launchContinuation.finish()
         if failure == .launchAfterStart { throw SafeEjectAPFSError.launchFailed }
+        if cancelAfterLaunch { withUnsafeCurrentTask { $0?.cancel() } }
     }
 
     func read(maximumBytes: Int) throws -> SafeEjectAPFSReadChunk {
