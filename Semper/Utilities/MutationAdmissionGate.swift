@@ -3,6 +3,7 @@ import Foundation
 nonisolated enum MutationAdmissionOwner: Hashable, Sendable {
     case scene
     case awayMode
+    case manual
 }
 
 nonisolated enum MutationAdmissionMode: Sendable {

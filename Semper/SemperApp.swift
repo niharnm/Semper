@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var audioCommands: (any AudioCommandDispatching)?
     var sceneCommands: (any SceneCommandHandling)?
     var updateManager: UpdateManager?
+    var displayService: DisplayControlService?
+    private var terminationDrainTask: Task<Void, Never>?
+    private var isTerminationDrainComplete = false
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let audioEngine, let audioCommands, let updateManager else {
@@ -42,6 +45,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// LSUIElement agent — closing the Settings window must not terminate the app.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminationDrainComplete else { return .terminateNow }
+        guard let displayService else { return .terminateNow }
+        guard terminationDrainTask == nil else { return .terminateLater }
+
+        terminationDrainTask = Task { @MainActor [weak self] in
+            await displayService.stopAndDrain()
+            self?.isTerminationDrainComplete = true
+            self?.terminationDrainTask = nil
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -184,12 +201,16 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
+        let mutationAdmission = MutationAdmissionGate()
         #if !APP_STORE
-        let displayService = DisplayControlService(ddcController: engine.ddcController)
+        let displayService = DisplayControlService(
+            ddcController: engine.ddcController,
+            mutationAdmission: mutationAdmission
+        )
         #else
         let displayService = DisplayControlService()
         #endif
-        let mutationAdmission = MutationAdmissionGate()
+        displayService.start()
         let sceneManager = SceneManager(
             engine: engine,
             commands: commandDispatcher,
@@ -409,6 +430,7 @@ struct SemperApp: App {
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
         _appDelegate.wrappedValue.sceneCommands = sceneManager
         _appDelegate.wrappedValue.updateManager = updater
+        _appDelegate.wrappedValue.displayService = displayService
 
         // DeviceVolumeMonitor is now created and started inside AudioEngine
         // This ensures proper initialization order: deviceMonitor.start() -> deviceVolumeMonitor.start()
