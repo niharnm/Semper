@@ -392,7 +392,7 @@ struct DisplayControlServiceTests {
         defer { admission.release(awayPermit) }
 
         do {
-            _ = try admission.acquire(owner: .manual, mode: .shared)
+            _ = try admission.acquire(owner: .manualDisplay, mode: .shared)
             Issue.record("Manual display admission succeeded during Away exclusivity")
         } catch let error as MutationAdmissionError {
             #expect(error == .exclusivePermitActive(owner: .awayMode))
@@ -713,9 +713,14 @@ struct DisplayControlServiceTests {
         let service = DisplayControlService(
             ddcController: controller,
             mutationAdmission: MutationAdmissionGate(),
-            discover: transport.discover,
-            read: transport.read,
-            write: transport.write
+            discover: { transport.discover() },
+            read: { service, feature in try transport.read(service, feature: feature) },
+            write: { service, feature, value in
+                try transport.write(service, feature: feature, value: value)
+            },
+            readCapabilities: { _ in "(mccs_ver(2.2)vcp(10 12))" },
+            readVCP: { _, _ in throw TestError.failed },
+            discoverSystemDisplays: { [] }
         )
         let identity = DisplayIdentity(vendorID: 101, productID: 202, serialNumber: 303)!
         defer {

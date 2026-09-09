@@ -159,20 +159,24 @@ final class VolumeState {
         states[pid]?.selectedDeviceUIDs ?? []
     }
 
-    func setSelectedDeviceUIDs(for pid: pid_t, to uids: Set<String>, identifier: String? = nil) {
+    func setSelectedDeviceUIDs(for pid: pid_t, to uids: Set<String>, identifier: String? = nil, persist: Bool = true) {
         if var state = states[pid] {
             state.selectedDeviceUIDs = uids
             if let identifier = identifier {
                 state.persistenceIdentifier = identifier
             }
             states[pid] = state
-            settingsManager?.setSelectedDeviceUIDs(for: state.persistenceIdentifier, to: uids)
+            if persist {
+                settingsManager?.setSelectedDeviceUIDs(for: state.persistenceIdentifier, to: uids)
+            }
         } else if let identifier = identifier {
             let defaultVolume = settingsManager?.appSettings.defaultNewAppVolume ?? 1.0
             var newState = AppAudioState(volume: defaultVolume, muted: false, persistenceIdentifier: identifier)
             newState.selectedDeviceUIDs = uids
             states[pid] = newState
-            settingsManager?.setSelectedDeviceUIDs(for: identifier, to: uids)
+            if persist {
+                settingsManager?.setSelectedDeviceUIDs(for: identifier, to: uids)
+            }
         }
     }
 

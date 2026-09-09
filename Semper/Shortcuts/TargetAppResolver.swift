@@ -66,6 +66,12 @@ final class TargetAppResolver: TargetAppResolving {
         lastNonSemperFrontmostBundleID = bundleID
     }
 
+    func stop() {
+        guard let observer else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        self.observer = nil
+    }
+
     func resolveTargetBundleID(audibleCandidates: [String]) -> String? {
         let preference = preferenceProvider()
         switch preference.mode {

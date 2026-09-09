@@ -266,7 +266,12 @@ final class DisplaySceneAdapter: SceneControlAdapting {
               case .number(let normalized) = value else {
             throw SceneAdapterError.invalidValue
         }
-        switch try await displays.set(normalized, feature: target.feature, for: target.identity) {
+        switch try await displays.set(
+            normalized,
+            feature: target.feature,
+            for: target.identity,
+            mutationOwner: .scene
+        ) {
         case .applied:
             return
         case .unavailable:
@@ -372,12 +377,8 @@ final class PowerSceneAdapter: SceneControlAdapting {
 
     private func map(_ error: AwakeLeaseError) -> SceneAdapterError {
         switch error {
-        case .serviceUnavailable,
-             .invalidToken,
-             .couldNotAcquire,
-             .couldNotReplace,
-             .invalidDeadline,
-             .conflictingLease:
+        case .serviceUnavailable, .invalidToken, .invalidDeadline, .conflictingLease,
+            .couldNotAcquire, .couldNotReplace:
             .writeRejected
         }
     }

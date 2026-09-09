@@ -17,11 +17,18 @@ final class WorkspaceService {
     private(set) var results: [WorkspaceWindowResult] = []
     private(set) var errorMessage: String?
     private(set) var canSave = false
+    private(set) var topologyPromptsEnabled = false
+    private(set) var isUpdatingTopologyPreference = false
     private(set) var undoEntries: [WorkspaceUndoEntry] = []
     var selectedApplicationIDs: Set<String> = []
+    private var arrangementSelection: UUID?
     var selectedArrangementID: UUID? {
-        didSet {
-            if oldValue != selectedArrangementID {
+        get { arrangementSelection }
+        set {
+            guard presentationReservation == nil else { return }
+            if arrangementSelection != newValue {
+                arrangementSelection = newValue
+                pendingTopologyNotice = nil
                 preview = []
                 bindings = [:]
                 displayMappings = [:]
@@ -34,6 +41,13 @@ final class WorkspaceService {
     private var previewDisplays: [WorkspaceDisplay] = []
     private let backend: any WorkspaceWindowBackend
     private let store: WorkspaceStore
+    private let topologyObserver: any WorkspaceTopologyObserving
+    private var pendingTopologyNotice: WorkspaceTopologyNotice?
+    private var topologyBaseline: [WorkspaceDisplay]?
+    private var topologyObservationGeneration = UUID()
+    private var isObservingTopology = false
+    private var topologyPreferenceTask: Task<Void, Never>?
+    private var isResettingSavedData = false
     private var operation: Task<Void, Never>?
     private var prompted = false
     private var isStopping = false
@@ -44,49 +58,180 @@ final class WorkspaceService {
     private var receiptOwnerID = UUID()
     private var planGenerationID = UUID()
     private var previewSourceArrangementID: UUID?
+    private var workflowRequestID: UUID?
+    private(set) var presentationReservation: UUID?
+    private var reservedPlanID: UUID?
+    private var reservedReceiptID: UUID?
+    private var reservedRecoveryPending = false
+    private var mutationAdmission: MutationAdmissionGate?
 
-    init(backend: any WorkspaceWindowBackend, store: WorkspaceStore) {
+    init(
+        backend: any WorkspaceWindowBackend, store: WorkspaceStore,
+        mutationAdmission: MutationAdmissionGate? = nil,
+        topologyObserver: (any WorkspaceTopologyObserving)? = nil
+    ) {
         self.backend = backend
         self.store = store
+        self.topologyObserver = topologyObserver ?? WorkspaceTopologyObserver()
+        self.mutationAdmission = mutationAdmission
     }
 
-    convenience init() {
+    isolated deinit { topologyObserver.stop() }
+
+    convenience init(mutationAdmission: MutationAdmissionGate? = nil) {
         let directory = URL.applicationSupportDirectory.appending(path: "Semper/Workspace", directoryHint: .isDirectory)
         self.init(
             backend: AccessibilityWorkspaceBackend(),
-            store: WorkspaceStore(url: directory.appending(path: "arrangements-v1.json")))
+            store: WorkspaceStore(url: directory.appending(path: "arrangements-v1.json")),
+            mutationAdmission: mutationAdmission)
     }
 
     var selectedArrangement: WorkspaceArrangement? { arrangements.first { $0.id == selectedArrangementID } }
     var canRestore: Bool { preview.contains(where: \.canRestore) && isRunning && !isBusy }
     var canUndo: Bool { !undoEntries.isEmpty && isRunning && !isBusy }
 
+    var topologyNotice: WorkspaceTopologyNotice? {
+        guard isRunning, topologyPromptsEnabled, !isBusy, !isStopping, !isShuttingDown,
+            presentationReservation == nil, mutationAdmission?.activeSharedPermitCount ?? 0 == 0,
+            mutationAdmission?.activeExclusiveOwner == nil,
+            let notice = pendingTopologyNotice, notice.arrangementID == selectedArrangement?.id
+        else { return nil }
+        return notice
+    }
+
+    func setTopologyPromptsEnabled(_ enabled: Bool) async {
+        guard !isUpdatingTopologyPreference, !isResettingSavedData, !isStopping, !isShuttingDown else { return }
+        isUpdatingTopologyPreference = true
+        if !enabled {
+            topologyPromptsEnabled = false
+            stopTopologyObservation()
+        }
+        let task = Task { @MainActor in
+            defer {
+                self.isUpdatingTopologyPreference = false
+                self.topologyPreferenceTask = nil
+            }
+            do {
+                try await self.store.saveTopologyPromptsEnabled(enabled)
+                self.topologyPromptsEnabled = enabled
+                self.startTopologyObservationIfNeeded()
+            } catch {
+                let reason = self.message(for: error)
+                self.errorMessage =
+                    enabled
+                    ? reason
+                    : "Prompts are off for this active session. The saved setting could not be changed; "
+                        + "starting Workspace again may enable prompts. " + reason
+            }
+        }
+        topologyPreferenceTask = task
+        await task.value
+    }
+
+    func dismissTopologyNotice(_ id: UUID) {
+        if pendingTopologyNotice?.id == id { pendingTopologyNotice = nil }
+    }
+
+    @discardableResult
+    func previewTopologyNotice(_ id: UUID) async -> Bool {
+        guard let notice = topologyNotice, notice.id == id else { return false }
+        let succeeded = await makePreview()
+        if succeeded, pendingTopologyNotice?.id == id, previewSourceArrangementID == notice.arrangementID {
+            pendingTopologyNotice = nil
+        }
+        return succeeded
+    }
+
+    private func startTopologyObservationIfNeeded() {
+        guard isRunning, topologyPromptsEnabled, !isStopping, !isShuttingDown, !isResettingSavedData,
+            !isObservingTopology
+        else { return }
+        let generation = UUID()
+        topologyObservationGeneration = generation
+        isObservingTopology = true
+        let baseline = topologyObserver.start { [weak self] displays in
+            guard let self, self.topologyObservationGeneration == generation, self.isObservingTopology,
+                self.isRunning, self.topologyPromptsEnabled
+            else { return }
+            let snapshot = self.topologyIdentity(displays)
+            guard snapshot != self.topologyBaseline else { return }
+            self.topologyBaseline = snapshot
+            guard let arrangement = self.selectedArrangement else {
+                self.pendingTopologyNotice = nil
+                return
+            }
+            self.pendingTopologyNotice = WorkspaceTopologyNotice(
+                id: UUID(), arrangementID: arrangement.id, arrangementName: arrangement.name)
+        }
+        topologyBaseline = topologyIdentity(baseline)
+    }
+
+    private func stopTopologyObservation() {
+        topologyObservationGeneration = UUID()
+        if isObservingTopology { topologyObserver.stop() }
+        isObservingTopology = false
+        topologyBaseline = nil
+        pendingTopologyNotice = nil
+    }
+
+    private func topologyIdentity(_ displays: [WorkspaceDisplay]) -> [WorkspaceDisplay] {
+        displays.map {
+            WorkspaceDisplay(id: $0.id, name: "", visibleFrame: $0.visibleFrame, fullScreenFrame: $0.fullScreenFrame)
+        }.sorted { $0.id < $1.id }
+    }
+
+    func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
+        guard !isRunning, operation == nil, presentationReservation == nil,
+            mutationAdmission == nil || mutationAdmission === gate
+        else { throw WorkspacePlanError.busy }
+        mutationAdmission = gate
+    }
+
     func start() async {
         guard !isRunning, !isStopping, !isShuttingDown, operation == nil else { return }
+        guard !isUpdatingTopologyPreference else { return }
         isRunning = true
+        isUpdatingTopologyPreference = true
         await perform {
+            defer { self.isUpdatingTopologyPreference = false }
+            self.topologyPromptsEnabled = false
+            do { self.topologyPromptsEnabled = try await self.store.loadTopologyPromptsEnabled() } catch {
+                self.errorMessage = self.message(for: error)
+            }
+            try Task.checkCancellation()
             self.canSave = false
             let loaded = try await self.store.load()
             try Task.checkCancellation()
             self.arrangements = loaded
-            self.selectedArrangementID = loaded.first?.id
+            if !loaded.contains(where: { $0.id == self.selectedArrangementID }) {
+                self.selectedArrangementID = nil
+            }
             self.canSave = true
             self.applications = await self.backend.applications()
+            try Task.checkCancellation()
+            self.startTopologyObservationIfNeeded()
         }
     }
 
     func pause() async {
+        guard presentationReservation == nil else {
+            errorMessage = "End Presentation and finish its recovery before pausing Workspace."
+            return
+        }
         if let pauseTask {
             await pauseTask.value
             return
         }
         isStopping = true
+        stopTopologyObservation()
         planGenerationID = UUID()
         isRunning = false
         let pending = operation
+        let preference = topologyPreferenceTask
         pending?.cancel()
         let task = Task { @MainActor in
             await pending?.value
+            await preference?.value
             self.operation = nil
             self.managedOperationID = nil
             self.isBusy = false
@@ -100,11 +245,17 @@ final class WorkspaceService {
     }
 
     func shutdown() async {
+        guard presentationReservation == nil else {
+            errorMessage =
+                "Presentation still owns this Workspace session. Finish its recovery before removing Workspace."
+            return
+        }
         if let shutdownTask {
             await shutdownTask.value
             return
         }
         isShuttingDown = true
+        stopTopologyObservation()
         let task = Task { @MainActor in
             await self.pause()
             await self.backend.shutdown()
@@ -118,7 +269,10 @@ final class WorkspaceService {
         await task.value
     }
 
-    func cancel() { operation?.cancel() }
+    func cancel() {
+        guard presentationReservation == nil else { return }
+        operation?.cancel()
+    }
 
     func refreshApplications() async {
         await perform { self.applications = await self.backend.applications() }
@@ -185,17 +339,45 @@ final class WorkspaceService {
         }
     }
 
-    func makePreview() async {
+    @discardableResult
+    func beginWorkflow(_ request: WorkspaceWorkflowRequest) -> Bool {
+        guard !isStopping, !isShuttingDown, presentationReservation == nil else { return false }
+        guard workflowRequestID != request.id else { return true }
+        workflowRequestID = request.id
+        preview = []
+        previewSourceArrangementID = nil
+        candidates = []
+        previewDisplays = []
+        return true
+    }
+
+    @discardableResult
+    func makePreview(requestID: UUID? = nil) async -> Bool {
+        let expectedRequestID = requestID ?? workflowRequestID
+        let expectedArrangementID = selectedArrangementID
+        guard expectedRequestID == workflowRequestID else { return false }
+        var succeeded = false
         await perform {
+            guard expectedRequestID == self.workflowRequestID,
+                expectedArrangementID == self.selectedArrangementID
+            else { return }
             self.preview = []
             self.previewSourceArrangementID = nil
+            guard expectedArrangementID != nil else {
+                self.errorMessage = "Choose an arrangement before previewing."
+                return
+            }
             try await self.requirePermission()
-            try await self.refreshPreview()
+            succeeded = try await self.refreshPreview(
+                expectedArrangementID: expectedArrangementID, expectedRequestID: expectedRequestID)
         }
+        return succeeded && expectedRequestID == workflowRequestID && expectedArrangementID == selectedArrangementID
     }
 
     func bind(slotID: UUID, to windowID: WorkspaceWindowID?) async {
-        guard isRunning, !isBusy, let slot = selectedArrangement?.windows.first(where: { $0.id == slotID }) else {
+        guard isRunning, !isBusy, !isStopping, !isShuttingDown, presentationReservation == nil,
+            let slot = selectedArrangement?.windows.first(where: { $0.id == slotID })
+        else {
             return
         }
         if let windowID {
@@ -210,7 +392,9 @@ final class WorkspaceService {
     }
 
     func mapDisplay(_ originalID: String, to destinationID: String?) async {
-        guard isRunning, !isBusy, destinationID == nil || displays.contains(where: { $0.id == destinationID }) else {
+        guard isRunning, !isBusy, !isStopping, !isShuttingDown, presentationReservation == nil,
+            destinationID == nil || displays.contains(where: { $0.id == destinationID })
+        else {
             return
         }
         displayMappings[originalID] = destinationID
@@ -242,12 +426,21 @@ final class WorkspaceService {
             let updated = self.arrangements.filter { $0.id != id }
             try await self.store.save(updated)
             self.arrangements = updated
-            if self.selectedArrangementID == id { self.selectedArrangementID = updated.first?.id }
+            if self.selectedArrangementID == id { self.selectedArrangementID = nil }
         }
     }
 
     func resetSavedData() async {
+        guard !isUpdatingTopologyPreference, !isResettingSavedData else {
+            errorMessage = "Wait for the display prompt preference or saved-data reset to finish, then try again."
+            return
+        }
+        isResettingSavedData = true
+        defer { isResettingSavedData = false }
         await perform {
+            self.topologyPromptsEnabled = false
+            self.stopTopologyObservation()
+            try await self.store.resetTopologyPreference()
             try await self.store.save([])
             self.arrangements = []
             self.selectedArrangementID = nil
@@ -259,13 +452,14 @@ final class WorkspaceService {
     }
 
     func restore() async {
-        await perform {
-            try await self.requirePermission()
-            guard !self.preview.isEmpty else {
+        let plan = preview
+        let expectedDisplays = previewDisplays
+        await perform(mutatesWindows: true) {
+            guard !plan.isEmpty else {
                 self.errorMessage = "Preview an arrangement before restoring."
                 return
             }
-            let plan = self.preview
+            try await self.requirePermission()
             var changed: [WorkspaceUndoEntry] = []
             self.results = []
             for item in plan {
@@ -280,7 +474,7 @@ final class WorkspaceService {
                     continue
                 }
                 let topology = await self.backend.displays()
-                guard topology == self.previewDisplays else {
+                guard topology == expectedDisplays else {
                     self.results.append(
                         .init(
                             label: item.placement.label, message: "Displays changed after preview. Preview again.",
@@ -315,7 +509,7 @@ final class WorkspaceService {
     }
 
     func undo() async {
-        await perform {
+        await perform(mutatesWindows: true) {
             try await self.requirePermission()
             let entries = self.undoEntries.reversed()
             self.results = []
@@ -367,16 +561,14 @@ final class WorkspaceService {
         }
     }
 
-    private func refreshPreview() async throws {
-        guard let arrangement = selectedArrangement else {
-            preview = []
-            return
-        }
+    private func refreshPreview(expectedArrangementID: UUID?, expectedRequestID: UUID?) async throws -> Bool {
+        guard let arrangement = selectedArrangement, arrangement.id == expectedArrangementID,
+            workflowRequestID == expectedRequestID
+        else { return false }
         let apps = await backend.applications()
         let bundleIDs = Set(arrangement.windows.map(\.applicationBundleID))
-        candidates = try await backend.windows(in: apps.filter { bundleIDs.contains($0.bundleID) })
-        displays = await backend.displays()
-        previewDisplays = displays
+        let refreshedCandidates = try await backend.windows(in: apps.filter { bundleIDs.contains($0.bundleID) })
+        let refreshedDisplays = await backend.displays()
         var items: [WorkspacePreviewItem] = []
         let resolvedIDs = arrangement.windows.compactMap { bindings[$0.id] }
         for placement in arrangement.windows {
@@ -385,7 +577,7 @@ final class WorkspaceService {
             let state: WorkspaceWindowSnapshot?
             if let liveID { state = try await backend.current(liveID) } else { state = nil }
             let displayID = displayMappings[placement.displayID] ?? placement.displayID
-            let display = displays.first { $0.id == displayID }
+            let display = refreshedDisplays.first { $0.id == displayID }
             let reason: String?
             if let liveID, resolvedIDs.filter({ $0 == liveID }).count > 1 {
                 reason = "This window is assigned to more than one slot. Choose a different window."
@@ -404,9 +596,14 @@ final class WorkspaceService {
                     targetFrame: display.map { WorkspaceGeometry.target(placement.relativeFrame, in: $0.visibleFrame) },
                     reason: reason))
         }
-        guard selectedArrangementID == arrangement.id else { throw WorkspacePlanError.previewRequired }
+        try Task.checkCancellation()
+        guard selectedArrangementID == arrangement.id, workflowRequestID == expectedRequestID else { return false }
+        candidates = refreshedCandidates
+        displays = refreshedDisplays
+        previewDisplays = refreshedDisplays
         preview = items
         previewSourceArrangementID = arrangement.id
+        return true
     }
 
     func makeRestorePlan(selectedSlotIDs: Set<UUID>) throws -> WorkspaceRestorePlan {
@@ -425,9 +622,35 @@ final class WorkspaceService {
             ownerID: receiptOwnerID, generationID: planGenerationID)
     }
 
-    func apply(_ plan: WorkspaceRestorePlan) async -> WorkspaceOperationReceipt {
+    func reserveForPresentation(_ plan: WorkspaceRestorePlan, token: UUID) throws {
+        guard isRunning, !isStopping, !isShuttingDown else { throw WorkspacePlanError.stopped }
+        guard operation == nil, presentationReservation == nil else { throw WorkspacePlanError.busy }
+        guard plan.ownerID == receiptOwnerID, plan.generationID == planGenerationID,
+            plan.arrangementID == previewSourceArrangementID,
+            !plan.selectedSlotIDs.isEmpty, plan.steps.allSatisfy(\.canRestore)
+        else { throw WorkspacePlanError.previewRequired }
+        presentationReservation = token
+        reservedPlanID = plan.id
+        reservedReceiptID = nil
+        reservedRecoveryPending = false
+    }
+
+    func releasePresentationReservation(_ token: UUID, keepingCurrent: Bool = false) throws {
+        guard presentationReservation == token, !reservedRecoveryPending || keepingCurrent, operation == nil else {
+            throw WorkspacePlanError.busy
+        }
+        presentationReservation = nil
+        reservedPlanID = nil
+        reservedReceiptID = nil
+        reservedRecoveryPending = false
+    }
+
+    func apply(_ plan: WorkspaceRestorePlan, ownerToken: UUID? = nil) async -> WorkspaceOperationReceipt {
         let initial = plan.steps.map {
             WorkspaceStepReceipt(step: $0, outcome: .notAttempted, observation: nil, recovery: .none)
+        }
+        if ownerToken != nil, presentationReservation == ownerToken, reservedReceiptID != nil {
+            return receipt(planID: plan.id, reversing: nil, steps: initial, issue: .busy)
         }
         guard plan.ownerID == receiptOwnerID, plan.generationID == planGenerationID,
             !plan.selectedSlotIDs.isEmpty, plan.steps.count <= 200,
@@ -435,7 +658,7 @@ final class WorkspaceService {
         else {
             return receipt(planID: plan.id, reversing: nil, steps: initial, issue: .invalidPlan)
         }
-        return await performReceipt(planID: plan.id, reversing: nil, initial: initial) {
+        let result = await performReceipt(planID: plan.id, reversing: nil, initial: initial, ownerToken: ownerToken) {
             var entries: [WorkspaceStepReceipt] = []
             for item in plan.steps {
                 if Task.isCancelled {
@@ -490,12 +713,21 @@ final class WorkspaceService {
             }
             return self.receipt(planID: plan.id, reversing: nil, steps: entries, cancelled: Task.isCancelled)
         }
+        if ownerToken != nil, presentationReservation == ownerToken, reservedPlanID == result.planID {
+            reservedRecoveryPending = result.needsRecovery
+            reservedReceiptID = result.operationID
+        }
+        return result
     }
 
-    func reverse(_ original: WorkspaceOperationReceipt) async -> WorkspaceOperationReceipt {
+    func reverse(_ original: WorkspaceOperationReceipt, ownerToken: UUID? = nil) async -> WorkspaceOperationReceipt {
         let ordered = original.reversesOperationID == nil ? Array(original.steps.reversed()) : original.steps
         let initial = ordered.map {
             WorkspaceStepReceipt(step: $0.step, outcome: .notAttempted, observation: nil, recovery: $0.recovery)
+        }
+        if ownerToken != nil, presentationReservation == ownerToken, reservedReceiptID != original.operationID {
+            return receipt(
+                planID: original.planID, reversing: original.operationID, steps: initial, issue: .invalidPlan)
         }
         guard original.ownerID == receiptOwnerID, initial.count <= 200,
             Set(initial.map(\.slotID)).count == initial.count
@@ -504,7 +736,9 @@ final class WorkspaceService {
                 planID: original.planID, reversing: original.operationID, steps: initial, issue: .invalidPlan,
                 ownerID: original.ownerID)
         }
-        return await performReceipt(planID: original.planID, reversing: original.operationID, initial: initial) {
+        let result = await performReceipt(
+            planID: original.planID, reversing: original.operationID, initial: initial, ownerToken: ownerToken
+        ) {
             var entries: [WorkspaceStepReceipt] = []
             for entry in initial {
                 if Task.isCancelled {
@@ -531,6 +765,11 @@ final class WorkspaceService {
             return self.receipt(
                 planID: original.planID, reversing: original.operationID, steps: entries, cancelled: Task.isCancelled)
         }
+        if ownerToken != nil, presentationReservation == ownerToken, reservedPlanID == result.planID {
+            reservedRecoveryPending = result.needsRecovery
+            reservedReceiptID = result.operationID
+        }
+        return result
     }
 
     private func reverseStep(_ entry: WorkspaceStepReceipt, change: WorkspaceRecoveryChange) async
@@ -659,8 +898,17 @@ final class WorkspaceService {
 
     private func performReceipt(
         planID: UUID, reversing: UUID?, initial: [WorkspaceStepReceipt],
+        ownerToken: UUID? = nil,
         action: @escaping @MainActor () async -> WorkspaceOperationReceipt
     ) async -> WorkspaceOperationReceipt {
+        guard presentationReservation == ownerToken,
+            ownerToken == nil || reservedPlanID == planID
+        else { return receipt(planID: planID, reversing: reversing, steps: initial, issue: .busy) }
+        let permit: MutationAdmissionPermit?
+        do { permit = try mutationAdmission?.acquire(owner: .manual, mode: .shared) } catch {
+            return receipt(planID: planID, reversing: reversing, steps: initial, issue: .mutationsBlocked)
+        }
+        defer { if let permit { mutationAdmission?.release(permit) } }
         if Task.isCancelled { return receipt(planID: planID, reversing: reversing, steps: initial, cancelled: true) }
         guard isRunning, !isStopping, !isShuttingDown else {
             return receipt(planID: planID, reversing: reversing, steps: initial, issue: .stopped)
@@ -708,7 +956,19 @@ final class WorkspaceService {
         }
     }
 
-    private func perform(_ action: @escaping @MainActor () async throws -> Void) async {
+    private func perform(
+        mutatesWindows: Bool = false, _ action: @escaping @MainActor () async throws -> Void
+    ) async {
+        guard presentationReservation == nil else {
+            errorMessage = "End Presentation and finish its recovery before changing Workspace."
+            return
+        }
+        let permit: MutationAdmissionPermit?
+        do { permit = mutatesWindows ? try mutationAdmission?.acquire(owner: .manual, mode: .shared) : nil } catch {
+            errorMessage = "End Away Mode before moving windows."
+            return
+        }
+        defer { if let permit { mutationAdmission?.release(permit) } }
         guard isRunning, !isShuttingDown, operation == nil else { return }
         let operationID = UUID()
         managedOperationID = operationID

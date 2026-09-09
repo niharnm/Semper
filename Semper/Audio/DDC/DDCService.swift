@@ -155,6 +155,38 @@ final class DDCService: @unchecked Sendable {
         guard anySucceeded else { throw DDCError.writeFailed(lastResult) }
     }
 
+    private func i2cWriteSingle(packet: [UInt8]) throws {
+        usleep(writeSleepTime)
+        let result = packet.withUnsafeBufferPointer { buffer in
+            IOAVServiceLoader.writeI2C(
+                service: service,
+                chipAddress: chipAddress,
+                dataAddress: writeAddress,
+                buffer: buffer.baseAddress!,
+                size: UInt32(buffer.count)
+            )
+        }
+        guard result == kIOReturnSuccess else { throw DDCError.writeFailed(result) }
+    }
+
+    private func capabilitiesTransaction(packet: [UInt8]) throws -> [UInt8] {
+        try i2cWriteSingle(packet: packet)
+        usleep(readSleepTime)
+
+        var reply = [UInt8](repeating: 0, count: 38)
+        let result = reply.withUnsafeMutableBufferPointer { buffer in
+            IOAVServiceLoader.readI2C(
+                service: service,
+                chipAddress: chipAddress,
+                dataAddress: 0,
+                buffer: buffer.baseAddress!,
+                size: UInt32(buffer.count)
+            )
+        }
+        guard result == kIOReturnSuccess else { throw DDCError.readFailed(result) }
+        return reply
+    }
+
     // MARK: - VCP Commands
 
     /// Reads a VCP feature value from the display.
@@ -216,6 +248,39 @@ final class DDCService: @unchecked Sendable {
         }
 
         throw lastError
+    }
+
+    /// Issues one physical write with no repeat after an uncertain direct action.
+    func writeVCPOnce(_ code: UInt8, value: UInt16) throws {
+        var packet: [UInt8] = [
+            0x84,
+            0x03,
+            code,
+            UInt8((value >> 8) & 0xFF),
+            UInt8(value & 0xFF),
+        ]
+        packet.append(writeChecksum(packet))
+        try i2cWriteSingle(packet: packet)
+    }
+
+    func readCapabilitiesString(
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws -> String {
+        let bytes = try DDCCapabilitiesTransport(
+            transaction: { [self] packet in
+                try capabilitiesTransaction(packet: packet)
+            },
+            isCancelled: isCancelled
+        ).read()
+        guard bytes.allSatisfy({ $0 <= 0x7F }),
+              let text = String(bytes: bytes, encoding: .ascii)
+        else {
+            throw DDCCapabilitiesError.invalidTextEncoding
+        }
+        guard !isCancelled() else {
+            throw DDCCapabilitiesError.cancelled
+        }
+        return text
     }
 
     // MARK: - EDID

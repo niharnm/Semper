@@ -46,6 +46,10 @@ final class BluetoothDeviceMonitor {
 
     /// In-flight refresh task — cancelled on each new refresh to avoid stacking.
     private var refreshTask: Task<Void, Never>?
+    private var connectionTasks: [String: Task<Void, Never>] = [:]
+    private var connectionRefreshTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
+    private var isStopped = false
 
     private let connectTimeoutSeconds: Double = 12
 
@@ -66,6 +70,7 @@ final class BluetoothDeviceMonitor {
     }
 
     func start() {
+        guard !isStopped, powerOnObserver == nil else { return }
         powerOnObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("IOBluetoothHostControllerPoweredOnNotification"),
             object: nil,
@@ -89,11 +94,42 @@ final class BluetoothDeviceMonitor {
         refresh()
     }
 
+    func stop() {
+        guard !isStopped else { return }
+        isStopped = true
+        if let powerOnObserver {
+            NotificationCenter.default.removeObserver(powerOnObserver)
+            self.powerOnObserver = nil
+        }
+        if let powerOffObserver {
+            NotificationCenter.default.removeObserver(powerOffObserver)
+            self.powerOffObserver = nil
+        }
+        let tasks = Array(connectionTasks.values) + Array(timeoutTasks.values)
+            + Array(errorClearTasks.values) + [refreshTask, connectionRefreshTask].compactMap { $0 }
+        for task in tasks { task.cancel() }
+        connectionTasks.removeAll()
+        timeoutTasks.removeAll()
+        errorClearTasks.removeAll()
+        refreshTask = nil
+        connectionRefreshTask = nil
+        connectingIDs.removeAll()
+        shutdownTask = Task {
+            for task in tasks { await task.value }
+        }
+    }
+
+    func stopAndDrain() async {
+        stop()
+        await shutdownTask?.value
+    }
+
     // MARK: - Refresh
 
     /// Rebuilds `pairedDevices` from the current IOBluetooth snapshot.
     /// Call on popup-appear and after any CoreAudio device list change.
     func refresh() {
+        guard !isStopped else { return }
         refreshTask?.cancel()
         refreshTask = Task {
             let powered = await Self.runOnBTQueue {
@@ -133,6 +169,7 @@ final class BluetoothDeviceMonitor {
 
     /// Initiates a Bluetooth connection for the given paired device.
     func connect(device: PairedBluetoothDevice) {
+        guard !isStopped else { return }
         let mac = device.id
         guard !connectingIDs.contains(mac) else { return }
 
@@ -141,13 +178,15 @@ final class BluetoothDeviceMonitor {
         connectingIDs.insert(mac)
         connectionErrors.removeValue(forKey: mac)
 
-        Task {
+        connectionTasks[mac] = Task {
+            defer { connectionTasks.removeValue(forKey: mac) }
             let result = await Self.runOnBTQueue {
                 guard let btDevice = IOBluetoothDevice(addressString: mac) else {
                     return kIOReturnNotFound
                 }
                 return btDevice.openConnection()
             }
+            guard !Task.isCancelled, !isStopped else { return }
 
             if result != kIOReturnSuccess {
                 logger.error("\(device.name): openConnection failed (IOReturn \(result))")
@@ -166,12 +205,15 @@ final class BluetoothDeviceMonitor {
     /// via Semper) are removed. If a Semper-initiated connection is in flight,
     /// clears the connecting state for devices that succeeded.
     func notifyDeviceAppearedInCoreAudio() {
+        guard !isStopped else { return }
         if !connectingIDs.isEmpty {
-            Task {
+            connectionRefreshTask?.cancel()
+            connectionRefreshTask = Task {
                 let stillDisconnected = await Self.runOnBTQueue {
                     let allPaired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? []
                     return Set(allPaired.filter { !$0.isConnected() }.compactMap { $0.addressString })
                 }
+                guard !Task.isCancelled, !isStopped else { return }
 
                 // Clear connecting state for devices that actually connected
                 for mac in connectingIDs {

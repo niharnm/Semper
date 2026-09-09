@@ -16,7 +16,7 @@ enum WorkspacePlanError: Error, Equatable {
 }
 
 enum WorkspaceOperationIssue: Equatable, Sendable {
-    case stopped, busy, invalidPlan, permission, unresolved, missingWindow, changedFrame, changedDisplays
+    case stopped, busy, mutationsBlocked, invalidPlan, permission, unresolved, missingWindow, changedFrame, changedDisplays
     case unsupported(WorkspaceWindowIssue)
     case writeFailed, unverifiedReadback, manualRecoveryRequired, manualChangePreserved
 }

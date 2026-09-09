@@ -24,10 +24,13 @@ nonisolated enum ShelfCommand: String, Sendable {
 struct ShelfCommandHandler {
     let service: ShelfService
     let openDetail: () -> Void
-    func execute(_ command: ShelfCommand) async {
+    @discardableResult
+    func execute(_ command: ShelfCommand) async -> Result<Void, ShelfFailure> {
         switch command {
-        case .open: openDetail()
-        case .clear: await service.clear()
+        case .open:
+            openDetail()
+            return .success(())
+        case .clear: return await service.clear()
         }
     }
 }

@@ -239,6 +239,8 @@ struct WorkspaceServiceTests {
         #expect(!data.contains("launchDate") && !data.contains("\"pid\""))
         let reloaded = WorkspaceService(backend: backend, store: WorkspaceStore(url: url))
         await reloaded.start()
+        #expect(reloaded.selectedArrangementID == nil)
+        reloaded.selectedArrangementID = service.selectedArrangementID
         #expect(reloaded.selectedArrangement?.windows.first?.id == slot.id)
         await reloaded.makePreview()
         #expect(reloaded.preview.first?.canRestore == false)

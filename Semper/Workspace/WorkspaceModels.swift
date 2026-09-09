@@ -28,6 +28,12 @@ struct WorkspaceDisplay: Identifiable, Equatable, Sendable {
     }
 }
 
+struct WorkspaceTopologyNotice: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let arrangementID: UUID
+    let arrangementName: String
+}
+
 enum WorkspaceWindowIssue: String, Codable, Sendable {
     case unsupported, minimized, manualAdjustmentRequired, unknownState, ambiguousIdentity, unavailable, timedOut
 
@@ -148,6 +154,7 @@ enum WorkspaceGeometry {
 
 enum WorkspaceError: LocalizedError {
     case permission, missing, invalidStore, storeTooLarge, unsupportedVersion
+    case invalidTopologyPreference, unsupportedTopologyPreferenceVersion, topologyPreferenceIO
     var errorDescription: String? {
         switch self {
         case .permission: "Accessibility access is unavailable. Review Semper in System Settings, then try again."
@@ -155,6 +162,12 @@ enum WorkspaceError: LocalizedError {
         case .invalidStore: "Saved workspace data is invalid. Existing data has been left unchanged."
         case .storeTooLarge: "The workspace store exceeds its size limit."
         case .unsupportedVersion: "This workspace store was created by an unsupported version."
+        case .invalidTopologyPreference:
+            "The display prompt preference is invalid. Its saved file has been left unchanged."
+        case .unsupportedTopologyPreferenceVersion:
+            "The display prompt preference uses an unsupported version. Its saved file has been left unchanged."
+        case .topologyPreferenceIO:
+            "The display prompt preference could not be read or saved. Review the local Workspace storage permissions."
         }
     }
 }

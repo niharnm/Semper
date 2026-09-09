@@ -11,7 +11,7 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake requests that macOS prevent automatic idle sleep for a chosen duration. Away covers each display with a customizable privacy curtain and requires Mac authentication or a Semper PIN to exit. External Displays adds verified brightness and contrast controls, while Scenes group reversible settings.
+Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake requests that macOS prevent automatic idle sleep for a chosen duration. Away covers each display with a customizable privacy curtain and requires Mac authentication or a Semper PIN to exit. External Displays provides supported brightness, contrast, volume, and input controls, while Scenes group reversible settings.
 
 [semper.systems](https://www.semper.systems/)
 
@@ -52,8 +52,8 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
-- **Modular Menu Bar Shell**: Home, Sound, Awake, Away, and External Displays share one menu bar switcher while keeping their runtime state independent.
-- **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, keep timed user sessions separate from Scene requests, and are released when the session ends or Semper quits.
+- **Independent Utilities**: Home provides module summaries, attention items, up to four pinned actions, search, and recent action outcomes for the current session. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
+- **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Authenticated Away Curtain**: One opaque panel covers each display, ordinary input is filtered, and local widgets can show time, battery, Away duration, and awake-request state.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
 - **ISO 226 Equal-Loudness Compensation**: Dynamic frequency contour adjustment matching human psychoacoustics at varying volume levels.
@@ -62,6 +62,7 @@ not download a Semper DMG from an unofficial source.
 - **AutoEQ Engine**: 10-band parametric EQ supporting AutoEQ headphone profiles and custom user presets.
 - **Ramped Mono Audio**: Combines left and right channels for managed apps without abrupt signal changes, while retaining output balance control.
 - **Transactional Scenes**: Saves audio, Awake, and supported external display settings together, verifies each change, and keeps a restore point that respects later user changes.
+- **Timed Presentation**: Preview selected display, Sound, and workspace targets, then run a finite session with its own Awake request. End and restore through the same scene journal and owned window receipts. See the [module guide](guide/module-shell.md) for recovery limits.
 - **External Display Controls**: Reads and sets brightness and contrast on uniquely identified DDC-compatible displays outside App Store builds.
 - **Liquid Glass Interface**: High-vibrancy macOS design system with dynamic Tahoe-style HUDs, balance controls, and menu bar interaction.
 

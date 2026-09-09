@@ -1,5 +1,6 @@
 // Semper/Views/Settings/Tabs/GeneralTab.swift
 import SwiftUI
+import UserNotifications
 
 @MainActor
 struct GeneralTab: View {
@@ -7,6 +8,7 @@ struct GeneralTab: View {
     let onResetAll: () -> Void
 
     @State private var showResetConfirmation = false
+    @State private var notificationMessage: String?
 
     var body: some View {
         ScrollView {
@@ -51,10 +53,27 @@ struct GeneralTab: View {
                 "Device Disconnect Alerts",
                 description: "Notify you when an active output disappears"
             ) {
-                Toggle("", isOn: $settings.appSettings.showDeviceDisconnectAlerts)
+                Toggle("", isOn: Binding(
+                    get: { settings.appSettings.showDeviceDisconnectAlerts },
+                    set: { enabled in
+                        settings.appSettings.showDeviceDisconnectAlerts = enabled
+                        guard enabled else { notificationMessage = nil; return }
+                        Task {
+                            do {
+                                let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])
+                                notificationMessage = granted ? nil : "Notifications are denied. Allow Semper notifications in System Settings to receive device alerts."
+                            } catch {
+                                notificationMessage = "Notification access could not be requested: \(error.localizedDescription)"
+                            }
+                        }
+                    }
+                ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
+            }
+            if let notificationMessage {
+                Text(notificationMessage).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

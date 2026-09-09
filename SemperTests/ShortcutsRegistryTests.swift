@@ -8,6 +8,17 @@ import KeyboardShortcuts
 @Suite("ShortcutsRegistry")
 @MainActor
 struct ShortcutsRegistryTests {
+    @Test("Stopped registry ignores already queued shortcut dispatch")
+    func stoppedRegistryIgnoresDispatch() {
+        let recorder = RecordingPopupController()
+        let registry = makeRegistry(popupController: recorder)
+        registry.stop()
+        registry.stop()
+        registry.start()
+        registry.dispatch(.togglePopup)
+        #expect(recorder.toggleCount == 0)
+    }
+
     // MARK: - dispatch
 
     @Test("dispatch(.togglePopup) calls popupController.toggle() exactly once")
@@ -20,14 +31,14 @@ struct ShortcutsRegistryTests {
         #expect(recorder.toggleCount == 1)
     }
 
-    @Test("Away shortcut routes to the Away handler")
+    @Test("Sound does not dispatch the shell-owned Away shortcut")
     func dispatchAwayMode() {
         let handler = RecordingAwayShortcutHandler()
         let registry = makeRegistry(awayHandler: handler)
 
-        registry.dispatch(.toggleAwayMode)
+        #expect(!registry.dispatch(.toggleAwayMode))
 
-        #expect(handler.callCount == 1)
+        #expect(handler.callCount == 0)
     }
 
     @Test("Guarded Away mode suppresses ordinary shortcuts")
@@ -41,7 +52,22 @@ struct ShortcutsRegistryTests {
         registry.dispatch(.toggleAwayMode)
 
         #expect(popup.toggleCount == 0)
-        #expect(handler.callCount == 1)
+        #expect(handler.callCount == 0)
+    }
+
+    @Test("Sound suppression reads the current owner at dispatch time")
+    func dynamicSuppression() {
+        let popup = RecordingPopupController()
+        let handler = RecordingAwayShortcutHandler()
+        handler.blocksOrdinaryShortcuts = true
+        let registry = makeRegistry(
+            popupController: popup, allowsShortcuts: { !handler.blocksOrdinaryShortcuts })
+        #expect(!registry.dispatch(.togglePopup))
+        handler.blocksOrdinaryShortcuts = false
+        #expect(registry.dispatch(.togglePopup))
+        handler.blocksOrdinaryShortcuts = true
+        #expect(!registry.dispatch(.togglePopup))
+        #expect(popup.toggleCount == 1)
     }
 
     @Test("dispatch(.targetAppVolumeUp) raises volume on the matched app")
@@ -328,6 +354,7 @@ struct ShortcutsRegistryTests {
     func recordCallbackWritesBack() {
         let settings = makeIsolatedSettings()
         let registry = makeRegistry(settings: settings)
+        defer { registry.clearAllShortcuts() }
 
         let callback = registry.recordCallback(for: .togglePopup)
         let newShortcut = KeyboardShortcuts.Shortcut(carbonKeyCode: 11, carbonModifiers: 0x12_0000)
@@ -336,6 +363,32 @@ struct ShortcutsRegistryTests {
         let stored = settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue]
         #expect(stored?.keyCode == 11)
         #expect(stored?.modifiers == UInt(newShortcut.carbonModifiers))
+    }
+
+    @Test("Recorder test cleanup leaves no assignments for the next recorder")
+    func recordCallbacksCleanUpSharedStorage() throws {
+        let registry = makeRegistry()
+        let names = ShortcutAction.soundActions.map { registry.name(for: $0) }
+        let priorShortcuts = names.map { KeyboardShortcuts.getShortcut(for: $0) }
+        defer {
+            registry.clearAllShortcuts()
+            for (name, shortcut) in zip(names, priorShortcuts) {
+                KeyboardShortcuts.setShortcut(shortcut, for: name)
+            }
+        }
+        registry.clearAllShortcuts()
+
+        recordCallbackClearsPriorConflict()
+
+        for name in names {
+            try #require(KeyboardShortcuts.getShortcut(for: name) == nil)
+        }
+
+        recordCallbackWritesBack()
+
+        for name in names {
+            #expect(KeyboardShortcuts.getShortcut(for: name) == nil)
+        }
     }
 
     @Test("recordCallback clears the entry when given nil")
@@ -446,14 +499,13 @@ struct ShortcutsRegistryTests {
         settings.appSettings = app
 
         let registry = makeRegistry(settings: settings)
+        defer { registry.clearAllShortcuts() }
         let callback = registry.recordCallback(for: .togglePopup)
         callback(duplicate.keyboardShortcut)
         callback(KeyboardShortcuts.Shortcut(carbonKeyCode: 9, carbonModifiers: 0x18_0000))
 
         #expect(registry.conflictingAction(for: .togglePopup) == nil)
         #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue]?.keyCode == 9)
-
-        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
     }
 
     @Test("clearAllShortcuts clears settings and KeyboardShortcuts storage")
@@ -512,7 +564,8 @@ struct ShortcutsRegistryTests {
         audioEngine: (any AudioEngineDispatching)? = nil,
         audioCommands: (any AudioCommandDispatching)? = nil,
         hud: (any PerAppHUDPresenting)? = nil,
-        awayHandler: (any AwayShortcutHandling)? = nil
+        awayHandler: (any AwayShortcutHandling)? = nil,
+        allowsShortcuts: @escaping @MainActor () -> Bool = { true }
     ) -> ShortcutsRegistry {
         let resolvedEngine = audioEngine ?? RecordingAudioEngine(apps: [])
         let resolvedCommands: any AudioCommandDispatching
@@ -547,7 +600,7 @@ struct ShortcutsRegistryTests {
             audioEngine: resolvedEngine,
             audioCommands: resolvedCommands,
             hud: hud ?? RecordingHUDController(),
-            awayHandler: awayHandler
+            awayHandler: awayHandler, allowsShortcuts: allowsShortcuts
         )
     }
 

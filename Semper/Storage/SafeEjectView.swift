@@ -5,6 +5,8 @@ struct SafeEjectView: View {
     @State private var selection: SafeEjectVolume?
     @State private var request: SafeEjectVolume?
     @State private var cleanupRequest: UUID?
+    @State private var batchRequest: UUID?
+    @State private var batchFailure: SafeEjectFailure?
 
     var body: some View {
         Form {
@@ -15,7 +17,7 @@ struct SafeEjectView: View {
                     Spacer()
                     if service.state == .running {
                         Button("Refresh", systemImage: "arrow.clockwise") { service.refresh() }
-                            .disabled(service.activeVolumeID != nil)
+                            .disabled(service.isEjecting)
                         Button("Pause") {
                             service.pause()
                             cleanupRequest = UUID()
@@ -23,7 +25,7 @@ struct SafeEjectView: View {
                         .disabled(cleanupRequest != nil)
                     } else if service.state == .paused {
                         Button("Start") { service.start() }
-                            .disabled(service.cleanupFailure != nil || cleanupRequest != nil)
+                            .disabled(service.isEjecting || service.cleanupFailure != nil || cleanupRequest != nil)
                     }
                 }
                 Text(
@@ -46,6 +48,25 @@ struct SafeEjectView: View {
 
             if let failure = service.inventoryFailure, failure != .cleanupPending {
                 Section { Label(failure.message, systemImage: "exclamationmark.triangle") }
+            }
+            if let batchFailure {
+                Section { Label(batchFailure.message, systemImage: "exclamationmark.triangle") }
+            }
+
+            if let progress = service.batchProgress {
+                Section("Ejecting reviewed volumes") {
+                    ProgressView(value: Double(progress.completedCount), total: Double(progress.total))
+                        .accessibilityLabel("Batch eject progress")
+                        .accessibilityValue("\(progress.completedCount) of \(progress.total) results checked")
+                    Text("\(progress.completedCount) of \(progress.total) results checked")
+                    if let volume = progress.currentVolume { Text(volume.name).font(.headline) }
+                    Button(progress.isCancelling ? "Cancelling remaining requests" : "Cancel Remaining") {
+                        service.cancelBatch()
+                    }
+                    .disabled(progress.isCancelling)
+                    Text("A request already sent to macOS may still finish. Cancellation cannot undo it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section("Mounted external volumes") {
@@ -81,6 +102,39 @@ struct SafeEjectView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                if service.state == .running && !service.volumes.isEmpty {
+                    Button("Review All Eligible Volumes…") {
+                        switch service.prepareBatch() {
+                        case .success: batchFailure = nil
+                        case .failure(let failure): batchFailure = failure
+                        }
+                    }
+                    .disabled(service.isEjecting || service.cleanupFailure != nil || cleanupRequest != nil)
+                }
+            }
+
+            if let result = service.lastBatchResult {
+                Section("Last batch") {
+                    Text(
+                        "\(result.ejectedCount) ejected, \(result.failedCount) incomplete, \(result.notAttemptedCount) not attempted"
+                    )
+                    DisclosureGroup("Per-volume results") {
+                        ForEach(result.items, id: \.volume.id) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(
+                                    item.volume.name,
+                                    systemImage: item.outcome.isEjected ? "checkmark.circle" : "exclamationmark.circle"
+                                ).font(.headline)
+                                Text(item.outcome.message).font(.callout)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    if !result.excluded.isEmpty {
+                        Text("\(result.excluded.count) excluded during review.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if !service.receipts.isEmpty {
@@ -97,15 +151,30 @@ struct SafeEjectView: View {
                         }
                         .accessibilityElement(children: .combine)
                     }
-                    Button("Clear results") { service.clearResults() }
                 } header: {
                     Text("Recent results")
+                }
+            }
+            if !service.receipts.isEmpty || service.lastBatchResult != nil {
+                Section {
+                    Button("Clear All Results") { service.clearResults() }
                 } footer: {
                     Text("Names and results stay in memory for this session. No drive history is saved.")
                 }
             }
         }
         .formStyle(.grouped)
+        .sheet(
+            item: Binding(
+                get: { service.pendingBatchConfirmation },
+                set: { if $0 == nil { service.discardBatchConfirmation() } }
+            )
+        ) { confirmation in
+            SafeEjectBatchReview(
+                confirmation: confirmation,
+                confirm: { batchRequest = confirmation.id },
+                cancel: { service.discardBatchConfirmation() })
+        }
         .confirmationDialog(
             "Eject selected volume?",
             isPresented: Binding(
@@ -130,5 +199,68 @@ struct SafeEjectView: View {
             await service.eject(request)
             self.request = nil
         }
+        .task(id: batchRequest) {
+            guard let batchRequest else { return }
+            switch await service.ejectBatch(confirmationID: batchRequest) {
+            case .success: batchFailure = nil
+            case .failure(let failure): batchFailure = failure
+            }
+            if self.batchRequest == batchRequest { self.batchRequest = nil }
+        }
+    }
+}
+
+private struct SafeEjectBatchReview: View {
+    let confirmation: SafeEjectBatchConfirmation
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Review volumes to eject").font(.title2.weight(.semibold))
+            Text("Only the volumes listed here will be requested. Each is checked again before its request.")
+                .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Included (\(confirmation.eligible.count))").font(.headline)
+                    if confirmation.eligible.isEmpty {
+                        Text("No volumes are currently eligible.").foregroundStyle(.secondary)
+                    }
+                    ForEach(confirmation.eligible) { volume in
+                        Label(volume.name, systemImage: "externaldrive")
+                    }
+                    if !confirmation.excluded.isEmpty {
+                        Divider()
+                        Text("Excluded (\(confirmation.excluded.count))").font(.headline)
+                        ForEach(confirmation.excluded, id: \.volume.id) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.volume.name).fontWeight(.medium)
+                                Text(item.reason.message).font(.callout).foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 320)
+            Text(
+                "Semper cannot measure current file activity. macOS may refuse a request, and some volumes may remain mounted."
+            )
+            .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Button(
+                    confirmation.eligible.count == 1
+                        ? "Eject 1 Volume" : "Eject \(confirmation.eligible.count) Volumes",
+                    action: confirm
+                )
+                .buttonStyle(.borderedProminent)
+                .disabled(confirmation.eligible.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
     }
 }

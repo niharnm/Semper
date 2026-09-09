@@ -116,6 +116,24 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     private let installationDeferral = UpdateInstallationDeferral()
 
+    #if DEBUG
+        static func dormantForTesting(userDefaults: UserDefaults) -> UpdateManager {
+            UpdateManager(dormantUserDefaults: userDefaults)
+        }
+
+        var hasUpdaterControllerForTesting: Bool { updaterController != nil }
+
+        private init(dormantUserDefaults: UserDefaults) {
+            userDefaults = dormantUserDefaults
+            isConfigured = false
+            updateChannel = UpdateChannel.resolved(
+                storedValue: dormantUserDefaults.string(forKey: Self.updateChannelDefaultsKey),
+                bundleDefault: nil
+            )
+            super.init()
+        }
+    #endif
+
     override convenience init() {
         self.init(bundle: .main, userDefaults: .standard)
     }

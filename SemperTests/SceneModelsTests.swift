@@ -4,6 +4,12 @@ import Testing
 
 @Suite("Scene models")
 struct SceneModelsTests {
+    @Test("Blocked Scene mutations describe any active action")
+    func blockedMutationDescription() {
+        #expect(SceneManagerError.mutationsBlocked.localizedDescription
+            == "Finish the active action before changing a scene.")
+    }
+
     @Test("Every scene control survives a Codable round trip")
     func controlCodableRoundTrips() throws {
         let controls: [SceneControl] = [

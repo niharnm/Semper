@@ -66,9 +66,12 @@ final class ShortcutsRegistry {
     private let audioEngine: any AudioEngineDispatching
     private let audioCommands: any AudioCommandDispatching
     private let hud: any PerAppHUDPresenting
+    private let allowsShortcuts: @MainActor () -> Bool
     private weak var awayHandler: (any AwayShortcutHandling)?
     private var didStart = false
+    private var isStopped = false
     private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
+    private var searchConflicts: Set<ShortcutAction> = []
     var onShortcutsChanged: (() -> Void)?
 
     /// Software-emulated key-repeat timing. Carbon hot keys don't auto-repeat,
@@ -85,7 +88,8 @@ final class ShortcutsRegistry {
         audioEngine: any AudioEngineDispatching,
         audioCommands: any AudioCommandDispatching,
         hud: any PerAppHUDPresenting,
-        awayHandler: (any AwayShortcutHandling)? = nil
+        awayHandler: (any AwayShortcutHandling)? = nil,
+        allowsShortcuts: @escaping @MainActor () -> Bool = { true }
     ) {
         self.settings = settings
         self.popupController = popupController
@@ -94,16 +98,17 @@ final class ShortcutsRegistry {
         self.audioCommands = audioCommands
         self.hud = hud
         self.awayHandler = awayHandler
+        self.allowsShortcuts = allowsShortcuts
     }
 
     /// Stable `KeyboardShortcuts.Name` per action. The raw string is part of
     /// the persistence contract — don't change it without a migration.
     func name(for action: ShortcutAction) -> KeyboardShortcuts.Name {
-        KeyboardShortcuts.Name(stableID(for: action))
+        action.keyboardShortcutName
     }
 
     var hasAssignedShortcuts: Bool {
-        ShortcutAction.allCases.contains {
+        ShortcutAction.soundActions.contains {
             settings.appSettings.customShortcuts[$0.rawValue] != nil
                 || KeyboardShortcuts.getShortcut(for: name(for: $0)) != nil
         }
@@ -111,6 +116,11 @@ final class ShortcutsRegistry {
 
     func conflictingAction(for action: ShortcutAction) -> ShortcutAction? {
         shortcutConflicts[action]
+    }
+
+    func conflictDescription(for action: ShortcutAction) -> String? {
+        if searchConflicts.contains(action) { return "Already used by Search Semper." }
+        return shortcutConflicts[action].map { "Already used by \($0.displayName)." }
     }
 
     func targetAppOptions() -> [ShortcutTargetAppOption] {
@@ -137,12 +147,7 @@ final class ShortcutsRegistry {
     /// drive it directly without faking a global key event.
     @discardableResult
     func dispatch(_ action: ShortcutAction) -> Bool {
-        if action == .toggleAwayMode {
-            awayHandler?.handleAwayShortcut()
-            return awayHandler != nil
-        }
-        guard awayHandler?.blocksOrdinaryShortcuts != true else { return false }
-
+        guard !isStopped, allowsShortcuts(), awayHandler?.blocksOrdinaryShortcuts != true else { return false }
         switch action {
         case .togglePopup:
             popupController.toggle()
@@ -155,6 +160,8 @@ final class ShortcutsRegistry {
             return adjustTargetVolume(direction: -1)
         case .targetAppMuteToggle:
             return toggleTargetMute()
+        case .restoreWorkspace:
+            return false
         }
     }
 
@@ -243,7 +250,7 @@ final class ShortcutsRegistry {
     }
 
     private func startRepeating(action: ShortcutAction) {
-        guard action.supportsRepeat else { return }
+        guard !isStopped, action.supportsRepeat else { return }
         repeatTasks[action]?.cancel()
         repeatTasks[action] = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.repeatInitialDelay)
@@ -287,12 +294,27 @@ final class ShortcutsRegistry {
     /// Idempotent. Subsequent calls are no-ops. Safe to call from a SwiftUI
     /// `.task` modifier on the popup content.
     func start() {
-        guard !didStart else { return }
+        guard !didStart, !isStopped else { return }
         didStart = true
         syncRegistrations()
         onShortcutsChanged?()
 
-        Self.logger.debug("ShortcutsRegistry started; \(ShortcutAction.allCases.count) action(s) registered")
+        Self.logger.debug("ShortcutsRegistry started; \(ShortcutAction.soundActions.count) action(s) registered")
+    }
+
+    func stop() {
+        isStopped = true
+        onShortcutsChanged = nil
+        for task in repeatTasks.values { task.cancel() }
+        repeatTasks.removeAll()
+        guard didStart else { return }
+        didStart = false
+        ShortcutAction.preservingOtherRegistrations(excluding: ShortcutAction.soundActions.map(\.keyboardShortcutName))
+        {
+            for action in ShortcutAction.soundActions {
+                KeyboardShortcuts.removeHandler(for: name(for: action))
+            }
+        }
     }
 
     /// Returns a closure suitable for `KeyboardShortcuts.Recorder(for:onChange:)`.
@@ -314,21 +336,20 @@ final class ShortcutsRegistry {
     }
 
     private func handleRecorderChange(shortcut: KeyboardShortcuts.Shortcut?, for action: ShortcutAction) {
+        guard !isStopped, ShortcutAction.soundActions.contains(action) else { return }
         var app = settings.appSettings
         if let shortcut {
             let recordedShortcut = ShortcutCodable.from(shortcut)
-            if let conflictingAction = ShortcutAction.allCases.first(where: {
-                guard $0 != action else { return false }
-                let assigned = app.customShortcuts[$0.rawValue]
-                    ?? KeyboardShortcuts.getShortcut(for: name(for: $0)).map(ShortcutCodable.from)
-                return assigned == recordedShortcut
-            }) {
-                KeyboardShortcuts.setShortcut(
-                    app.customShortcuts[action.rawValue]?.keyboardShortcut,
-                    for: name(for: action)
-                )
-                syncRegistrations()
+            let conflictingAction = action.conflictingAction(with: recordedShortcut, settings: settings)
+            let conflictsWithSearch = ShortcutAction.conflictsWithSearch(recordedShortcut)
+            if conflictingAction != nil || conflictsWithSearch {
+                ShortcutAction.preservingOtherRegistrations(excluding: [name(for: action)]) {
+                    KeyboardShortcuts.setShortcut(
+                        app.customShortcuts[action.rawValue]?.keyboardShortcut, for: name(for: action))
+                    syncRegistrations()
+                }
                 shortcutConflicts[action] = conflictingAction
+                if conflictsWithSearch { searchConflicts.insert(action) }
                 return
             }
             app.customShortcuts[action.rawValue] = recordedShortcut
@@ -341,60 +362,66 @@ final class ShortcutsRegistry {
     }
 
     func clearAllShortcuts() {
-        for action in ShortcutAction.allCases {
-            KeyboardShortcuts.setShortcut(nil, for: name(for: action))
+        guard !isStopped else { return }
+        ShortcutAction.preservingOtherRegistrations(excluding: ShortcutAction.soundActions.map(\.keyboardShortcutName))
+        {
+            var app = settings.appSettings
+            for action in ShortcutAction.soundActions {
+                KeyboardShortcuts.setShortcut(nil, for: name(for: action))
+                app.customShortcuts[action.rawValue] = nil
+            }
+            settings.appSettings = app
+            syncRegistrations()
         }
-        var app = settings.appSettings
-        app.customShortcuts.removeAll()
-        settings.appSettings = app
-        syncRegistrations()
         onShortcutsChanged?()
     }
 
-    private func syncRegistrations() {
+    func syncRegistrations() {
+        guard !isStopped else { return }
         var desired: [ShortcutAction: ShortcutCodable] = [:]
-        for action in ShortcutAction.allCases {
+        for action in ShortcutAction.soundActions {
             desired[action] = settings.appSettings.customShortcuts[action.rawValue]
                 ?? KeyboardShortcuts.getShortcut(for: name(for: action)).map(ShortcutCodable.from)
         }
 
-        var owners: [ShortcutCodable: ShortcutAction] = [:]
-        var conflicts: [ShortcutAction: ShortcutAction] = [:]
-        for action in ShortcutAction.allCases {
-            let actionName = name(for: action)
-            stopRepeating(action: action)
-            KeyboardShortcuts.removeHandler(for: actionName)
+        ShortcutAction.preservingOtherRegistrations(excluding: ShortcutAction.soundActions.map(\.keyboardShortcutName))
+        {
+            var owners: [ShortcutCodable: ShortcutAction] = [:]
+            searchConflicts.removeAll()
+            var conflicts: [ShortcutAction: ShortcutAction] = [:]
+            for action in ShortcutAction.soundActions {
+                let actionName = name(for: action)
+                stopRepeating(action: action)
+                KeyboardShortcuts.removeHandler(for: actionName)
 
-            if let shortcut = desired[action], let owner = owners[shortcut] {
-                KeyboardShortcuts.setShortcut(nil, for: actionName)
-                conflicts[action] = owner
-            } else {
-                if let shortcut = desired[action] {
-                    owners[shortcut] = action
+                if let shortcut = desired[action], ShortcutAction.conflictsWithSearch(shortcut) {
+                    KeyboardShortcuts.setShortcut(nil, for: actionName)
+                    searchConflicts.insert(action)
+                } else if let shortcut = desired[action], let owner = owners[shortcut] {
+                    KeyboardShortcuts.setShortcut(nil, for: actionName)
+                    conflicts[action] = owner
+                } else {
+                    if let shortcut = desired[action] {
+                        owners[shortcut] = action
+                    }
+                    KeyboardShortcuts.setShortcut(desired[action]?.keyboardShortcut, for: actionName)
                 }
-                KeyboardShortcuts.setShortcut(desired[action]?.keyboardShortcut, for: actionName)
-            }
 
-            KeyboardShortcuts.onKeyDown(for: actionName) { [weak self] in
-                guard let self, self.dispatch(action) else { return }
-                self.startRepeating(action: action)
+                if didStart {
+                    KeyboardShortcuts.onKeyDown(for: actionName) { [weak self] in
+                        guard let self, self.dispatch(action) else { return }
+                        self.startRepeating(action: action)
+                    }
+                    KeyboardShortcuts.onKeyUp(for: actionName) { [weak self] in
+                        self?.stopRepeating(action: action)
+                    }
+                }
             }
-            KeyboardShortcuts.onKeyUp(for: actionName) { [weak self] in
-                self?.stopRepeating(action: action)
-            }
-        }
-        shortcutConflicts = conflicts
-    }
-
-    private func stableID(for action: ShortcutAction) -> String {
-        switch action {
-        case .togglePopup: "toggle-popup"
-        case .toggleAwayMode: "toggle-away-mode"
-        case .targetAppVolumeUp: "frontmost-app-volume-up"
-        case .targetAppVolumeDown: "frontmost-app-volume-down"
-        case .targetAppMuteToggle: "frontmost-app-mute-toggle"
+            for action in owners.values where didStart { KeyboardShortcuts.enable(name(for: action)) }
+            shortcutConflicts = conflicts
         }
     }
+
 }
 
 extension AudioEngine: AudioEngineDispatching {}

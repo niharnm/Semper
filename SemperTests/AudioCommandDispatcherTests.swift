@@ -5,6 +5,30 @@ import Testing
 @Suite("AudioCommandDispatcher")
 @MainActor
 struct AudioCommandDispatcherTests {
+    @Test("Shutdown rejects further commands and clears undo")
+    func shutdownRevokesCommands() {
+        let target = AudioAppCommandTarget.persisted("com.test.app")
+        let key = AudioControlKey.appMute(target)
+        let backend = StubAudioCommandBackend(state: [key: .flag(false)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+        dispatcher.dispatch(
+            .setAppMute(target: target, muted: true),
+            context: AudioCommandContext(source: .popup)
+        )
+        let previousWrites = backend.appliedCommands.count
+
+        dispatcher.shutdown()
+        dispatcher.shutdown()
+        let result = dispatcher.dispatch(
+            .setAppMute(target: target, muted: false),
+            context: AudioCommandContext(source: .popup)
+        )
+
+        #expect(result == .rejected(.unsupportedRoute("Sound is paused")))
+        #expect(dispatcher.undoLastChange() == .unavailable)
+        #expect(backend.appliedCommands.count == previousWrites)
+    }
+
     @Test("Applied result includes source, reason, values, and transaction")
     func appliedReceipt() {
         let target = AudioAppCommandTarget.persisted("com.test.app")

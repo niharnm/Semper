@@ -42,27 +42,30 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
     }
 
     func displays() async -> [WorkspaceDisplay] {
-        let result: [WorkspaceDisplay] = await MainActor.run {
-            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-            return NSScreen.screens.compactMap { screen in
-                guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-                    let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
-                else { return nil }
-                let identity = CFUUIDCreateString(nil, uuid) as String
-                return WorkspaceDisplay(
-                    id: identity, name: screen.localizedName,
-                    visibleFrame: Self.accessibilityFrame(screen.visibleFrame, primaryHeight: primaryHeight),
-                    fullScreenFrame: Self.accessibilityFrame(
-                        CGRect(
-                            x: screen.frame.minX + screen.safeAreaInsets.left,
-                            y: screen.frame.minY + screen.safeAreaInsets.bottom,
-                            width: screen.frame.width - screen.safeAreaInsets.left - screen.safeAreaInsets.right,
-                            height: screen.frame.height - screen.safeAreaInsets.top - screen.safeAreaInsets.bottom),
-                        primaryHeight: primaryHeight))
-            }
-        }
+        let result = await Self.displaySnapshot()
         currentDisplays = result
         return result
+    }
+
+    @MainActor
+    static func displaySnapshot() -> [WorkspaceDisplay] {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSScreen.screens.compactMap { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
+            else { return nil }
+            let identity = CFUUIDCreateString(nil, uuid) as String
+            return WorkspaceDisplay(
+                id: identity, name: screen.localizedName,
+                visibleFrame: Self.accessibilityFrame(screen.visibleFrame, primaryHeight: primaryHeight),
+                fullScreenFrame: Self.accessibilityFrame(
+                    CGRect(
+                        x: screen.frame.minX + screen.safeAreaInsets.left,
+                        y: screen.frame.minY + screen.safeAreaInsets.bottom,
+                        width: screen.frame.width - screen.safeAreaInsets.left - screen.safeAreaInsets.right,
+                        height: screen.frame.height - screen.safeAreaInsets.top - screen.safeAreaInsets.bottom),
+                    primaryHeight: primaryHeight))
+        }
     }
 
     nonisolated static func accessibilityFrame(_ frame: CGRect, primaryHeight: CGFloat) -> CGRect {

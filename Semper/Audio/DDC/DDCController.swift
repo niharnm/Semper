@@ -83,6 +83,13 @@ final class DDCSerializedOperationContext: @unchecked Sendable {
     private let lock = NSLock()
     private var state: State = .pending
 
+    var isCancelled: Bool {
+        lock.withLock {
+            if case .cancelled = state { return true }
+            return false
+        }
+    }
+
     func claimMutation() throws {
         try lock.withLock {
             switch state {

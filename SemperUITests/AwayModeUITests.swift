@@ -7,6 +7,7 @@ final class AwayModeUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    @MainActor
     func testCountdownCanCancelAndStartImmediately() throws {
         let app = launchApp()
         defer { app.terminate() }
@@ -29,6 +30,7 @@ final class AwayModeUITests: XCTestCase {
         exitWithPIN(in: app)
     }
 
+    @MainActor
     func testWrongPINRetainsEntryFocusAndCorrectPINExits() throws {
         let app = launchApp()
         defer { app.terminate() }
@@ -52,6 +54,7 @@ final class AwayModeUITests: XCTestCase {
         )
     }
 
+    @MainActor
     func testCurtainExposesPrimaryAccessibilityLabels() throws {
         let app = launchApp()
         defer { app.terminate() }
@@ -66,6 +69,7 @@ final class AwayModeUITests: XCTestCase {
         exitWithPIN(in: app)
     }
 
+    @MainActor
     func testSystemAuthenticationSuccessExitsCurtain() throws {
         let app = launchApp(
             authenticationMethod: "system",
@@ -82,6 +86,7 @@ final class AwayModeUITests: XCTestCase {
         )
     }
 
+    @MainActor
     func testSystemAuthenticationCancellationKeepsCurtainActive() throws {
         let app = launchApp(
             authenticationMethod: "system",
@@ -102,6 +107,7 @@ final class AwayModeUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Start Away Mode"].exists)
     }
 
+    @MainActor
     private func launchApp(
         authenticationMethod: String = "pin",
         systemAuthenticationResult: String? = nil
@@ -125,6 +131,7 @@ final class AwayModeUITests: XCTestCase {
         return app
     }
 
+    @MainActor
     private func startAwayImmediately(in app: XCUIApplication) {
         let startButton = app.buttons["Start Away Mode"]
         XCTAssertTrue(startButton.waitForExistence(timeout: 5))
@@ -135,6 +142,7 @@ final class AwayModeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Authenticate to Exit"].waitForExistence(timeout: 5))
     }
 
+    @MainActor
     private func exitWithPIN(in app: XCUIApplication) {
         app.buttons["Authenticate to Exit"].click()
         let pinField = app.secureTextFields["4-digit PIN"]

@@ -74,7 +74,7 @@ struct ShelfDetailView: View {
                 }
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise") { service.refresh() }.disabled(!service.isRunning)
-                Button("Clear Shelf", systemImage: "tray") { confirmClear = true }.disabled(service.items.isEmpty)
+                Button("Clear Shelf", systemImage: "tray") { confirmClear = true }.disabled(!service.canClear)
             }
             HStack {
                 Picker(
@@ -96,7 +96,7 @@ struct ShelfDetailView: View {
                     "Keep shelf between launches",
                     isOn: Binding(get: { service.persistenceEnabled }, set: { value in service.setPersistence(value) })
                 )
-                .disabled(service.storeNeedsReset || !service.isRunning)
+                .disabled(service.storeNeedsReset || !service.isRunning || service.isClearing)
                 Text(
                     "Off by default. Saved text, image copies, and file bookmarks stay on this Mac. Items set to ‘When Semper quits’ still clear at quit."
                 )

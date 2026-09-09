@@ -16,7 +16,24 @@ enum WorkspaceCommand: String, CaseIterable, Sendable {
     }
 }
 
-enum WorkspaceCommandEffect: Sendable { case openWorkspace, completed }
+enum WorkspaceWorkflow: String, Equatable, Sendable {
+    case capture, preview, restore
+}
+
+struct WorkspaceWorkflowRequest: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let workflow: WorkspaceWorkflow
+
+    init(id: UUID = UUID(), workflow: WorkspaceWorkflow) {
+        self.id = id
+        self.workflow = workflow
+    }
+}
+
+enum WorkspaceCommandEffect: Sendable {
+    case openWorkspace(WorkspaceWorkflow)
+    case completed
+}
 
 enum WorkspaceModuleMetadata {
     static let id = "workspace"
@@ -30,9 +47,9 @@ enum WorkspaceModuleMetadata {
     static let permissionReason =
         "Accessibility is used only after an invoked window action to read, move, and resize chosen windows."
     static let backgroundWork =
-        "No monitoring or automatic rearrangement. Window operations run only when invoked. Pausing cancels and drains current work."
+        "Optional display-change notifications while running, off by default. Window operations run only when invoked. Pausing removes observation and drains current work."
     static let localDataPolicy =
-        "Named arrangements and display-relative slots are saved locally until deleted. No window titles are collected. Live window bindings and undo records last for the current session."
+        "Named arrangements, display-relative slots, and the display-prompt preference are saved locally until deleted. No window titles are collected. Live window bindings, notices, and undo records last for the current session."
     static let dependencies: [String] = []
     static let conflicts: [String] = []
 }
@@ -40,9 +57,11 @@ enum WorkspaceModuleMetadata {
 extension WorkspaceService {
     func handle(_ command: WorkspaceCommand) async -> WorkspaceCommandEffect {
         switch command {
-        case .capture, .preview, .restore: return .openWorkspace
+        case .capture: return .openWorkspace(.capture)
+        case .preview: return .openWorkspace(.preview)
+        case .restore: return .openWorkspace(.restore)
         case .undo:
-            guard canUndo else { return .openWorkspace }
+            guard canUndo else { return .openWorkspace(.restore) }
             await undo()
             return .completed
         }

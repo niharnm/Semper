@@ -22,6 +22,11 @@ final class ShelfService {
     private(set) var importCount = 0
     private(set) var message: String?
     private(set) var storeNeedsReset = false
+    private var pendingImportCleanup: Set<String> = []
+    private var importCleanupNeedsRetry = false
+    private var importCancellationCount = 0
+
+    var canClear: Bool { !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry }
 
     let store: ShelfStore
     @ObservationIgnored private let access: any ShelfFileAccess
@@ -32,7 +37,8 @@ final class ShelfService {
     @ObservationIgnored private var hashTasks: [UUID: Task<String, Error>] = [:]
     @ObservationIgnored private var importTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var generation = 0
-    @ObservationIgnored private var clearTask: Task<Void, Never>?
+    @ObservationIgnored private var clearGeneration = 0
+    @ObservationIgnored private var clearTask: Task<Result<Void, ShelfFailure>, Never>?
     @ObservationIgnored private var removingIDs: Set<UUID> = []
     @ObservationIgnored private let importer:
         @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload
@@ -94,8 +100,8 @@ final class ShelfService {
         expiryTask = nil
         let drain = Task { [weak self] in
             guard let self else { return }
-            await self.cancelWork()
-            if let clearTask = self.clearTask { await clearTask.value }
+            _ = await self.cancelWork()
+            if let clearTask = self.clearTask { _ = await clearTask.value }
             for url in self.scopes.values { self.access.end(url) }
             self.scopes.removeAll()
             self.isStopping = false
@@ -176,6 +182,10 @@ final class ShelfService {
     }
 
     func setPersistence(_ enabled: Bool) {
+        guard !isClearing else {
+            message = "Wait for Clear Shelf to finish before changing persistence."
+            return
+        }
         guard !storeNeedsReset else {
             message = ShelfFailure.invalidStore.localizedDescription
             return
@@ -199,14 +209,18 @@ final class ShelfService {
     }
 
     func resetSavedData() async {
-        await clear()
+        if let clearTask { _ = await clearTask.value }
+        let neededReset = storeNeedsReset
         do {
             try store.removeManifest()
-            try removeOrphanedCache()
             storeNeedsReset = false
             persistenceEnabled = false
+            try await clear().get()
             message = nil
-        } catch { report(error) }
+        } catch {
+            storeNeedsReset = neededReset
+            report(error)
+        }
     }
 
     func remove(_ id: UUID) async {
@@ -214,6 +228,8 @@ final class ShelfService {
     }
 
     private func remove(_ id: UUID, onlyIfExpired: Bool) async {
+        guard !isClearing else { return }
+        let removalClearGeneration = clearGeneration
         removingIDs.insert(id)
         defer { removingIDs.remove(id) }
         let worker = hashTasks[id]
@@ -221,6 +237,7 @@ final class ShelfService {
         if worker != nil { checksums[id] = .cancelled }
         _ = await worker?.result
         hashTasks[id] = nil
+        guard clearGeneration == removalClearGeneration, !isClearing else { return }
         guard let item = items.first(where: { $0.id == id }) else { return }
         guard !onlyIfExpired || (!Task.isCancelled && item.hasExpired(at: now())) else { return }
         if let url = scopes.removeValue(forKey: id) { access.end(url) }
@@ -233,33 +250,65 @@ final class ShelfService {
         scheduleExpiry()
     }
 
-    func clear() async {
+    @discardableResult
+    func clear() async -> Result<Void, ShelfFailure> {
         if let clearTask {
-            await clearTask.value
-            return
+            return await clearTask.value
         }
         generation += 1
+        clearGeneration += 1
         isClearing = true
-        let worker = Task { [weak self] in
-            guard let self else { return }
-            await self.cancelWork()
+        expiryTask?.cancel()
+        expiryTask = nil
+        let worker = Task<Result<Void, ShelfFailure>, Never> { [weak self] in
+            guard let self else { return .failure(.cancelled) }
+            defer {
+                self.isClearing = false
+                self.clearTask = nil
+                self.scheduleExpiry()
+            }
+            if case .failure(let failure) = await self.cancelWork() {
+                self.report(failure)
+                return .failure(failure)
+            }
+            guard !self.storeNeedsReset else {
+                self.report(ShelfFailure.invalidStore)
+                return .failure(.invalidStore)
+            }
+            if self.persistenceEnabled {
+                do {
+                    try self.store.save(items: [], expiry: self.defaultExpiry)
+                } catch {
+                    self.report(ShelfFailure.storeWrite)
+                    return .failure(.storeWrite)
+                }
+            }
+            for item in self.items {
+                if case .failure(let failure) = self.removeOwnedContent(item) {
+                    self.report(failure)
+                    return .failure(failure)
+                }
+            }
             for url in self.scopes.values { self.access.end(url) }
             self.scopes.removeAll()
-            for item in self.items { self.removeOwnedContent(item) }
             self.items.removeAll()
             self.fileStates.removeAll()
             self.invalidReferenceIDs.removeAll()
             self.checksums.removeAll()
-            self.persist()
-            self.isClearing = false
-            self.clearTask = nil
-            self.scheduleExpiry()
+            if self.message == ShelfFailure.storeWrite.localizedDescription
+                || self.message == "Clear Shelf to retry temporary image cleanup before adding another drop."
+                || self.message == "Wait for cancelled imports to finish cleaning up before adding another drop."
+            {
+                self.message = nil
+            }
+            return .success(())
         }
         clearTask = worker
-        await worker.value
+        return await worker.value
     }
 
     func expireItems() async {
+        guard !isClearing else { return }
         let ids = items.filter { $0.hasExpired(at: now()) }.map(\.id)
         for id in ids { await remove(id, onlyIfExpired: true) }
         scheduleExpiry()
@@ -302,6 +351,14 @@ final class ShelfService {
             report(ShelfFailure.stopped)
             return false
         }
+        guard importCancellationCount == 0 else {
+            message = "Wait for cancelled imports to finish cleaning up before adding another drop."
+            return false
+        }
+        guard pendingImportCleanup.isEmpty, !importCleanupNeedsRetry else {
+            message = "Clear Shelf to retry temporary image cleanup before adding another drop."
+            return false
+        }
         guard providers.count <= ShelfLimits.items - items.count - importTasks.count else {
             report(ShelfFailure.full)
             return false
@@ -329,7 +386,9 @@ final class ShelfService {
                     try self.acceptImported(payload)
                 } catch {
                     if error as? ShelfFailure != .cancelled { self.report(error) }
+                    self.reconcileImportCleanup()
                 }
+                guard self.pendingImportCleanup.isEmpty, !self.importCleanupNeedsRetry else { return }
                 self.importCount = max(0, self.importCount - 1)
             }
         }
@@ -338,13 +397,21 @@ final class ShelfService {
         return true
     }
 
-    func cancelImports() async {
+    @discardableResult
+    func cancelImports() async -> Result<Void, ShelfFailure> {
+        importCancellationCount += 1
+        defer { importCancellationCount -= 1 }
+        if !storeNeedsReset {
+            for name in Array(pendingImportCleanup) { discardImported(.cachedFile(name)) }
+        }
         let workers = importTasks
         for task in workers.values { task.cancel() }
         for (id, task) in workers {
             await task.value
             importTasks[id] = nil
         }
+        reconcileImportCleanup()
+        return pendingImportCleanup.isEmpty && !importCleanupNeedsRetry ? .success(()) : .failure(.storeWrite)
     }
 
     func fileURL(for item: ShelfItem) -> URL? {
@@ -440,14 +507,23 @@ final class ShelfService {
         }
     }
 
-    private func discardImported(_ payload: ShelfImportedPayload) {
+    @discardableResult
+    private func discardImported(_ payload: ShelfImportedPayload) -> Result<Void, ShelfFailure> {
         if case .cachedFile(let name) = payload {
-            do { try store.removeCachedFile(named: name) } catch { report(error) }
+            do {
+                try store.removeCachedFile(named: name)
+                pendingImportCleanup.remove(name)
+            } catch {
+                pendingImportCleanup.insert(name)
+                report(ShelfFailure.storeWrite)
+                return .failure(.storeWrite)
+            }
         }
+        return .success(())
     }
 
-    private func cancelWork() async {
-        await cancelImports()
+    private func cancelWork() async -> Result<Void, ShelfFailure> {
+        let importCleanup = await cancelImports()
         let workers = hashTasks
         for (id, task) in workers {
             task.cancel()
@@ -456,6 +532,18 @@ final class ShelfService {
         for (id, task) in workers {
             _ = await task.result
             hashTasks[id] = nil
+        }
+        return importCleanup
+    }
+
+    private func reconcileImportCleanup() {
+        guard !storeNeedsReset else { return }
+        do {
+            try removeOrphanedCache()
+            importCleanupNeedsRetry = false
+        } catch {
+            importCleanupNeedsRetry = true
+            report(ShelfFailure.storeWrite)
         }
     }
 
@@ -467,10 +555,15 @@ final class ShelfService {
         } catch { report(error) }
     }
 
-    private func removeOwnedContent(_ item: ShelfItem) {
+    @discardableResult
+    private func removeOwnedContent(_ item: ShelfItem) -> Result<Void, ShelfFailure> {
         if case .cachedFile(let name) = item.payload {
-            do { try store.removeCachedFile(named: name) } catch { report(error) }
+            do { try store.removeCachedFile(named: name) } catch {
+                report(error)
+                return .failure(.storeWrite)
+            }
         }
+        return .success(())
     }
 
     private func removeOrphanedCache() throws {
@@ -489,7 +582,7 @@ final class ShelfService {
     private func scheduleExpiry() {
         expiryTask?.cancel()
         expiryTask = nil
-        guard isRunning, let deadline = items.compactMap(\.expiresAt).min() else { return }
+        guard isRunning, !isClearing, let deadline = items.compactMap(\.expiresAt).min() else { return }
         let delay = min(86_400, max(0, deadline.timeIntervalSince(now())))
         expiryTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }

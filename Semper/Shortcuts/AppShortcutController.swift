@@ -338,12 +338,10 @@ final class AppShortcutController {
     }
 
     private func requireMutationsAllowed() throws {
-        guard allowsMutations() else {
-            throw AppShortcutExecutionError.awayModeActive
-        }
+        guard allowsMutations() else { throw AppShortcutExecutionError.awayModeActive }
     }
 
-    private static func error(for rejection: AudioCommandRejection) -> AppShortcutExecutionError {
+    static func error(for rejection: AudioCommandRejection) -> AppShortcutExecutionError {
         switch rejection {
         case .invalidValue:
             .invalidValue("The shortcut contains an invalid value.")
@@ -355,6 +353,8 @@ final class AppShortcutController {
             .permissionDenied
         case .unsupportedRoute(let message):
             .unsupportedRoute(message)
+        case .mutationAdmissionDenied:
+            .unsupportedRoute("Sound controls are unavailable while Away Mode is active.")
         case .sceneOperationInProgress:
             .writeFailed
         case .writeFailed:

@@ -18,6 +18,7 @@ with tempfile.TemporaryDirectory(prefix="semper-direct-utilities-") as directory
     tests = package / "Tests" / "SemperTests"
     sources.mkdir(parents=True)
     tests.mkdir(parents=True)
+    (sources / "MutationAdmissionGate.swift").symlink_to(ROOT / "Semper/Utilities/MutationAdmissionGate.swift")
     for module in MODULES:
         source = ROOT / "Semper" / module
         if not source.is_dir():
