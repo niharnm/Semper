@@ -73,6 +73,10 @@ slot does not move it. Undo compares the observed post-restore frame before
 changing a window, so later manual moves remain intact. Control of every Space
 and automatic matching of recreated windows are not promised.
 
+Presentation uses the separate [operation receipt API](workspace-operation-receipts.md)
+to apply explicit slot selections and restore their observed changes without
+depending on the direct Undo history.
+
 File Shelf accepts explicit drops, retains original files by reference, and
 keeps session data by default. Persisting a shelf requires an explicit choice.
 Clearing and expiry remove shelf entries and owned cache content, never original

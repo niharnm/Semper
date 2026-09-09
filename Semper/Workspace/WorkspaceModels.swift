@@ -92,6 +92,7 @@ struct WorkspaceMoveObservation: Sendable {
     let before: CGRect
     let after: CGRect?
     let failure: String?
+    let writeAttempted: Bool
 }
 
 struct WorkspaceUndoEntry: Sendable {

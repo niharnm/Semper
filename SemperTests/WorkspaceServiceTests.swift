@@ -15,6 +15,16 @@ actor WorkspaceTestBackend: WorkspaceWindowBackend {
     var failingMoves: Set<WorkspaceWindowID> = []
     var delay = false
     var stopped = false
+    var moveAttempts = 0
+    var pauseBeforeAttempt: Int?
+    var pauseAfterAttempt: Int?
+    var missingReadback = false
+    var shutdownWaiter: CheckedContinuation<Void, Never>?
+    var holdShutdown = false
+    var shutdownCalls = 0
+    var frameBeforeNextGuard: CGRect?
+    var holdMoveReturn = false
+    var moveReturnWaiter: CheckedContinuation<Void, Never>?
 
     init(apps: [WorkspaceApplication], screens: [WorkspaceDisplay], windows: [WorkspaceWindowSnapshot]) {
         self.apps = apps
@@ -35,19 +45,53 @@ actor WorkspaceTestBackend: WorkspaceWindowBackend {
         if !allowed { throw WorkspaceError.permission }
         return states[id]
     }
-    func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) throws -> WorkspaceMoveObservation {
+    func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) async throws -> WorkspaceMoveObservation {
+        moveAttempts += 1
+        if pauseBeforeAttempt == moveAttempts { try await Task.sleep(for: .seconds(20)) }
         if failingMoves.contains(id) { throw WorkspaceError.missing }
+        if let frameBeforeNextGuard {
+            change(id, frame: frameBeforeNextGuard)
+            self.frameBeforeNextGuard = nil
+        }
         guard let state = states[id], let before = state.frame else { throw WorkspaceError.missing }
         guard state.issue == nil, before == expected else {
-            return .init(before: before, after: before, failure: "Window changed or is unsupported.")
+            return .init(
+                before: before, after: before, failure: "Window changed or is unsupported.", writeAttempted: false)
         }
         moves.append(id)
         let after =
             constrained ? CGRect(x: frame.minX, y: frame.minY, width: frame.width + 80, height: frame.height) : frame
         states[id] = .init(id: id, application: state.application, ordinal: state.ordinal, frame: after, issue: nil)
-        return .init(before: before, after: after, failure: nil)
+        if holdMoveReturn { await withCheckedContinuation { moveReturnWaiter = $0 } }
+        var failure: String?
+        if pauseAfterAttempt == moveAttempts {
+            do { try await Task.sleep(for: .seconds(20)) } catch is CancellationError {
+                failure = "Cancelled after write."
+            }
+        }
+        return .init(before: before, after: missingReadback ? nil : after, failure: failure, writeAttempted: true)
     }
-    func shutdown() { stopped = true }
+    func shutdown() async {
+        shutdownCalls += 1
+        if holdShutdown { await withCheckedContinuation { shutdownWaiter = $0 } }
+        stopped = true
+    }
+    func setMovePauses(before: Int? = nil, after: Int? = nil) {
+        pauseBeforeAttempt = before
+        pauseAfterAttempt = after
+    }
+    func setFrameBeforeNextGuard(_ frame: CGRect) { frameBeforeNextGuard = frame }
+    func setHoldMoveReturn(_ value: Bool) { holdMoveReturn = value }
+    func releaseMoveReturn() {
+        moveReturnWaiter?.resume()
+        moveReturnWaiter = nil
+    }
+    func setMissingReadback(_ value: Bool) { missingReadback = value }
+    func setHoldShutdown(_ value: Bool) { holdShutdown = value }
+    func releaseShutdown() {
+        shutdownWaiter?.resume()
+        shutdownWaiter = nil
+    }
     func setPermission(_ value: Bool) { allowed = value }
     func setScreens(_ value: [WorkspaceDisplay]) { screens = value }
     func setConstrained(_ value: Bool) { constrained = value }
