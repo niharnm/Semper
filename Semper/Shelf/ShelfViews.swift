@@ -74,7 +74,7 @@ struct ShelfDetailView: View {
                 }
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise") { service.refresh() }.disabled(!service.isRunning)
-                Button("Clear Shelf", systemImage: "tray") { confirmClear = true }.disabled(service.items.isEmpty)
+                Button("Clear Shelf", systemImage: "tray") { confirmClear = true }.disabled(!service.canClear)
             }
             HStack {
                 Picker(
