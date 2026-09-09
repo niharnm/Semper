@@ -1,6 +1,19 @@
 import CoreGraphics
 import Foundation
 
+nonisolated enum DisplayMutationOwner: Sendable {
+    case manual
+    case scene
+
+    var admissionOwner: MutationAdmissionOwner {
+        switch self {
+        case .manual: .manualDisplay
+        case .scene: .scene
+        }
+    }
+
+}
+
 #if !APP_STORE
 
 nonisolated struct DisplayFeatureProbeSummary: Equatable, Sendable {
@@ -934,7 +947,8 @@ final class DisplayControlService {
     func set(
         _ normalized: Double,
         feature: DisplayFeature,
-        for identity: DisplayIdentity
+        for identity: DisplayIdentity,
+        mutationOwner: DisplayMutationOwner = .manual
     ) async throws -> DisplayWriteResult {
         guard isRunning,
               let connection = connections[identity],
@@ -944,7 +958,10 @@ final class DisplayControlService {
         }
         let generation = lifecycleGeneration
         return try await directOperations.run { @MainActor [self] in
-            let admissionPermit = try mutationAdmission.acquire(owner: .manual, mode: .shared)
+            let admissionPermit = try mutationAdmission.acquire(
+                owner: mutationOwner.admissionOwner,
+                mode: .shared
+            )
             defer { mutationAdmission.release(admissionPermit) }
 
             let result: DisplayWriteResult
@@ -1048,7 +1065,7 @@ final class DisplayControlService {
         }
         let generation = lifecycleGeneration
         return try await directOperations.run { @MainActor [self] in
-            let admissionPermit = try mutationAdmission.acquire(owner: .manual, mode: .shared)
+            let admissionPermit = try mutationAdmission.acquire(owner: .manualDisplay, mode: .shared)
             defer { mutationAdmission.release(admissionPermit) }
 
             let result: DisplayVolumeWriteResult
@@ -1128,7 +1145,7 @@ final class DisplayControlService {
         }
         let generation = lifecycleGeneration
         return try await directOperations.run { @MainActor [self] in
-            let admissionPermit = try mutationAdmission.acquire(owner: .manual, mode: .shared)
+            let admissionPermit = try mutationAdmission.acquire(owner: .manualDisplay, mode: .shared)
             defer { mutationAdmission.release(admissionPermit) }
 
             let result: DisplayInputWriteResult
@@ -1626,7 +1643,8 @@ final class DisplayControlService {
     func set(
         _ normalized: Double,
         feature: DisplayFeature,
-        for identity: DisplayIdentity
+        for identity: DisplayIdentity,
+        mutationOwner: DisplayMutationOwner = .manual
     ) async throws -> DisplayWriteResult {
         .unavailable
     }

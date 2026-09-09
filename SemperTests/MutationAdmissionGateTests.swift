@@ -36,12 +36,38 @@ struct MutationAdmissionGateTests {
             try gate.acquire(owner: .scene, mode: .shared)
         }
         #expect(throws: MutationAdmissionError.exclusivePermitActive(owner: .awayMode)) {
+            try gate.acquire(owner: .manualDisplay, mode: .shared)
+        }
+        #expect(throws: MutationAdmissionError.exclusivePermitActive(owner: .awayMode)) {
             try gate.acquire(owner: .awayMode, mode: .exclusive)
         }
 
         #expect(gate.release(exclusive))
         let shared = try gate.acquire(owner: .scene, mode: .shared)
         #expect(gate.release(shared))
+    }
+
+    @Test("Scene and manual display permits conflict in both orderings")
+    func sceneAndManualDisplayPermitsConflict() throws {
+        let sceneFirst = MutationAdmissionGate()
+        let scene = try sceneFirst.acquire(owner: .scene, mode: .shared)
+        let ordinaryManual = try sceneFirst.acquire(owner: .manual, mode: .shared)
+
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.scene])) {
+            try sceneFirst.acquire(owner: .manualDisplay, mode: .shared)
+        }
+        #expect(sceneFirst.release(ordinaryManual))
+        #expect(sceneFirst.release(scene))
+
+        let displayFirst = MutationAdmissionGate()
+        let manualDisplay = try displayFirst.acquire(owner: .manualDisplay, mode: .shared)
+        let secondOrdinaryManual = try displayFirst.acquire(owner: .manual, mode: .shared)
+
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.manualDisplay])) {
+            try displayFirst.acquire(owner: .scene, mode: .shared)
+        }
+        #expect(displayFirst.release(secondOrdinaryManual))
+        #expect(displayFirst.release(manualDisplay))
     }
 
     @Test("Release checks the issuing gate and is idempotent")

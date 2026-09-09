@@ -392,7 +392,7 @@ struct DisplayControlServiceTests {
         defer { admission.release(awayPermit) }
 
         do {
-            _ = try admission.acquire(owner: .manual, mode: .shared)
+            _ = try admission.acquire(owner: .manualDisplay, mode: .shared)
             Issue.record("Manual display admission succeeded during Away exclusivity")
         } catch let error as MutationAdmissionError {
             #expect(error == .exclusivePermitActive(owner: .awayMode))

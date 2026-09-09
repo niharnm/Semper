@@ -31,7 +31,7 @@ nonisolated enum SceneManagerError: LocalizedError, Equatable, Sendable {
         case .operationInProgress:
             "Another scene operation is still running."
         case .mutationsBlocked:
-            "End Away Mode before changing a scene."
+            "Finish the active action before changing a scene."
         case .stopped:
             "Scenes is stopped. Open the module before changing a scene."
         case .presentationReserved:
