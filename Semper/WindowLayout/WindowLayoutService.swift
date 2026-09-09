@@ -277,18 +277,18 @@ final class WindowLayoutService {
         _ observation: WorkspaceMoveObservation, windowID: WorkspaceWindowID, target: CGRect,
         displays: [WorkspaceDisplay], restoring: PreviousPlacement?
     ) throws {
+        guard observation.writeAttempted else {
+            throw WindowLayoutError.writeFailed(observation.failure ?? "The window action was refused before writing.")
+        }
         guard let after = observation.after, WorkspaceGeometry.valid(after) else {
-            if observation.writeAttempted {
-                previousPlacement = nil
-                requiresPlacementReview = true
-                message = WindowLayoutError.unverifiedWrite.localizedDescription
-                throw WindowLayoutError.unverifiedWrite
-            }
-            throw WindowLayoutError.writeFailed(observation.failure ?? "The app did not return its current window frame.")
+            previousPlacement = nil
+            requiresPlacementReview = true
+            message = WindowLayoutError.unverifiedWrite.localizedDescription
+            throw WindowLayoutError.unverifiedWrite
         }
         let reachedTarget = WorkspaceGeometry.approximatelyEqual(after, target)
         let excludedFrame = WorkspaceGeometry.excludedByDisplayBounds(after, on: displays)
-        if (observation.writeAttempted && observation.before != after) || excludedFrame {
+        if observation.before != after || excludedFrame {
             previousPlacement = PreviousPlacement(
                 windowID: windowID, before: restoring?.before ?? observation.before, after: after, displays: displays)
         }

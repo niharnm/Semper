@@ -379,6 +379,50 @@ struct WindowLayoutServiceTests {
         #expect(!service.canRestore)
     }
 
+    @Test("No-write refusals preserve the preceding receipt even for excluded or reached-target frames",
+        arguments: [false, true], [false, true])
+    func noWriteRefusalPreservesReceipt(_ restoring: Bool, _ fullHeight: Bool) async throws {
+        let (service, backend, _) = fixture()
+        try await service.perform(.leftHalf)
+        let previous = try #require(service.previousPlacement)
+        let action: WindowLayoutAction = restoring ? .restore : .rightHalf
+        let target = restoring ? previous.before : try #require(
+            WindowLayoutGeometry.target(action, frame: previous.after, display: screen))
+        let external = fullHeight ? try #require(screen.fullScreenFrame) : target
+        let beforeWrite = WindowLayoutTestGate()
+        await backend.setBeforeWriteGate(beforeWrite)
+        let initialWrites = await backend.requestedFrames.count
+        try await withHeldOperation(gate: beforeWrite, operation: { try await service.perform(action) }) { task in
+            await backend.setFrame(external)
+            await beforeWrite.release()
+            await #expect(throws: WindowLayoutError.self) { try await task.value }
+        }
+        #expect(await backend.state?.frame == external)
+        #expect(await backend.requestedFrames.count == initialWrites)
+        #expect(service.previousPlacement == previous)
+        #expect(service.canRestore && !service.requiresPlacementReview)
+        #expect(service.message == "The window changed before writing.")
+    }
+
+    @Test("No-write refusals do not create a receipt or require review", arguments: [false, true])
+    func noWriteRefusalWithoutReceipt(_ fullHeight: Bool) async throws {
+        let (service, backend, _) = fixture()
+        let target = try #require(WindowLayoutGeometry.target(.leftHalf, frame: original, display: screen))
+        let external = fullHeight ? try #require(screen.fullScreenFrame) : target
+        let beforeWrite = WindowLayoutTestGate()
+        await backend.setBeforeWriteGate(beforeWrite)
+        try await withHeldOperation(gate: beforeWrite, operation: { try await service.perform(.leftHalf) }) { task in
+            await backend.setFrame(external)
+            await beforeWrite.release()
+            await #expect(throws: WindowLayoutError.self) { try await task.value }
+        }
+        #expect(await backend.state?.frame == external)
+        #expect(await backend.requestedFrames.isEmpty)
+        #expect(service.previousPlacement == nil)
+        #expect(!service.canRestore && !service.requiresPlacementReview)
+        #expect(service.message == "The window changed before writing.")
+    }
+
     @Test("Topology changes before a write are refused")
     func changedTopologyBeforeWrite() async {
         let (service, backend, _) = fixture()
