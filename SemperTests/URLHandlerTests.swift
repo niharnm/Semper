@@ -51,6 +51,88 @@ struct URLHandlerTests {
         #expect(commands.calls.first?.context.source == .url)
         #expect(commands.calls.first?.context.reason == .directUser)
     }
+
+    @Test("Scene gate rejection stops a multi-app volume URL")
+    func sceneGateRejectionStopsMultiAppVolumeURL() {
+        let commands = URLRejectingAudioCommandSink()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: commands
+        )
+
+        handler.handleURL(URL(
+            string: "semper://set-volumes?app=com.test.one&volume=25&app=com.test.two&volume=50"
+        )!)
+
+        #expect(commands.calls.map(\.command) == [
+            .setAppVolume(target: .persisted("com.test.one"), volume: 0.25)
+        ])
+    }
+
+    @Test("Scene gate rejection stops reset before its mute command")
+    func sceneGateRejectionStopsResetPair() {
+        let commands = URLRejectingAudioCommandSink()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: commands
+        )
+
+        handler.handleURL(URL(string: "semper://reset?app=com.test.one")!)
+
+        #expect(commands.calls.map(\.command) == [
+            .setAppVolume(target: .persisted("com.test.one"), volume: 1)
+        ])
+    }
+
+    @Test("Apply scene URL dispatches a valid scene identifier")
+    func applySceneURLDispatchesIdentifier() async {
+        let sceneID = UUID()
+        let scenes = RecordingSceneCommands()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: RecordingAudioCommandSink(),
+            sceneCommands: scenes
+        )
+
+        let appliedID = await withCheckedContinuation { continuation in
+            scenes.onApply = { continuation.resume(returning: $0) }
+            handler.handleURL(URL(string: "semper://apply-scene?id=\(sceneID.uuidString)")!)
+        }
+
+        #expect(appliedID == sceneID)
+    }
+
+    @Test("Apply scene URL rejects a malformed identifier")
+    func applySceneURLRejectsMalformedIdentifier() async {
+        let scenes = RecordingSceneCommands()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: RecordingAudioCommandSink(),
+            sceneCommands: scenes
+        )
+
+        handler.handleURL(URL(string: "semper://apply-scene?id=not-a-uuid")!)
+        await Task.yield()
+
+        #expect(scenes.appliedIDs.isEmpty)
+    }
+
+    @Test("Restore scene URL dispatches restore")
+    func restoreSceneURLDispatchesRestore() async {
+        let scenes = RecordingSceneCommands()
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: RecordingAudioCommandSink(),
+            sceneCommands: scenes
+        )
+
+        await withCheckedContinuation { continuation in
+            scenes.onRestore = { continuation.resume() }
+            handler.handleURL(URL(string: "semper://restore-scene")!)
+        }
+
+        #expect(scenes.restoreCount == 1)
+    }
 }
 
 @MainActor
@@ -70,4 +152,36 @@ private final class URLHandlerEngineStub: URLHandlerEngine {
     func setVolumeForInactive(identifier: String, to volume: Float) {}
     func setMuteForInactive(identifier: String, to muted: Bool) {}
     func getMuteForInactive(identifier: String) -> Bool { false }
+}
+
+@MainActor
+private final class RecordingSceneCommands: SceneCommandHandling {
+    var appliedIDs: [UUID] = []
+    var restoreCount = 0
+    var onApply: ((UUID) -> Void)?
+    var onRestore: (() -> Void)?
+
+    func availableScenes() -> [SceneCommandDescriptor] { [] }
+
+    func applyScene(id: UUID) async throws -> SceneCommandExecution {
+        appliedIDs.append(id)
+        onApply?(id)
+        return SceneCommandExecution(message: "Applied")
+    }
+
+    func restoreScene() async throws -> SceneCommandExecution {
+        restoreCount += 1
+        onRestore?()
+        return SceneCommandExecution(message: "Restored")
+    }
+}
+
+@MainActor
+private final class URLRejectingAudioCommandSink: AudioCommandDispatching {
+    private(set) var calls: [(command: AudioCommand, context: AudioCommandContext)] = []
+
+    func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult {
+        calls.append((command, context))
+        return .rejected(.sceneOperationInProgress)
+    }
 }

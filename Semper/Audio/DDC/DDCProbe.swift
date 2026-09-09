@@ -115,6 +115,97 @@ nonisolated struct DDCProbeVolumePlan: Equatable, Sendable {
     }
 }
 
+nonisolated struct DDCExternalDisplayRecord: Sendable {
+    let registryID: DDCDisplayCandidate.ID?
+    let name: String
+    let edid: DDCDisplayEDID?
+    let service: DDCService
+}
+
+nonisolated enum DDCExternalDisplayProbe {
+    static func discover(
+        isCancelled: @Sendable () -> Bool = { false }
+    ) -> [DDCExternalDisplayRecord] {
+        #if arch(arm64)
+        let discovered = DDCService.discoverServices()
+        defer {
+            for (entry, _) in discovered {
+                IOObjectRelease(entry)
+            }
+        }
+
+        var records: [DDCExternalDisplayRecord] = []
+        for (entry, service) in discovered {
+            guard !isCancelled() else { break }
+            records.append(DDCExternalDisplayRecord(
+                registryID: registryID(for: entry),
+                name: displayName(for: entry),
+                edid: service.readEDID().map {
+                    DDCDisplayEDID(
+                        vendorID: $0.vendorID,
+                        productID: $0.productID,
+                        serialNumber: $0.serialNumber
+                    )
+                },
+                service: service
+            ))
+        }
+        return records
+        #else
+        return []
+        #endif
+    }
+
+    private static func registryID(
+        for entry: io_service_t
+    ) -> DDCDisplayCandidate.ID? {
+        var rawValue: UInt64 = 0
+        guard IORegistryEntryGetRegistryEntryID(entry, &rawValue) == KERN_SUCCESS else {
+            return nil
+        }
+        return DDCDisplayCandidate.ID(rawValue: rawValue)
+    }
+
+    private static func displayName(for entry: io_service_t) -> String {
+        var current = entry
+        IOObjectRetain(current)
+
+        var needsRelease = true
+        for _ in 0..<10 {
+            if let name = displayNameFromEntry(current) {
+                IOObjectRelease(current)
+                return name
+            }
+
+            var next: io_registry_entry_t = 0
+            let result = IORegistryEntryGetParentEntry(current, kIOServicePlane, &next)
+            IOObjectRelease(current)
+            guard result == kIOReturnSuccess else {
+                needsRelease = false
+                break
+            }
+            current = next
+        }
+
+        if needsRelease {
+            IOObjectRelease(current)
+        }
+        return "External Display"
+    }
+
+    private static func displayNameFromEntry(_ entry: io_service_t) -> String? {
+        guard let info = IODisplayCreateInfoDictionary(
+            entry,
+            IOOptionBits(kIODisplayOnlyPreferredName)
+        )?.takeRetainedValue() as? [String: Any],
+            let names = info[kDisplayProductName] as? [String: String],
+            let name = names.values.first else {
+            return nil
+        }
+        return name
+    }
+}
+
 nonisolated enum DDCProbeRunner {
     typealias Operation = @Sendable (DDCProbeInput) -> DDCProbeResult?
 
@@ -122,10 +213,10 @@ nonisolated enum DDCProbeRunner {
         on queue: DispatchQueue,
         input: DDCProbeInput,
         operation: @escaping Operation = DDCProbeWorker.run,
-        completion: @escaping @MainActor @Sendable (DDCProbeResult) -> Void
+        completion: @escaping @MainActor @Sendable (DDCProbeResult?) -> Void
     ) {
         queue.async { @Sendable in
-            guard let result = execute(input: input, operation: operation) else { return }
+            let result = execute(input: input, operation: operation)
             Task { @MainActor in
                 completion(result)
             }
@@ -157,11 +248,8 @@ nonisolated enum DDCProbeWorker {
         guard !input.isCancelled else { return nil }
 
         var logs: [DDCProbeLogRecord] = []
-        let discovered = DDCService.discoverServices()
-        defer {
-            for (entry, _) in discovered {
-                IOObjectRelease(entry)
-            }
+        let discovered = DDCExternalDisplayProbe.discover {
+            input.isCancelled
         }
 
         guard !input.isCancelled else { return nil }
@@ -171,18 +259,10 @@ nonisolated enum DDCProbeWorker {
         }
 
         var audioCapable: [ProbeDisplay] = []
-        for (index, (entry, service)) in discovered.enumerated() {
+        for (index, display) in discovered.enumerated() {
             guard !input.isCancelled else { return nil }
-            let name = getDisplayName(for: entry)
-
-            let edid: DDCDisplayEDID? = {
-                guard let raw = service.readEDID() else { return nil }
-                return DDCDisplayEDID(
-                    vendorID: raw.vendorID,
-                    productID: raw.productID,
-                    serialNumber: raw.serialNumber
-                )
-            }()
+            let name = display.name
+            let edid = display.edid
 
             guard !input.isCancelled else { return nil }
             let edidDescription = edid.map {
@@ -192,13 +272,13 @@ nonisolated enum DDCProbeWorker {
                 "DDC probe: display \(index + 1) '\(name)' EDID(\(edid != nil ? "I2C" : "none")): \(edidDescription)"
             ))
 
-            let supportsAudioVolume = service.supportsAudioVolume()
+            let supportsAudioVolume = display.service.supportsAudioVolume()
             guard !input.isCancelled else { return nil }
             if supportsAudioVolume {
                 audioCapable.append(ProbeDisplay(
-                    service: service,
+                    service: display.service,
                     candidate: DDCDisplayCandidate(
-                        id: displayCandidateID(for: entry),
+                        id: display.registryID,
                         name: name,
                         edid: edid
                     )
@@ -337,54 +417,6 @@ nonisolated enum DDCProbeWorker {
         return results
     }
 
-    private static func displayCandidateID(
-        for entry: io_service_t
-    ) -> DDCDisplayCandidate.ID? {
-        var rawValue: UInt64 = 0
-        guard IORegistryEntryGetRegistryEntryID(entry, &rawValue) == KERN_SUCCESS else {
-            return nil
-        }
-        return DDCDisplayCandidate.ID(rawValue: rawValue)
-    }
-
-    private static func getDisplayName(for entry: io_service_t) -> String {
-        var current = entry
-        IOObjectRetain(current)
-
-        var needsRelease = true
-        for _ in 0..<10 {
-            if let name = displayNameFromEntry(current) {
-                IOObjectRelease(current)
-                return name
-            }
-
-            var next: io_registry_entry_t = 0
-            let result = IORegistryEntryGetParentEntry(current, kIOServicePlane, &next)
-            IOObjectRelease(current)
-            guard result == kIOReturnSuccess else {
-                needsRelease = false
-                break
-            }
-            current = next
-        }
-
-        if needsRelease {
-            IOObjectRelease(current)
-        }
-        return "External Display"
-    }
-
-    private static func displayNameFromEntry(_ entry: io_service_t) -> String? {
-        guard let info = IODisplayCreateInfoDictionary(
-            entry,
-            IOOptionBits(kIODisplayOnlyPreferredName)
-        )?.takeRetainedValue() as? [String: Any],
-            let names = info[kDisplayProductName] as? [String: String],
-            let name = names.values.first else {
-            return nil
-        }
-        return name
-    }
 }
 
 #endif

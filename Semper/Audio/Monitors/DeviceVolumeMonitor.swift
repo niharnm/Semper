@@ -468,8 +468,13 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
             #if !APP_STORE
             if let ddcController {
                 let ddcVolume = Int(round(clamped * 100))
-                ddcController.setVolume(for: deviceID, to: ddcVolume)
-                volumes[deviceID] = clamped
+                if ddcController.setVolume(for: deviceID, to: ddcVolume) {
+                    volumes[deviceID] = clamped
+                } else {
+                    logger.warning("DDC volume change was rejected for device \(deviceID)")
+                    onOutputWriteCompleted?(deviceID, false)
+                    onOutputWriteFailed?(deviceID)
+                }
             } else {
                 logger.warning("Failed to set DDC volume on device \(deviceID)")
             }
@@ -525,15 +530,25 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         case .ddc:
             #if !APP_STORE
             if let ddcController {
+                let accepted: Bool
                 if muted {
-                    ddcController.mute(for: deviceID)
+                    accepted = ddcController.mute(for: deviceID)
                 } else {
                     let maximumVolume = outputDeviceUID(for: deviceID)
                         .flatMap { settingsManager.outputVolumeLimit(for: $0) }
                         .map { Int(round($0 * 100)) }
-                    ddcController.unmute(for: deviceID, maximumVolume: maximumVolume)
+                    accepted = ddcController.unmute(
+                        for: deviceID,
+                        maximumVolume: maximumVolume
+                    )
                 }
-                muteStates[deviceID] = muted
+                if accepted {
+                    muteStates[deviceID] = muted
+                } else {
+                    logger.warning("DDC mute change was rejected for device \(deviceID)")
+                    onOutputWriteCompleted?(deviceID, false)
+                    onOutputWriteFailed?(deviceID)
+                }
             } else {
                 logger.warning("Failed to set DDC mute on device \(deviceID)")
             }
@@ -1092,9 +1107,14 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
                 observedVolume = 0.5
             }
             let safeVolume = storedOutputVolume(observedVolume, for: deviceID, tier: backend)
-            volumes[deviceID] = safeVolume
             if !AudioControlValue.scalar(observedVolume).matches(.scalar(safeVolume)) {
-                ddcController.setVolume(for: deviceID, to: Int(round(safeVolume * 100)))
+                let accepted = ddcController.setVolume(
+                    for: deviceID,
+                    to: Int(round(safeVolume * 100))
+                )
+                volumes[deviceID] = accepted ? safeVolume : observedVolume
+            } else {
+                volumes[deviceID] = safeVolume
             }
             muteStates[deviceID] = ddcController.isMuted(for: deviceID)
             return

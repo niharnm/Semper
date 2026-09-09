@@ -34,6 +34,8 @@ struct MenuBarPopupView: View {
     /// wired in `SemperApp.init`.
     let mediaKeyMonitor: MediaKeyMonitor
     let experimentManager: ExperimentManager
+    @Bindable var sceneManager: SceneManager
+    @Bindable var displayService: DisplayControlService
 
     let awakeService: AwakeService
 
@@ -117,7 +119,15 @@ struct MenuBarPopupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             moduleSwitcherBar
-            if selectedModule == .sound {
+            switch selectedModule {
+            case .home:
+                ScrollView {
+                    NowPane(sceneManager: sceneManager)
+                    popupFooter
+                }
+                .scrollIndicators(.never)
+                .frame(maxHeight: popupDimensions.maxContentHeight)
+            case .sound:
                 popupHeader
                 if audioEngine.audioProcessingState != .active {
                     AudioRecoveryStatusStrip(
@@ -144,9 +154,23 @@ struct MenuBarPopupView: View {
                         }
                     }
                 }
-            } else {
+            case .awake:
                 AwakeModuleView(awake: awakeService)
                 popupFooter
+            case .displays:
+                ScrollView {
+                    #if !APP_STORE
+                    DisplaysPane(
+                        displayService: displayService,
+                        isSceneOperationInProgress: sceneManager.isBusy
+                    )
+                    #else
+                    DisplaysPane()
+                    #endif
+                    popupFooter
+                }
+                .scrollIndicators(.never)
+                .frame(maxHeight: popupDimensions.maxContentHeight)
             }
         }
         .frame(width: popupDimensions.width)
@@ -334,9 +358,12 @@ struct MenuBarPopupView: View {
                 inputDeviceMenu
             }
             .frame(maxWidth: .infinity)
+            .disabled(sceneManager.isBusy)
 
             audioProcessingButton
+                .disabled(sceneManager.isBusy)
             editPriorityButton
+                .disabled(sceneManager.isBusy)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -609,7 +636,9 @@ struct MenuBarPopupView: View {
     private func mainContent(scrollProxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             devicesSection
+                .disabled(sceneManager.isBusy)
             appsSection(scrollProxy: scrollProxy)
+                .disabled(sceneManager.isBusy)
             popupFooter
         }
     }

@@ -12,7 +12,11 @@ private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var audioEngine: AudioEngine?
     var audioCommands: (any AudioCommandDispatching)?
+    var sceneCommands: (any SceneCommandHandling)?
     var updateManager: UpdateManager?
+    var displayService: DisplayControlService?
+    private var terminationDrainTask: Task<Void, Never>?
+    private var isTerminationDrainComplete = false
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let audioEngine, let audioCommands, let updateManager else {
@@ -21,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let urlHandler = URLHandler(
             audioEngine: audioEngine,
             audioCommands: audioCommands,
+            sceneCommands: sceneCommands,
             checkForUpdates: updateManager.checkForUpdates
         )
 
@@ -40,6 +45,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// LSUIElement agent — closing the Settings window must not terminate the app.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminationDrainComplete else { return .terminateNow }
+        guard let displayService else { return .terminateNow }
+        guard terminationDrainTask == nil else { return .terminateLater }
+
+        terminationDrainTask = Task { @MainActor [weak self] in
+            await displayService.stopAndDrain()
+            #if !APP_STORE
+            await self?.audioEngine?.ddcController.stopAndDrain()
+            #endif
+            self?.isTerminationDrainComplete = true
+            self?.terminationDrainTask = nil
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -64,6 +86,9 @@ struct SemperApp: App {
     @State private var resolver: TargetAppResolver
     @State private var experimentManager: ExperimentManager
     @State private var awakeService: AwakeService
+    @State private var displayService: DisplayControlService
+    @State private var sceneManager: SceneManager
+    @State private var sceneShortcutRegistry: SceneShortcutRegistry
     @StateObject private var updateManager: UpdateManager
     @State private var showMenuBarExtra = true
 
@@ -87,6 +112,8 @@ struct SemperApp: App {
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,
                 shortcutsRegistry: shortcutsRegistry,
+                sceneManager: sceneManager,
+                sceneShortcutRegistry: sceneShortcutRegistry,
                 updateManager: updateManager
             )
         }
@@ -115,11 +142,15 @@ struct SemperApp: App {
             hudController: hudController,
             mediaKeyMonitor: mediaKeyMonitor,
             experimentManager: experimentManager,
+            sceneManager: sceneManager,
+            displayService: displayService,
             awakeService: awakeService
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
             shortcutsRegistry.start()
+            sceneShortcutRegistry.start()
+            await sceneManager.prepare()
         }
     }
 
@@ -173,6 +204,35 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
+        let mutationAdmission = MutationAdmissionGate()
+        #if !APP_STORE
+        precondition(engine.ddcController.installMutationAdmission(mutationAdmission))
+        let displayService = DisplayControlService(
+            ddcController: engine.ddcController,
+            mutationAdmission: mutationAdmission
+        )
+        #else
+        let displayService = DisplayControlService()
+        #endif
+        displayService.start()
+        let sceneManager = SceneManager(
+            engine: engine,
+            commands: commandDispatcher,
+            awake: awake,
+            displays: displayService,
+            mutationAdmission: mutationAdmission
+        )
+        let sceneShortcutRegistry = SceneShortcutRegistry(
+            settings: settings,
+            sceneManager: sceneManager
+        )
+        sceneManager.onScenesChanged = { [weak sceneShortcutRegistry] in
+            sceneShortcutRegistry?.sync()
+        }
+        _displayService = State(initialValue: displayService)
+        _sceneManager = State(initialValue: sceneManager)
+        _sceneShortcutRegistry = State(initialValue: sceneShortcutRegistry)
+        SemperSceneAppIntentRuntime.install(sceneManager)
         let callMode = CallModeCoordinator(
             settings: settings,
             overlayStore: engine.modeOverlayStore,
@@ -362,6 +422,9 @@ struct SemperApp: App {
             audioCommands: commandDispatcher,
             hud: hud
         )
+        registry.onShortcutsChanged = { [weak sceneShortcutRegistry] in
+            sceneShortcutRegistry?.sync()
+        }
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
@@ -369,7 +432,9 @@ struct SemperApp: App {
         // Pass URL action dependencies to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
+        _appDelegate.wrappedValue.sceneCommands = sceneManager
         _appDelegate.wrappedValue.updateManager = updater
+        _appDelegate.wrappedValue.displayService = displayService
 
         // DeviceVolumeMonitor is now created and started inside AudioEngine
         // This ensures proper initialization order: deviceMonitor.start() -> deviceVolumeMonitor.start()

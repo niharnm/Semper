@@ -72,6 +72,67 @@ private final class DDCWriteCancellation: @unchecked Sendable {
     }
 }
 
+final class DDCSerializedOperationContext: @unchecked Sendable {
+    private enum State {
+        case pending
+        case mutationClaimed
+        case cancelled
+        case completed
+    }
+
+    private let lock = NSLock()
+    private var state: State = .pending
+
+    func claimMutation() throws {
+        try lock.withLock {
+            switch state {
+            case .pending:
+                state = .mutationClaimed
+            case .mutationClaimed:
+                return
+            case .cancelled, .completed:
+                throw CancellationError()
+            }
+        }
+    }
+
+    fileprivate func cancel() {
+        lock.withLock {
+            if case .pending = state {
+                state = .cancelled
+            }
+        }
+    }
+
+    fileprivate func start() throws {
+        try lock.withLock {
+            if case .cancelled = state {
+                throw CancellationError()
+            }
+        }
+    }
+
+    fileprivate func complete() throws {
+        try lock.withLock {
+            if case .cancelled = state {
+                state = .completed
+                throw CancellationError()
+            }
+            state = .completed
+        }
+    }
+
+    fileprivate func resolvedError(_ error: Error) -> Error {
+        lock.withLock {
+            defer { state = .completed }
+            if case .cancelled = state {
+                return CancellationError()
+            }
+            return error
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class DDCController {
@@ -84,20 +145,35 @@ final class DDCController {
     private var services: [AudioDeviceID: DDCService] = [:]
     private var deviceUIDs: [AudioDeviceID: String] = [:]  // For persistence keying
     private struct PendingWrite {
+        let deviceID: AudioDeviceID
         let generation: UInt64
-        let cancellation: DDCWriteCancellation
-        let workItem: DispatchWorkItem
+        let context: DDCSerializedOperationContext
+        let admissionGate: MutationAdmissionGate?
+        let admissionPermit: MutationAdmissionPermit?
     }
-    private var pendingWrites: [AudioDeviceID: PendingWrite] = [:]
+    private enum QueuedWriteOutcome: Sendable {
+        case completed(succeeded: Bool)
+        case cancelled
+    }
+
+    private var pendingWrites: [UUID: PendingWrite] = [:]
+    private var latestWriteIDs: [AudioDeviceID: UUID] = [:]
     private var pendingMuteRestores: [AudioDeviceID: Bool] = [:]
     private var writeLedger = DDCWriteLedger()
     private var serviceWritesCancellation = DDCWriteCancellation()
     private var probeWorkItem: DispatchWorkItem?
     private var probeRequests = DDCProbeRequestState()
+    private var pendingProbeIDs: Set<UInt64> = []
     private var displayChangeObserver: NSObjectProtocol?
+    private var mutationAdmission: MutationAdmissionGate?
+    private var acceptsWrites = true
+    private var acceptsProbes = true
+    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     private let ddcQueue: DispatchQueue
     private let settingsManager: SettingsManager
+    private let writeScheduler: (@Sendable (DispatchQueue, sending DispatchWorkItem) -> Void)?
+    private let volumeWrite: (@Sendable (DDCService?, Int) throws -> Void)?
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "DDCController")
 
     /// Callback when DDC probe completes (triggers device list refresh)
@@ -106,20 +182,31 @@ final class DDCController {
 
     init(
         settingsManager: SettingsManager,
-        ddcQueue: DispatchQueue = DispatchQueue(label: "com.semper.ddc", qos: .utility)
+        ddcQueue: DispatchQueue = DispatchQueue(label: "com.semper.ddc", qos: .utility),
+        writeScheduler: (@Sendable (DispatchQueue, sending DispatchWorkItem) -> Void)? = nil,
+        volumeWrite: (@Sendable (DDCService?, Int) throws -> Void)? = nil
     ) {
         self.settingsManager = settingsManager
         self.ddcQueue = ddcQueue
+        self.writeScheduler = writeScheduler
+        self.volumeWrite = volumeWrite
     }
 
     // MARK: - Lifecycle
 
-    func start() {
-        probe()
+    func start(
+        probeOperation: @escaping DDCProbeRunner.Operation = DDCProbeWorker.run
+    ) {
+        guard drainWaiters.isEmpty else { return }
+        acceptsWrites = true
+        acceptsProbes = true
+        probe(operation: probeOperation)
         setupDisplayChangeObserver()
     }
 
     func stop() {
+        acceptsWrites = false
+        acceptsProbes = false
         if let obs = displayChangeObserver {
             NotificationCenter.default.removeObserver(obs)
             displayChangeObserver = nil
@@ -129,6 +216,60 @@ final class DDCController {
         probeRequests.cancel()
         serviceWritesCancellation.cancel()
         cancelPendingWrites()
+    }
+
+    func stopAndDrain() async {
+        stop()
+        guard hasPendingWork else { return }
+
+        await withCheckedContinuation { continuation in
+            if hasPendingWork {
+                drainWaiters.append(continuation)
+            } else {
+                continuation.resume()
+            }
+        }
+    }
+
+    @discardableResult
+    func installMutationAdmission(_ gate: MutationAdmissionGate) -> Bool {
+        if mutationAdmission === gate { return true }
+        guard pendingWrites.isEmpty else { return false }
+        mutationAdmission = gate
+        return true
+    }
+
+    /// Executes display-control work on the same serial queue as audio DDC traffic.
+    func performSerialized<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await performSerialized { _ in
+            try operation()
+        }
+    }
+
+    /// Executes mutating work with cancellation arbitration at the hardware boundary.
+    func performSerialized<T: Sendable>(
+        _ operation: @escaping @Sendable (DDCSerializedOperationContext) throws -> T
+    ) async throws -> T {
+        let queue = ddcQueue
+        let context = DDCSerializedOperationContext()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        try context.start()
+                        let value = try operation(context)
+                        try context.complete()
+                        continuation.resume(returning: value)
+                    } catch {
+                        continuation.resume(throwing: context.resolvedError(error))
+                    }
+                }
+            }
+        } onCancel: {
+            context.cancel()
+        }
     }
 
     // MARK: - Public API
@@ -149,8 +290,36 @@ final class DDCController {
     }
 
     /// Sets the DDC volume for a device (0-100). Debounced to avoid I2C bus spam.
-    func setVolume(for deviceID: AudioDeviceID, to volume: Int) {
+    @discardableResult
+    func setVolume(for deviceID: AudioDeviceID, to volume: Int) -> Bool {
+        scheduleVolume(for: deviceID, to: volume) {}
+    }
+
+    private func scheduleVolume(
+        for deviceID: AudioDeviceID,
+        to volume: Int,
+        preparation: () -> Void
+    ) -> Bool {
+        guard acceptsWrites else { return false }
+
+        let admissionGate = mutationAdmission
+        let admissionPermit: MutationAdmissionPermit?
+        if let admissionGate {
+            do {
+                admissionPermit = try admissionGate.acquire(owner: .manual, mode: .shared)
+            } catch {
+                return false
+            }
+        } else {
+            admissionPermit = nil
+        }
+
         let clamped = max(0, min(100, volume))
+        preparation()
+        if let latestWriteID = latestWriteIDs[deviceID] {
+            pendingWrites[latestWriteID]?.context.cancel()
+        }
+        let generation = writeLedger.beginWrite(for: deviceID)
         cachedVolumes[deviceID] = clamped
 
         // Persist
@@ -158,87 +327,130 @@ final class DDCController {
             settingsManager.setDDCVolume(for: uid, to: clamped)
         }
 
-        // Keep the work item @Sendable and avoid `self`; otherwise it inherits
-        // @MainActor isolation here and traps when run on `ddcQueue`.
-        pendingWrites[deviceID]?.cancellation.cancel()
-        pendingWrites[deviceID]?.workItem.cancel()
-        let generation = writeLedger.beginWrite(for: deviceID)
-        let cancellation = DDCWriteCancellation()
+        let operationID = UUID()
+        let context = DDCSerializedOperationContext()
         let serviceWritesCancellation = self.serviceWritesCancellation
         let service = services[deviceID]
+        let volumeWrite = self.volumeWrite
         let logger = self.logger
-        let item = DispatchWorkItem { @Sendable [weak self] in
-            guard !cancellation.isCancelled, !serviceWritesCancellation.isCancelled else { return }
-            let succeeded: Bool
+        let completion: @MainActor @Sendable (QueuedWriteOutcome) -> Void = { [self] outcome in
+            handleWriteCompletion(
+                operationID: operationID,
+                requestedVolume: clamped,
+                outcome: outcome
+            )
+        }
+        let item = DispatchWorkItem { @Sendable in
+            let outcome: QueuedWriteOutcome
             do {
-                guard let service else { throw DDCWriteError.missingService }
-                try service.setAudioVolume(clamped)
-                succeeded = true
+                if serviceWritesCancellation.isCancelled {
+                    context.cancel()
+                }
+                try context.start()
+                if let volumeWrite {
+                    try context.claimMutation()
+                    try volumeWrite(service, clamped)
+                } else {
+                    guard let service else { throw DDCWriteError.missingService }
+                    try context.claimMutation()
+                    try service.setAudioVolume(clamped)
+                }
+                try context.complete()
+                outcome = .completed(succeeded: true)
             } catch {
-                logger.error("DDC write failed for device \(deviceID): \(error)")
-                succeeded = false
+                let resolvedError = context.resolvedError(error)
+                if resolvedError is CancellationError {
+                    outcome = .cancelled
+                } else {
+                    logger.error("DDC write failed for device \(deviceID): \(resolvedError)")
+                    outcome = .completed(succeeded: false)
+                }
             }
-            DispatchQueue.main.async { [weak self] in
-                self?.handleWriteCompletion(
-                    for: deviceID,
-                    generation: generation,
-                    requestedVolume: clamped,
-                    succeeded: succeeded
-                )
+            DispatchQueue.main.async {
+                completion(outcome)
             }
         }
-        pendingWrites[deviceID] = PendingWrite(
+        pendingWrites[operationID] = PendingWrite(
+            deviceID: deviceID,
             generation: generation,
-            cancellation: cancellation,
-            workItem: item
+            context: context,
+            admissionGate: admissionGate,
+            admissionPermit: admissionPermit
         )
-        ddcQueue.asyncAfter(deadline: .now() + .milliseconds(100), execute: item)
+        latestWriteIDs[deviceID] = operationID
+        if let writeScheduler {
+            writeScheduler(ddcQueue, item)
+        } else {
+            ddcQueue.asyncAfter(deadline: .now() + .milliseconds(100), execute: item)
+        }
+        return true
     }
 
     private func handleWriteCompletion(
-        for deviceID: AudioDeviceID,
-        generation: UInt64,
+        operationID: UUID,
         requestedVolume: Int,
-        succeeded: Bool
+        outcome: QueuedWriteOutcome
     ) {
-        let resolution = writeLedger.finishWrite(
-            for: deviceID,
-            generation: generation,
-            requestedVolume: requestedVolume,
-            succeeded: succeeded
-        )
-        guard let resolution else { return }
-        if pendingWrites[deviceID]?.generation == generation {
-            pendingWrites.removeValue(forKey: deviceID)
+        guard let pending = pendingWrites[operationID] else { return }
+        let deviceID = pending.deviceID
+        let resolution: DDCWriteLedger.Resolution?
+        switch outcome {
+        case .completed(let succeeded):
+            resolution = writeLedger.finishWrite(
+                for: deviceID,
+                generation: pending.generation,
+                requestedVolume: requestedVolume,
+                succeeded: succeeded
+            )
+        case .cancelled:
+            resolution = writeLedger.cancelWrite(
+                for: deviceID,
+                generation: pending.generation
+            )
         }
 
-        switch resolution {
-        case .applied(let volume):
-            cachedVolumes[deviceID] = volume
-            if let uid = deviceUIDs[deviceID] {
-                settingsManager.setDDCVolume(for: uid, to: volume)
+        if let resolution {
+            switch resolution {
+            case .applied(let volume):
+                cachedVolumes[deviceID] = volume
+                if let uid = deviceUIDs[deviceID] {
+                    settingsManager.setDDCVolume(for: uid, to: volume)
+                }
+                pendingMuteRestores.removeValue(forKey: deviceID)
+                onWriteResult?(deviceID, .applied(volume))
+            case .failed(let restoredVolume):
+                publishFailedWrite(for: deviceID, restoredVolume: restoredVolume)
             }
-            pendingMuteRestores.removeValue(forKey: deviceID)
-            onWriteResult?(deviceID, .applied(volume))
-        case .failed(let restoredVolume):
-            publishFailedWrite(for: deviceID, restoredVolume: restoredVolume)
         }
+
+        if latestWriteIDs[deviceID] == operationID {
+            latestWriteIDs.removeValue(forKey: deviceID)
+        }
+        if let admissionGate = pending.admissionGate,
+           let admissionPermit = pending.admissionPermit {
+            _ = admissionGate.release(admissionPermit)
+        }
+        pendingWrites.removeValue(forKey: operationID)
+        resumeDrainWaitersIfNeeded()
     }
 
     private func cancelPendingWrites() {
-        let writes = pendingWrites
-        pendingWrites.removeAll()
-        for (deviceID, pending) in writes {
-            pending.cancellation.cancel()
-            pending.workItem.cancel()
-            guard case .failed(let restoredVolume) = writeLedger.cancelWrite(
-                for: deviceID,
-                generation: pending.generation
-            ) else {
-                continue
-            }
-            publishFailedWrite(for: deviceID, restoredVolume: restoredVolume)
+        for pending in pendingWrites.values {
+            pending.context.cancel()
         }
+    }
+
+    private func resumeDrainWaitersIfNeeded() {
+        guard !hasPendingWork, !drainWaiters.isEmpty else { return }
+        let waiters = drainWaiters
+        drainWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private var hasPendingWork: Bool {
+        !pendingWrites.isEmpty || !pendingProbeIDs.isEmpty
     }
 
     private func publishFailedWrite(for deviceID: AudioDeviceID, restoredVolume: Int?) {
@@ -266,29 +478,35 @@ final class DDCController {
     }
 
     /// Software mute: saves current volume, sets to 0.
-    func mute(for deviceID: AudioDeviceID) {
-        guard let uid = deviceUIDs[deviceID] else { return }
-        pendingMuteRestores[deviceID] = pendingMuteRestores[deviceID]
+    @discardableResult
+    func mute(for deviceID: AudioDeviceID) -> Bool {
+        guard let uid = deviceUIDs[deviceID] else { return false }
+        let restoredMute = pendingMuteRestores[deviceID]
             ?? settingsManager.getDDCMuteState(for: uid)
         let currentVolume = cachedVolumes[deviceID] ?? 50
-        if currentVolume > 0 {
-            settingsManager.setDDCSavedVolume(for: uid, to: currentVolume)
+        return scheduleVolume(for: deviceID, to: 0) {
+            pendingMuteRestores[deviceID] = restoredMute
+            if currentVolume > 0 {
+                settingsManager.setDDCSavedVolume(for: uid, to: currentVolume)
+            }
+            settingsManager.setDDCMuteState(for: uid, to: true)
+            // Flush immediately so pre-mute volume survives a crash
+            settingsManager.flushSync()
         }
-        settingsManager.setDDCMuteState(for: uid, to: true)
-        // Flush immediately so pre-mute volume survives a crash
-        settingsManager.flushSync()
-        setVolume(for: deviceID, to: 0)
     }
 
     /// Software unmute: restores saved volume.
-    func unmute(for deviceID: AudioDeviceID, maximumVolume: Int? = nil) {
-        guard let uid = deviceUIDs[deviceID] else { return }
-        pendingMuteRestores[deviceID] = pendingMuteRestores[deviceID]
+    @discardableResult
+    func unmute(for deviceID: AudioDeviceID, maximumVolume: Int? = nil) -> Bool {
+        guard let uid = deviceUIDs[deviceID] else { return false }
+        let restoredMute = pendingMuteRestores[deviceID]
             ?? settingsManager.getDDCMuteState(for: uid)
         let savedVolume = settingsManager.getDDCSavedVolume(for: uid) ?? 50
         let restoredVolume = Self.restoredVolume(savedVolume, maximumVolume: maximumVolume)
-        settingsManager.setDDCMuteState(for: uid, to: false)
-        setVolume(for: deviceID, to: restoredVolume)
+        return scheduleVolume(for: deviceID, to: restoredVolume) {
+            pendingMuteRestores[deviceID] = restoredMute
+            settingsManager.setDDCMuteState(for: uid, to: false)
+        }
     }
 
     nonisolated static func restoredVolume(_ savedVolume: Int, maximumVolume: Int?) -> Int {
@@ -304,15 +522,19 @@ final class DDCController {
     // MARK: - Display Probing
 
     /// Probes for DDC-capable displays on a background queue, then matches to CoreAudio devices.
+    @discardableResult
     func probe(
         operation: @escaping DDCProbeRunner.Operation = DDCProbeWorker.run
-    ) {
+    ) -> Bool {
+        guard acceptsProbes else { return false }
+
         serviceWritesCancellation.cancel()
         cancelPendingWrites()
 
         let input = probeRequests.begin()
-        let completion: @MainActor @Sendable (DDCProbeResult) -> Void = { [weak self] result in
-            self?.receiveProbeResult(result)
+        pendingProbeIDs.insert(input.id)
+        let completion: @MainActor @Sendable (DDCProbeResult?) -> Void = { [weak self] result in
+            self?.receiveProbeCompletion(inputID: input.id, result: result)
         }
         DDCProbeRunner.submit(
             on: ddcQueue,
@@ -320,6 +542,15 @@ final class DDCController {
             operation: operation,
             completion: completion
         )
+        return true
+    }
+
+    private func receiveProbeCompletion(inputID: UInt64, result: DDCProbeResult?) {
+        if let result {
+            receiveProbeResult(result)
+        }
+        pendingProbeIDs.remove(inputID)
+        resumeDrainWaitersIfNeeded()
     }
 
     private func receiveProbeResult(_ result: DDCProbeResult) {

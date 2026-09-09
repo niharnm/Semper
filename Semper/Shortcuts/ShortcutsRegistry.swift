@@ -62,6 +62,7 @@ final class ShortcutsRegistry {
     private let hud: any PerAppHUDPresenting
     private var didStart = false
     private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
+    var onShortcutsChanged: (() -> Void)?
 
     /// Software-emulated key-repeat timing. Carbon hot keys don't auto-repeat,
     /// so holding the chord runs this loop. Values match macOS keyboard defaults.
@@ -125,23 +126,25 @@ final class ShortcutsRegistry {
 
     /// Routes a fired action to its handler. Exposed `internal` so tests can
     /// drive it directly without faking a global key event.
-    func dispatch(_ action: ShortcutAction) {
+    @discardableResult
+    func dispatch(_ action: ShortcutAction) -> Bool {
         switch action {
         case .togglePopup:
             popupController.toggle()
+            return true
         case .targetAppVolumeUp:
-            adjustTargetVolume(direction: +1)
+            return adjustTargetVolume(direction: +1)
         case .targetAppVolumeDown:
-            adjustTargetVolume(direction: -1)
+            return adjustTargetVolume(direction: -1)
         case .targetAppMuteToggle:
-            toggleTargetMute()
+            return toggleTargetMute()
         }
     }
 
     // MARK: - Per-app dispatch
 
-    private func adjustTargetVolume(direction: Int) {
-        guard let app = resolveTargetAudioApp() else { return }
+    private func adjustTargetVolume(direction: Int) -> Bool {
+        guard let app = resolveTargetAudioApp() else { return false }
         let sliderDelta = settings.appSettings.volumeHotkeySliderDelta * Double(direction)
 
         let currentGain = audioEngine.currentVolume(for: app)
@@ -151,6 +154,7 @@ final class ShortcutsRegistry {
 
         let currentMute = audioEngine.isMuted(for: app)
         let willBeSilent = nextSlider <= 0.001
+        let action: ShortcutAction = direction > 0 ? .targetAppVolumeUp : .targetAppVolumeDown
         let transactionID = UUID()
         let context = AudioCommandContext(
             source: .globalShortcut,
@@ -160,38 +164,65 @@ final class ShortcutsRegistry {
 
         if direction > 0 {
             if currentMute {
-                audioCommands.dispatch(
+                guard commandSucceeded(audioCommands.dispatch(
                     .setAppMute(target: .active(app), muted: false),
                     context: context
-                )
+                ), action: action) else {
+                    return false
+                }
             }
         } else {
             if currentMute && !willBeSilent {
-                audioCommands.dispatch(
+                guard commandSucceeded(audioCommands.dispatch(
                     .setAppMute(target: .active(app), muted: false),
                     context: context
-                )
+                ), action: action) else {
+                    return false
+                }
             } else if !currentMute && willBeSilent {
-                audioCommands.dispatch(
+                guard commandSucceeded(audioCommands.dispatch(
                     .setAppMute(target: .active(app), muted: true),
                     context: context
-                )
+                ), action: action) else {
+                    return false
+                }
             }
         }
-        audioCommands.dispatch(
+        guard commandSucceeded(audioCommands.dispatch(
             .setAppVolume(target: .active(app), volume: nextGain),
             context: context
-        )
+        ), action: action) else {
+            return false
+        }
         hud.showPerAppVolumeHUD(app: app, sliderFraction: nextSlider)
+        return true
     }
 
-    private func toggleTargetMute() {
-        guard let app = resolveTargetAudioApp() else { return }
-        audioCommands.dispatch(
+    private func toggleTargetMute() -> Bool {
+        guard let app = resolveTargetAudioApp() else { return false }
+        guard commandSucceeded(audioCommands.dispatch(
             .setAppMute(target: .active(app), muted: !audioEngine.isMuted(for: app)),
             context: AudioCommandContext(source: .globalShortcut, reason: .shortcut)
-        )
+        ), action: .targetAppMuteToggle) else {
+            return false
+        }
         hud.showPerAppMuteHUD(app: app, isMuted: audioEngine.isMuted(for: app))
+        return true
+    }
+
+    private func commandSucceeded(_ result: AudioCommandResult, action: ShortcutAction) -> Bool {
+        switch result {
+        case .applied, .accepted, .unchanged:
+            return true
+        case .rejected(.sceneOperationInProgress):
+            Self.logger.notice("Ignored \(action.rawValue, privacy: .public) while a scene operation is running")
+            return false
+        case .rejected(let rejection):
+            Self.logger.warning(
+                "Rejected \(action.rawValue, privacy: .public): \(String(describing: rejection), privacy: .public)"
+            )
+            return false
+        }
     }
 
     private func startRepeating(action: ShortcutAction) {
@@ -201,7 +232,10 @@ final class ShortcutsRegistry {
             try? await Task.sleep(for: Self.repeatInitialDelay)
             while !Task.isCancelled {
                 guard let self else { return }
-                self.dispatch(action)
+                guard self.dispatch(action) else {
+                    self.repeatTasks[action] = nil
+                    return
+                }
                 try? await Task.sleep(for: Self.repeatInterval)
             }
         }
@@ -238,22 +272,8 @@ final class ShortcutsRegistry {
     func start() {
         guard !didStart else { return }
         didStart = true
-
-        for action in ShortcutAction.allCases {
-            let actionName = name(for: action)
-
-            if let codable = settings.appSettings.customShortcuts[action.rawValue] {
-                KeyboardShortcuts.setShortcut(codable.keyboardShortcut, for: actionName)
-            }
-
-            KeyboardShortcuts.onKeyDown(for: actionName) { [weak self] in
-                self?.dispatch(action)
-                self?.startRepeating(action: action)
-            }
-            KeyboardShortcuts.onKeyUp(for: actionName) { [weak self] in
-                self?.stopRepeating(action: action)
-            }
-        }
+        syncRegistrations()
+        onShortcutsChanged?()
 
         Self.logger.debug("ShortcutsRegistry started; \(ShortcutAction.allCases.count) action(s) registered")
     }
@@ -281,23 +301,26 @@ final class ShortcutsRegistry {
         if let shortcut {
             let recordedShortcut = ShortcutCodable.from(shortcut)
             if let conflictingAction = ShortcutAction.allCases.first(where: {
-                $0 != action && app.customShortcuts[$0.rawValue] == recordedShortcut
+                guard $0 != action else { return false }
+                let assigned = app.customShortcuts[$0.rawValue]
+                    ?? KeyboardShortcuts.getShortcut(for: name(for: $0)).map(ShortcutCodable.from)
+                return assigned == recordedShortcut
             }) {
                 KeyboardShortcuts.setShortcut(
                     app.customShortcuts[action.rawValue]?.keyboardShortcut,
                     for: name(for: action)
                 )
-                clearConflicts(involving: action)
+                syncRegistrations()
                 shortcutConflicts[action] = conflictingAction
                 return
             }
-            clearConflicts(involving: action)
             app.customShortcuts[action.rawValue] = recordedShortcut
         } else {
-            clearConflicts(involving: action)
             app.customShortcuts[action.rawValue] = nil
         }
         settings.appSettings = app
+        syncRegistrations()
+        onShortcutsChanged?()
     }
 
     func clearAllShortcuts() {
@@ -307,17 +330,43 @@ final class ShortcutsRegistry {
         var app = settings.appSettings
         app.customShortcuts.removeAll()
         settings.appSettings = app
-        shortcutConflicts.removeAll()
+        syncRegistrations()
+        onShortcutsChanged?()
     }
 
-    private func clearConflicts(involving action: ShortcutAction) {
-        shortcutConflicts[action] = nil
-        let dependentActions = shortcutConflicts.compactMap { recordedAction, conflictingAction in
-            conflictingAction == action ? recordedAction : nil
+    private func syncRegistrations() {
+        var desired: [ShortcutAction: ShortcutCodable] = [:]
+        for action in ShortcutAction.allCases {
+            desired[action] = settings.appSettings.customShortcuts[action.rawValue]
+                ?? KeyboardShortcuts.getShortcut(for: name(for: action)).map(ShortcutCodable.from)
         }
-        for dependentAction in dependentActions {
-            shortcutConflicts[dependentAction] = nil
+
+        var owners: [ShortcutCodable: ShortcutAction] = [:]
+        var conflicts: [ShortcutAction: ShortcutAction] = [:]
+        for action in ShortcutAction.allCases {
+            let actionName = name(for: action)
+            stopRepeating(action: action)
+            KeyboardShortcuts.removeHandler(for: actionName)
+
+            if let shortcut = desired[action], let owner = owners[shortcut] {
+                KeyboardShortcuts.setShortcut(nil, for: actionName)
+                conflicts[action] = owner
+            } else {
+                if let shortcut = desired[action] {
+                    owners[shortcut] = action
+                }
+                KeyboardShortcuts.setShortcut(desired[action]?.keyboardShortcut, for: actionName)
+            }
+
+            KeyboardShortcuts.onKeyDown(for: actionName) { [weak self] in
+                guard let self, self.dispatch(action) else { return }
+                self.startRepeating(action: action)
+            }
+            KeyboardShortcuts.onKeyUp(for: actionName) { [weak self] in
+                self?.stopRepeating(action: action)
+            }
         }
+        shortcutConflicts = conflicts
     }
 
     private func stableID(for action: ShortcutAction) -> String {

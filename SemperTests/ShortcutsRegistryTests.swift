@@ -178,6 +178,51 @@ struct ShortcutsRegistryTests {
         #expect(engine.setMuteCalls.isEmpty)
     }
 
+    @Test("Scene gate rejection does not show a successful volume HUD")
+    func sceneGateRejectionSuppressesVolumeHUD() {
+        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
+        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5)
+        let commands = ShortcutRejectingAudioCommandSink()
+        let hud = RecordingHUDController()
+        let registry = makeRegistry(
+            resolver: StubTargetResolver(target: "com.test.app"),
+            audioEngine: engine,
+            audioCommands: commands,
+            hud: hud
+        )
+
+        let dispatched = registry.dispatch(.targetAppVolumeUp)
+
+        #expect(!dispatched)
+        #expect(commands.calls.count == 1)
+        #expect(engine.setVolumeCalls.isEmpty)
+        #expect(hud.successCalls == 0)
+    }
+
+    @Test("Scene gate rejection stops a compound volume hotkey")
+    func sceneGateRejectionStopsCompoundHotkey() {
+        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
+        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5, initialMuted: true)
+        let commands = ShortcutRejectingAudioCommandSink()
+        let hud = RecordingHUDController()
+        let registry = makeRegistry(
+            resolver: StubTargetResolver(target: "com.test.app"),
+            audioEngine: engine,
+            audioCommands: commands,
+            hud: hud
+        )
+
+        let dispatched = registry.dispatch(.targetAppVolumeUp)
+
+        #expect(!dispatched)
+        #expect(commands.calls.map(\.command) == [
+            .setAppMute(target: .active(app), muted: false)
+        ])
+        #expect(engine.setMuteCalls.isEmpty)
+        #expect(engine.setVolumeCalls.isEmpty)
+        #expect(hud.successCalls == 0)
+    }
+
     @Test("dispatch falls through to failure HUD when no matching AudioApp exists")
     func dispatchNoMatchingApp() {
         let engine = RecordingAudioEngine(apps: [])
@@ -309,6 +354,61 @@ struct ShortcutsRegistryTests {
         #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: .togglePopup)) == previous.keyboardShortcut)
 
         KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
+        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .targetAppVolumeUp))
+    }
+
+    @Test("recordCallback clears a rejected duplicate when the action has no prior setting")
+    func recordCallbackRejectsDuplicateWithoutPriorSetting() {
+        let settings = makeIsolatedSettings()
+        let duplicateShortcut = KeyboardShortcuts.Shortcut(
+            carbonKeyCode: 12,
+            carbonModifiers: 0x12_0000
+        )
+        let duplicate = ShortcutCodable.from(duplicateShortcut)
+        var app = settings.appSettings
+        app.customShortcuts[ShortcutAction.targetAppVolumeUp.rawValue] = duplicate
+        settings.appSettings = app
+
+        let registry = makeRegistry(settings: settings)
+        KeyboardShortcuts.setShortcut(duplicateShortcut, for: registry.name(for: .togglePopup))
+
+        registry.recordCallback(for: .togglePopup)(duplicateShortcut)
+
+        #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue] == nil)
+        #expect(registry.conflictingAction(for: .togglePopup) == .targetAppVolumeUp)
+        #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: .togglePopup)) == nil)
+        #expect(
+            KeyboardShortcuts.getShortcut(for: registry.name(for: .targetAppVolumeUp))
+                == duplicate.keyboardShortcut
+        )
+
+        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
+        KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .targetAppVolumeUp))
+    }
+
+    @Test("recordCallback rejects a shortcut owned only by KeyboardShortcuts storage")
+    func recordCallbackRejectsLibraryOnlyDuplicate() {
+        let settings = makeIsolatedSettings()
+        let duplicateShortcut = KeyboardShortcuts.Shortcut(
+            carbonKeyCode: 23,
+            carbonModifiers: 0x12_0000
+        )
+        let duplicate = ShortcutCodable.from(duplicateShortcut)
+        let registry = makeRegistry(settings: settings)
+        let editedName = registry.name(for: .togglePopup)
+        let ownerName = registry.name(for: .targetAppVolumeUp)
+        KeyboardShortcuts.setShortcut(duplicateShortcut, for: ownerName)
+        KeyboardShortcuts.setShortcut(duplicateShortcut, for: editedName)
+
+        registry.recordCallback(for: .togglePopup)(duplicateShortcut)
+
+        #expect(settings.appSettings.customShortcuts[ShortcutAction.togglePopup.rawValue] == nil)
+        #expect(registry.conflictingAction(for: .togglePopup) == .targetAppVolumeUp)
+        #expect(KeyboardShortcuts.getShortcut(for: editedName) == nil)
+        #expect(KeyboardShortcuts.getShortcut(for: ownerName) == duplicate.keyboardShortcut)
+
+        KeyboardShortcuts.setShortcut(nil, for: editedName)
+        KeyboardShortcuts.setShortcut(nil, for: ownerName)
     }
 
     @Test("recordCallback clears a prior conflict after a unique shortcut is recorded")
@@ -384,34 +484,41 @@ struct ShortcutsRegistryTests {
         popupController: (any MenuBarPopupControlling)? = nil,
         resolver: (any TargetAppResolving)? = nil,
         audioEngine: (any AudioEngineDispatching)? = nil,
+        audioCommands: (any AudioCommandDispatching)? = nil,
         hud: (any PerAppHUDPresenting)? = nil
     ) -> ShortcutsRegistry {
         let resolvedEngine = audioEngine ?? RecordingAudioEngine(apps: [])
-        let commands = RecordingAudioCommandSink()
-        commands.onDispatch = { command in
-            switch command {
-            case .setAppVolume(let target, let volume):
-                guard let app = resolvedEngine.apps.first(where: {
-                    $0.persistenceIdentifier == target.identifier
-                        && (target.processID == nil || $0.id == target.processID)
-                }) else { return }
-                resolvedEngine.setVolume(for: app, to: volume)
-            case .setAppMute(let target, let muted):
-                guard let app = resolvedEngine.apps.first(where: {
-                    $0.persistenceIdentifier == target.identifier
-                        && (target.processID == nil || $0.id == target.processID)
-                }) else { return }
-                resolvedEngine.setMute(for: app, to: muted)
-            default:
-                break
+        let resolvedCommands: any AudioCommandDispatching
+        if let audioCommands {
+            resolvedCommands = audioCommands
+        } else {
+            let commands = RecordingAudioCommandSink()
+            commands.onDispatch = { command in
+                switch command {
+                case .setAppVolume(let target, let volume):
+                    guard let app = resolvedEngine.apps.first(where: {
+                        $0.persistenceIdentifier == target.identifier
+                            && (target.processID == nil || $0.id == target.processID)
+                    }) else { return }
+                    resolvedEngine.setVolume(for: app, to: volume)
+                case .setAppMute(let target, let muted):
+                    guard let app = resolvedEngine.apps.first(where: {
+                        $0.persistenceIdentifier == target.identifier
+                            && (target.processID == nil || $0.id == target.processID)
+                    }) else { return }
+                    resolvedEngine.setMute(for: app, to: muted)
+                default:
+                    break
+                }
             }
+            resolvedCommands = commands
         }
         return ShortcutsRegistry(
             settings: settings ?? makeIsolatedSettings(),
             popupController: popupController ?? RecordingPopupController(),
             resolver: resolver ?? StubTargetResolver(target: nil),
             audioEngine: resolvedEngine,
-            audioCommands: commands,
+            audioCommands: resolvedCommands,
             hud: hud ?? RecordingHUDController()
         )
     }
@@ -493,5 +600,15 @@ final class RecordingHUDController: PerAppHUDPresenting {
     func showPerAppMuteHUD(app: AudioApp, isMuted: Bool) { successCalls += 1 }
     func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?) {
         failureCalls += 1
+    }
+}
+
+@MainActor
+private final class ShortcutRejectingAudioCommandSink: AudioCommandDispatching {
+    private(set) var calls: [(command: AudioCommand, context: AudioCommandContext)] = []
+
+    func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult {
+        calls.append((command, context))
+        return .rejected(.sceneOperationInProgress)
     }
 }

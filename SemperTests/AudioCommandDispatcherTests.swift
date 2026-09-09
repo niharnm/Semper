@@ -75,6 +75,161 @@ struct AudioCommandDispatcherTests {
         #expect(activityStore.visibleActivity?.source == .globalShortcut)
     }
 
+    @Test("Scene writes clear prior undo and add no audio activity")
+    func sceneWriteSuppressesAudioHistory() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let activityStore = AudioActivityStore()
+        let dispatcher = AudioCommandDispatcher(
+            backend: backend,
+            activityStore: activityStore
+        )
+
+        dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.4),
+            context: AudioCommandContext(source: .popup)
+        )
+        #expect(activityStore.history.count == 1)
+
+        dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.8),
+            context: AudioCommandContext(source: .automation, reason: .scene)
+        )
+
+        #expect(dispatcher.undoLastChange() == .unavailable)
+        #expect(activityStore.history.count == 1)
+        activityStore.performVisibleAction()
+        #expect(backend.state[key] == .scalar(0.8))
+    }
+
+    @Test("A scene transaction rejects interleaved audio commands")
+    func sceneTransactionRejectsInterleavedCommand() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        #expect(dispatcher.beginSceneTransaction())
+        backend.nextResult = .accepted
+        let sceneResult = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.8),
+            context: AudioCommandContext(source: .automation, reason: .scene)
+        )
+        guard case .accepted = sceneResult else {
+            Issue.record("Expected accepted scene write")
+            return
+        }
+
+        let userResult = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.5),
+            context: AudioCommandContext(source: .mediaKey)
+        )
+        #expect(userResult == .rejected(.sceneOperationInProgress))
+        #expect(dispatcher.completeAccepted(key, observed: .scalar(0.8)))
+        dispatcher.endSceneTransaction()
+
+        #expect(backend.state[key] == .scalar(0.8))
+    }
+
+    @Test("A scene transaction waits for an accepted user command")
+    func sceneTransactionRejectsPendingUserWrite() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+        backend.nextResult = .accepted
+        _ = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.5),
+            context: AudioCommandContext(source: .mediaKey)
+        )
+
+        #expect(!dispatcher.beginSceneTransaction())
+
+        #expect(dispatcher.completeAccepted(key, observed: .scalar(0.5)))
+        #expect(dispatcher.beginSceneTransaction())
+        dispatcher.endSceneTransaction()
+    }
+
+    @Test("A backend rejection leaves the dispatcher scene lock open")
+    func backendSceneTransactionRejectionLeavesDispatcherOpen() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        backend.sceneTransactionAdmissionAllowed = false
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        #expect(!dispatcher.beginSceneTransaction())
+        #expect(backend.beginSceneTransactionCallCount == 1)
+
+        let result = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.5),
+            context: AudioCommandContext(source: .mediaKey)
+        )
+        guard case .applied = result else {
+            Issue.record("Expected the dispatcher to remain available")
+            return
+        }
+        dispatcher.endSceneTransaction()
+        #expect(backend.endSceneTransactionCallCount == 0)
+    }
+
+    @Test("A scene transaction with no audio write preserves prior undo")
+    func sceneTransactionWithoutAudioWritePreservesUndo() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        _ = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.4),
+            context: AudioCommandContext(source: .popup)
+        )
+        #expect(dispatcher.beginSceneTransaction())
+        dispatcher.endSceneTransaction()
+
+        #expect(dispatcher.undoLastChange() == .restored)
+        #expect(backend.state[key] == .scalar(0.2))
+    }
+
+    @Test("A scene transaction rejects undo without consuming it")
+    func sceneTransactionRejectsUndoWithoutConsumingIt() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        _ = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.4),
+            context: AudioCommandContext(source: .popup)
+        )
+        #expect(dispatcher.beginSceneTransaction())
+
+        #expect(dispatcher.undoLastChange() == .failed)
+        #expect(backend.state[key] == .scalar(0.4))
+
+        dispatcher.endSceneTransaction()
+        #expect(dispatcher.undoLastChange() == .restored)
+        #expect(backend.state[key] == .scalar(0.2))
+    }
+
+    @Test("A rejected scene write preserves prior undo")
+    func rejectedSceneWritePreservesUndo() {
+        let key = AudioControlKey.outputVolume("headphones")
+        let backend = StubAudioCommandBackend(state: [key: .scalar(0.2)])
+        let dispatcher = AudioCommandDispatcher(backend: backend)
+
+        _ = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.4),
+            context: AudioCommandContext(source: .popup)
+        )
+        #expect(dispatcher.beginSceneTransaction())
+        backend.nextResult = .rejected(.writeFailed)
+        let sceneResult = dispatcher.dispatch(
+            .setOutputVolume(deviceUID: "headphones", volume: 0.8),
+            context: AudioCommandContext(source: .automation, reason: .scene)
+        )
+        dispatcher.endSceneTransaction()
+
+        #expect(sceneResult == .rejected(.writeFailed))
+        #expect(dispatcher.undoLastChange() == .restored)
+        #expect(backend.state[key] == .scalar(0.2))
+    }
+
     @Test("Accepted result keeps a pending recovery token")
     func acceptedRecovery() {
         let owner = AudioAutomationOwner(rawValue: "call-mode")
@@ -415,7 +570,10 @@ private final class StubAudioCommandBackend: AudioCommandBackend {
     var nextResult: AudioBackendApplyResult?
     var recoveryAliases: [AudioControlKey: Set<AudioControlKey>] = [:]
     var effectiveValues: [AudioControlKey: AudioControlValue] = [:]
+    var sceneTransactionAdmissionAllowed = true
     private(set) var appliedCommands: [AudioCommand] = []
+    private(set) var beginSceneTransactionCallCount = 0
+    private(set) var endSceneTransactionCallCount = 0
 
     init(state: [AudioControlKey: AudioControlValue] = [:]) {
         self.state = state
@@ -423,6 +581,15 @@ private final class StubAudioCommandBackend: AudioCommandBackend {
 
     func read(_ key: AudioControlKey) -> AudioControlValue? {
         state[key]
+    }
+
+    func beginSceneTransaction() -> Bool {
+        beginSceneTransactionCallCount += 1
+        return sceneTransactionAdmissionAllowed
+    }
+
+    func endSceneTransaction() {
+        endSceneTransactionCallCount += 1
     }
 
     func apply(_ command: AudioCommand) -> AudioBackendApplyResult {

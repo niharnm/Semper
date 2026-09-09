@@ -110,6 +110,144 @@ struct SafeOutputSwitchIntegrationTests {
         #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [fixture.target.id])
     }
 
+    @Test("A prepared switch refuses an output above its limit without writing volume")
+    func preparedSwitchRejectsUnsafeTarget() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.settings.setOutputVolumeLimit(for: fixture.target.uid, to: 0.4)
+        #expect(fixture.engine.beginSceneTransaction())
+        defer { fixture.engine.endSceneTransaction() }
+
+        let result = fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.target.id)
+
+        #expect(result == .rejected)
+        #expect(fixture.volumeMonitor.setVolumeCalls.isEmpty)
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty)
+        #expect(fixture.volumeMonitor.defaultDeviceUID == fixture.current.uid)
+    }
+
+    @Test("A prepared switch routes after the destination volume is safe")
+    func preparedSwitchRoutesWithoutAnotherVolumeWrite() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.settings.setOutputVolumeLimit(for: fixture.target.uid, to: 0.4)
+        fixture.volumeMonitor.volumes[fixture.target.id] = 0.4
+        #expect(fixture.engine.beginSceneTransaction())
+        defer { fixture.engine.endSceneTransaction() }
+
+        let result = fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.target.id)
+
+        #expect(result == .applied)
+        #expect(fixture.volumeMonitor.setVolumeCalls.isEmpty)
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [fixture.target.id])
+        #expect(fixture.volumeMonitor.defaultDeviceUID == fixture.target.uid)
+    }
+
+    @Test("Pending internal cap work blocks scene admission")
+    func pendingInternalCapBlocksSceneAdmission() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.settings.setOutputVolumeLimit(for: fixture.target.uid, to: 0.4)
+        fixture.volumeMonitor.autoDetectedTiersByID[fixture.target.id] = .ddc
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fixture.engine)
+        )
+
+        #expect(fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id) == .accepted)
+        #expect(!dispatcher.beginSceneTransaction())
+
+        fixture.volumeMonitor.confirmedOutputVolumes[fixture.target.id] = 0.4
+        fixture.volumeMonitor.onOutputWriteCompleted?(fixture.target.id, true)
+        #expect(dispatcher.beginSceneTransaction())
+        dispatcher.endSceneTransaction()
+    }
+
+    @Test("An internal output route is rejected during a scene transaction")
+    func internalOutputRouteRejectedDuringSceneTransaction() {
+        let fixture = makeSafeSwitchFixture()
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fixture.engine)
+        )
+
+        #expect(dispatcher.beginSceneTransaction())
+        #expect(fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id) == .rejected)
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls.isEmpty)
+        dispatcher.endSceneTransaction()
+    }
+
+    @Test("Prepared scene routing can apply and roll back in one transaction")
+    func preparedSceneRoutingAppliesAndRollsBackInOneTransaction() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.volumeMonitor.defaultDeviceWritesPublishState = false
+        var rejectedKeys: [AudioControlKey] = []
+        fixture.engine.onCommandWriteRejected = { rejectedKeys.append($0) }
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fixture.engine)
+        )
+
+        #expect(dispatcher.beginSceneTransaction())
+        #expect(
+            fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.target.id)
+                == .accepted
+        )
+        #expect(
+            fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.current.id)
+                == .applied
+        )
+        dispatcher.endSceneTransaction()
+
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [
+            fixture.target.id,
+            fixture.current.id,
+        ])
+        #expect(rejectedKeys.isEmpty)
+    }
+
+    @Test("Ending a scene clears its pending output confirmation")
+    func endingSceneClearsItsPendingOutputConfirmation() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.volumeMonitor.defaultDeviceWritesPublishState = false
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fixture.engine)
+        )
+
+        #expect(dispatcher.beginSceneTransaction())
+        #expect(
+            fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.target.id)
+                == .accepted
+        )
+        dispatcher.endSceneTransaction()
+
+        #expect(dispatcher.beginSceneTransaction())
+        dispatcher.endSceneTransaction()
+    }
+
+    @Test("Prepared routing cannot cancel an earlier output confirmation")
+    func preparedRoutingPreservesEarlierOutputConfirmation() {
+        let fixture = makeSafeSwitchFixture()
+        fixture.volumeMonitor.defaultDeviceWritesPublishState = false
+        var rejectedKeys: [AudioControlKey] = []
+        fixture.engine.onCommandWriteRejected = { rejectedKeys.append($0) }
+        let dispatcher = AudioCommandDispatcher(
+            backend: AudioEngineCommandBackend(engine: fixture.engine)
+        )
+
+        #expect(fixture.engine.requestDefaultOutputDeviceSwitch(fixture.target.id) == .accepted)
+        #expect(!dispatcher.beginSceneTransaction())
+        #expect(
+            fixture.engine.requestPreparedDefaultOutputDeviceSwitch(fixture.current.id)
+                == .rejected
+        )
+
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [fixture.target.id])
+        #expect(rejectedKeys.isEmpty)
+
+        fixture.engine.endSceneTransaction()
+        #expect(fixture.engine.requestDefaultOutputDeviceSwitch(fixture.current.id) == .applied)
+        #expect(fixture.volumeMonitor.setDefaultDeviceCalls == [
+            fixture.target.id,
+            fixture.current.id,
+        ])
+        #expect(rejectedKeys == [.defaultOutput])
+    }
+
     @Test("A failed cap write keeps the current output")
     func failedPreflight() async {
         let fixture = makeSafeSwitchFixture()

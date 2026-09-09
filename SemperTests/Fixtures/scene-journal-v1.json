@@ -1,0 +1,35 @@
+{
+  "transaction" : {
+    "entries" : [
+      {
+        "appliedValue" : {
+          "number" : {
+            "_0" : 0.8
+          }
+        },
+        "control" : {
+          "audioOutputVolume" : {
+            "deviceID" : "output.usb"
+          }
+        },
+        "importance" : "required",
+        "phase" : "applied",
+        "snapshotValue" : {
+          "number" : {
+            "_0" : 0.2
+          }
+        },
+        "targetValue" : {
+          "number" : {
+            "_0" : 0.8
+          }
+        }
+      }
+    ],
+    "id" : "0ED27CB1-9E6B-4E77-A2E3-EBD58BDDC05F",
+    "sceneID" : "72FB9C62-2912-46D5-83C6-87D6B2258534",
+    "sceneName" : "Fixture Recovery",
+    "startedAt" : "2025-09-04T08:53:20Z"
+  },
+  "version" : 1
+}

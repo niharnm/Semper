@@ -24,6 +24,7 @@ enum AudioChangeReason: String, Equatable, Sendable {
     case bluetoothGuard
     case bypass
     case recovery
+    case scene
     case undo
 }
 
@@ -138,6 +139,7 @@ enum AudioCommandRejection: Equatable, Sendable {
     case deviceUnavailable(String)
     case permissionDenied
     case unsupportedRoute(String)
+    case sceneOperationInProgress
     case writeFailed
 }
 
@@ -164,6 +166,8 @@ protocol AudioCommandDispatching: AnyObject {
 
     @discardableResult
     func undoLastChange(source: AudioCommandSource) -> AudioUndoResult
+    func beginSceneTransaction() -> Bool
+    func endSceneTransaction()
 }
 
 extension AudioCommandDispatching {
@@ -171,6 +175,10 @@ extension AudioCommandDispatching {
     func undoLastChange(source: AudioCommandSource) -> AudioUndoResult {
         .unavailable
     }
+
+    func beginSceneTransaction() -> Bool { true }
+
+    func endSceneTransaction() {}
 }
 
 enum AudioBackendApplyResult: Equatable {
@@ -185,6 +193,8 @@ protocol AudioCommandBackend: AnyObject {
     func apply(_ command: AudioCommand) -> AudioBackendApplyResult
     func effectiveRequestedValue(for command: AudioCommand) -> AudioControlValue
     func recoveryAliasKeys(for command: AudioCommand) -> Set<AudioControlKey>
+    func beginSceneTransaction() -> Bool
+    func endSceneTransaction()
 }
 
 extension AudioCommandBackend {
@@ -195,6 +205,10 @@ extension AudioCommandBackend {
     func recoveryAliasKeys(for command: AudioCommand) -> Set<AudioControlKey> {
         []
     }
+
+    func beginSceneTransaction() -> Bool { true }
+
+    func endSceneTransaction() {}
 }
 
 @Observable
@@ -208,6 +222,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     private let now: () -> Date
     private let undoLifetime: TimeInterval
     private var undoExpirationTask: Task<Void, Never>?
+    private var sceneTransactionActive = false
     private struct AcceptanceClaim {
         let token: AudioRecoveryToken?
         let requested: AudioControlValue
@@ -235,6 +250,9 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
 
     @discardableResult
     func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult {
+        guard !sceneTransactionActive || context.reason == .scene else {
+            return .rejected(.sceneOperationInProgress)
+        }
         guard Self.isValid(command) else { return .rejected(.invalidValue) }
 
         let key = command.controlKey
@@ -317,6 +335,19 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         }
     }
 
+    func beginSceneTransaction() -> Bool {
+        guard !sceneTransactionActive, pendingAcceptances.isEmpty else { return false }
+        guard backend.beginSceneTransaction() else { return false }
+        sceneTransactionActive = true
+        return true
+    }
+
+    func endSceneTransaction() {
+        guard sceneTransactionActive else { return }
+        backend.endSceneTransaction()
+        sceneTransactionActive = false
+    }
+
     @discardableResult
     func completeAccepted(_ key: AudioControlKey, observed: AudioControlValue) -> Bool {
         guard let claims = pendingAcceptances[key],
@@ -391,6 +422,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
 
     @discardableResult
     func undoLastChange(source: AudioCommandSource = .popup) -> AudioUndoResult {
+        guard !sceneTransactionActive else { return .failed }
         let preparation = undoJournal.prepare(at: now()) { backend.read($0) }
         undoExpirationTask?.cancel()
         undoExpirationTask = nil
@@ -456,6 +488,14 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     }
 
     private func recordSuccessful(_ receipt: AudioCommandReceipt) {
+        if receipt.context.reason == .scene {
+            if let activityID = undoJournal.clear() {
+                activityStore.clearAction(for: activityID)
+            }
+            undoExpirationTask?.cancel()
+            undoExpirationTask = nil
+            return
+        }
         guard receipt.context.reason != .undo else { return }
         let undoUpdate = undoJournal.record(receipt, at: now())
         if let replacedActivityID = undoUpdate?.replacedActivityID {
@@ -520,6 +560,8 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
             AudioActivityPresentation(message: "Audio processing state changed", systemImage: "waveform")
         case .recovery:
             AudioActivityPresentation(message: "Restored after audio recovery", systemImage: "arrow.clockwise")
+        case .scene:
+            nil
         case .undo:
             AudioActivityPresentation(message: "Restored by Undo", systemImage: "arrow.uturn.backward")
         }
@@ -603,6 +645,14 @@ final class AudioEngineCommandBackend: AudioCommandBackend {
     ) {
         self.engine = engine
         self.readDefaultInputDevice = readDefaultInputDevice
+    }
+
+    func beginSceneTransaction() -> Bool {
+        engine.beginSceneTransaction()
+    }
+
+    func endSceneTransaction() {
+        engine.endSceneTransaction()
     }
 
     func read(_ key: AudioControlKey) -> AudioControlValue? {
