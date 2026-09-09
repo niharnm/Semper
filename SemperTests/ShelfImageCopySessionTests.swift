@@ -29,7 +29,7 @@ nonisolated private final class ImageSessionSignal: @unchecked Sendable {
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let value = lock.withLock { () -> Bool? in
-                    if let value { return value }
+                    if let value = self.value { return value }
                     self.continuation = continuation
                     return nil
                 }
