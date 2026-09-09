@@ -96,8 +96,9 @@ struct AwayUtilityRuntimeTests {
             let resumedResult = await runtime.performAwayShortcut()
             #expect(
                 resumedResult == .accepted,
-                "Result: \(String(describing: resumedResult)); message: \(runtime.message ?? "nil"); "
-                    + "shortcut conflict: \(runtime.awayShortcutConflict ?? "nil")")
+                Comment(
+                    rawValue: "Result: \(String(describing: resumedResult)); message: \(runtime.message ?? "nil"); "
+                        + "shortcut conflict: \(runtime.awayShortcutConflict ?? "nil")"))
             #expect(runtime.away !== original)
             await runtime.shutdown()
             #expect(await runtime.performAwayShortcut() == .cancelled)
