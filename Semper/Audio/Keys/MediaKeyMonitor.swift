@@ -32,6 +32,7 @@ final class MediaKeyMonitor {
     private let hudController: MediaKeyHUDPresenting
     private let popupVisibility: PopupVisibilityService
     private let mediaKeyStatus: MediaKeyStatus
+    private let clock: () -> DispatchTime
     private let logger = Logger(subsystem: "systems.semper.Semper", category: "MediaKeyMonitor")
 
     // MARK: - Tap state
@@ -70,7 +71,8 @@ final class MediaKeyMonitor {
         accessibility: any AccessibilityTrustProviding,
         hudController: MediaKeyHUDPresenting,
         popupVisibility: PopupVisibilityService,
-        mediaKeyStatus: MediaKeyStatus
+        mediaKeyStatus: MediaKeyStatus,
+        clock: @escaping () -> DispatchTime = { .now() }
     ) {
         self.decoder = decoder
         self.audioEngine = audioEngine
@@ -80,6 +82,7 @@ final class MediaKeyMonitor {
         self.hudController = hudController
         self.popupVisibility = popupVisibility
         self.mediaKeyStatus = mediaKeyStatus
+        self.clock = clock
         subscribeToWorkspaceLifecycle()
     }
 
@@ -360,7 +363,7 @@ final class MediaKeyMonitor {
 
     /// `true` if this repeat falls inside the 80 ms floor and should be dropped.
     private func isDDCRepeatCoalesced() -> Bool {
-        let now = DispatchTime.now()
+        let now = clock()
         if let last = lastDDCRepeatTime {
             let deltaNs = now.uptimeNanoseconds &- last.uptimeNanoseconds
             if deltaNs < 80 * 1_000_000 { return true }

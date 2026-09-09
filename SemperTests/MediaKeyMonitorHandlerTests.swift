@@ -30,7 +30,8 @@ struct MediaKeyMonitorHandlerTests {
         hudController: HUDWindowController? = nil,
         popupVisible: Bool = false,
         audioCommands: (any AudioCommandDispatching)? = nil,
-        withDefaultOutput: Bool = false
+        withDefaultOutput: Bool = false,
+        clock: @escaping () -> DispatchTime = { .now() }
     ) -> (monitor: MediaKeyMonitor, hud: HUDWindowController, popup: PopupVisibilityService, settingsManager: SettingsManager) {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -80,7 +81,8 @@ struct MediaKeyMonitorHandlerTests {
             accessibility: MockAccessibilityTrustProviding(isTrusted: true),
             hudController: hud,
             popupVisibility: popup,
-            mediaKeyStatus: mediaKeyStatus
+            mediaKeyStatus: mediaKeyStatus,
+            clock: clock
         )
         return (monitor, hud, popup, settings)
     }
@@ -280,13 +282,14 @@ struct MediaKeyMonitorHandlerTests {
 
     // MARK: - DDC repeat coalescing (AC #10)
 
-    @Test("4 DDC repeats within 150 ms fire ≤ 3 setVolume calls (AC #10)")
+    @Test("DDC repeats at 0, 50, 100, and 150 ms produce two writes")
     func ddcRepeatsCoalesced() {
-        let (monitor, _, _, _) = makeMonitor()
+        var now = DispatchTime(uptimeNanoseconds: 1_000_000_000)
+        let (monitor, _, _, _) = makeMonitor(clock: { now })
         let deviceID: AudioDeviceID = 1
         var setVolumeCount = 0
-        // Four rapid repeats with no sleep — the 80 ms floor will drop at least one.
-        for _ in 0..<4 {
+        for elapsed in [UInt64(0), 50_000_000, 100_000_000, 150_000_000] {
+            now = DispatchTime(uptimeNanoseconds: 1_000_000_000 + elapsed)
             monitor.handleCore(
                 event: .volumeUp(isRepeat: true),
                 deviceID: deviceID,
@@ -298,7 +301,7 @@ struct MediaKeyMonitorHandlerTests {
                 setMute: { _, _ in }
             )
         }
-        #expect(setVolumeCount <= 3)
+        #expect(setVolumeCount == 2)
     }
 
     @Test("Non-repeat DDC press always writes — floor applies only to repeats")
@@ -611,21 +614,27 @@ struct MediaKeyMonitorHandlerTests {
         #expect(feedbackCalls == 0)
     }
 
-    @Test("DDC-coalesced repeats skip playFeedback along with setVolume")
-    func feedbackCoalescedWithDDC() {
-        let (monitor, _, _, _) = makeMonitor()
+    @Test("DDC repeats coalesce writes and feedback until the 80 ms boundary", arguments: [true, false])
+    func feedbackCoalescedWithDDC(volumeUp: Bool) {
+        var now = DispatchTime(uptimeNanoseconds: 1_000_000_000)
+        let (monitor, _, _, _) = makeMonitor(clock: { now })
         var setVolumeCalls = 0
         var feedbackCalls = 0
-        for _ in 0..<4 {
+        let samples: [(elapsed: UInt64, writes: Int)] = [
+            (0, 1), (20_000_000, 1), (40_000_000, 1), (79_999_000, 1),
+            (80_000_000, 2), (159_999_000, 2), (160_000_000, 3),
+        ]
+        for sample in samples {
+            now = DispatchTime(uptimeNanoseconds: 1_000_000_000 + sample.elapsed)
             monitor.handleCore(
-                event: .volumeUp(isRepeat: true), deviceID: 1, tier: .ddc,
+                event: volumeUp ? .volumeUp(isRepeat: true) : .volumeDown(isRepeat: true), deviceID: 1, tier: .ddc,
                 deviceName: "Test Display", currentVolume: 0.5, currentMute: false,
                 setVolume: { _, _ in setVolumeCalls += 1 }, setMute: { _, _ in },
                 playFeedback: { _ in feedbackCalls += 1 }
             )
+            #expect(setVolumeCalls == sample.writes)
+            #expect(feedbackCalls == setVolumeCalls)
         }
-        #expect(setVolumeCalls == 1)  // 4 synchronous repeats coalesce to one write
-        #expect(feedbackCalls == setVolumeCalls)  // pop count mirrors actual volume writes
     }
 
     @Test("volumeDown reaching 0 auto-mutes AND still pops (spec behavior-table row)")
