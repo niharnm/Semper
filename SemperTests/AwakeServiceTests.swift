@@ -16,6 +16,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
 
     var failingKinds: Set<PowerAssertionKind> = []
     var failingReleaseIDs: Set<PowerAssertionID> = []
+    var onCreate: (() -> Void)?
     private(set) var events: [Event] = []
     private(set) var requestedReasons: [String] = []
     private(set) var requestedTimeouts: [TimeInterval?] = []
@@ -34,6 +35,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
         events.append(.created(id, kind))
         requestedReasons.append(reason)
         requestedTimeouts.append(timeout)
+        onCreate?()
         return id
     }
 
@@ -557,6 +559,258 @@ struct AwakeServiceTests {
         ])
     }
 
+    @Test(
+        "Presentation refuses missing, expired, and nonfinite deadlines",
+        arguments: [TimeInterval?.none, -1, 0, .infinity, -.infinity, .nan]
+    )
+    func presentationRequiresFiniteDeadline(_ interval: TimeInterval?) {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = interval.map { clock.current.addingTimeInterval($0) }
+
+        #expect(throws: AwakeLeaseError.invalidDeadline) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+
+        #expect(backend.events.isEmpty)
+        #expect(!service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation assertions use their remaining deadline and owner reasons")
+    func presentationAssertionTimeouts() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        backend.onCreate = { clock.advance(by: 10) }
+
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+
+        #expect(backend.requestedTimeouts == [600, 590])
+        #expect(backend.requestedReasons == [
+            "Semper Presentation requested idle sleep prevention",
+            "Semper Presentation requested idle display sleep prevention",
+        ])
+        #expect(service.leaseState(for: .presentation) == AwakeLeaseState(
+            owner: .presentation, keepsDisplayAwake: true, deadline: deadline
+        ))
+        #expect(scheduler.scheduledDate == deadline)
+    }
+
+    @Test("An elapsed deadline during acquisition rolls back the partial assertion")
+    func presentationDeadlineElapsedDuringAcquisition() {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(60)
+        backend.onCreate = { clock.advance(by: 60) }
+
+        #expect(throws: AwakeLeaseError.couldNotAcquire) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+
+        #expect(backend.requestedTimeouts == [60])
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(service.leaseState(for: .presentation) == nil)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation remains independent of manual, Away, and Scene requests")
+    func presentationOwnerIsolation() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        service.start(.oneHour)
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        let presentation = try service.acquireLease(
+            owner: .presentation, keepsDisplayAwake: true, deadline: deadline
+        )
+
+        service.stop()
+        service.start(.twoHours)
+        service.stop()
+        #expect(backend.activeAssertionIDs == [2, 3, 4, 5])
+        #expect(service.effectiveLeaseCount == 3)
+        #expect(scheduler.scheduledDate == deadline)
+
+        #expect(service.releaseLease(scene))
+        #expect(service.releaseLease(away))
+        #expect(backend.activeAssertionIDs == [4, 5])
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(service.releaseLease(presentation))
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation acquisition only reuses an exactly matching active request")
+    func presentationAcquisitionCannotReplaceSession() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        let events = backend.events
+
+        #expect(try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline) == token)
+        #expect(throws: AwakeLeaseError.conflictingLease) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+        for changedDeadline in [deadline.addingTimeInterval(-60), deadline.addingTimeInterval(60)] {
+            #expect(throws: AwakeLeaseError.conflictingLease) {
+                try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: changedDeadline)
+            }
+        }
+
+        #expect(backend.events == events)
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(service.leaseState(for: .presentation)?.deadline == deadline)
+    }
+
+    @Test("Presentation display changes preserve the original deadline")
+    func presentationDisplayUpdatePreservesDeadline() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        clock.advance(by: 120)
+
+        try service.updateLease(token, keepsDisplayAwake: true)
+
+        #expect(backend.requestedTimeouts == [600, 480, 480])
+        #expect(service.leaseState(for: .presentation)?.deadline == deadline)
+        #expect(service.leaseState(for: .presentation)?.keepsDisplayAwake == true)
+        #expect(scheduler.scheduledDate == deadline)
+        clock.advance(by: 480)
+        scheduler.fire()
+        #expect(!service.hasLease(for: .presentation))
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Presentation expiry releases only its assertions without a manual session")
+    func presentationExpiryWithoutManualSession() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                     deadline: clock.current.addingTimeInterval(600))
+
+        clock.advance(by: 300)
+        scheduler.fire()
+        #expect(service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == clock.current.addingTimeInterval(300))
+        clock.advance(by: 300)
+        scheduler.fire()
+
+        #expect(!service.hasLease(for: .presentation))
+        #expect(service.hasLease(for: .awayMode))
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Wake expires a Presentation lease even when manual Awake is inactive")
+    func presentationWakeExpiry() throws {
+        let notifications = NotificationCenter()
+        let (service, backend, scheduler, clock) = makeService(workspaceNotificationCenter: notifications)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: clock.current.addingTimeInterval(60))
+        clock.advance(by: 120)
+
+        notifications.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+        #expect(service.leaseStates.isEmpty)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("The timer always tracks the earliest manual or Presentation deadline", arguments: [true, false])
+    func earliestOwnedDeadline(presentationFirst: Bool) throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let startedAt = clock.current
+        let presentationDuration: TimeInterval = presentationFirst ? 900 : 3600
+        service.start(.thirtyMinutes)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: startedAt.addingTimeInterval(presentationDuration))
+
+        let firstInterval = min(1800, presentationDuration)
+        let lastInterval = max(1800, presentationDuration)
+        #expect(scheduler.scheduledDate == startedAt.addingTimeInterval(firstInterval))
+        clock.advance(by: firstInterval)
+        scheduler.fire()
+        #expect(service.isActive == presentationFirst)
+        #expect(service.hasLease(for: .presentation) == !presentationFirst)
+        #expect(scheduler.scheduledDate == startedAt.addingTimeInterval(lastInterval))
+        clock.advance(by: lastInterval - firstInterval)
+        scheduler.fire()
+        #expect(!service.hasEffectiveAwakeRequest)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("An expired Presentation token cannot update or release its replacement")
+    func stalePresentationToken() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let first = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                             deadline: clock.current.addingTimeInterval(60))
+        clock.advance(by: 60)
+        #expect(throws: AwakeLeaseError.invalidToken) {
+            try service.updateLease(first, keepsDisplayAwake: true)
+        }
+        let deadline = clock.current.addingTimeInterval(120)
+        let replacement = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+
+        #expect(first != replacement)
+        #expect(service.releaseLease(first))
+        #expect(throws: AwakeLeaseError.invalidToken) {
+            try service.updateLease(first, keepsDisplayAwake: true)
+        }
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == deadline)
+    }
+
+    @Test("Presentation expiry retains failed-release tracking for shutdown")
+    func presentationExpiryReleaseFailure() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                             deadline: clock.current.addingTimeInterval(60))
+        backend.failingReleaseIDs = [2]
+        clock.advance(by: 60)
+        scheduler.fire()
+
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.leaseState(for: .presentation) == nil)
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(!service.releaseLease(token))
+        #expect(backend.releaseCount(for: 2) == 1)
+        #expect(throws: AwakeLeaseError.serviceUnavailable) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: clock.current.addingTimeInterval(60))
+        }
+
+        backend.failingReleaseIDs = []
+        service.shutdown()
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(service.releaseLease(token))
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("A failed manual replacement cannot cancel Presentation expiry")
+    func manualReplacementFailurePreservesPresentationExpiry() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        service.start(.oneHour)
+        let deadline = clock.current.addingTimeInterval(60)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        backend.failingReleaseIDs = [1]
+
+        service.start(.twoHours)
+
+        #expect(service.session == nil)
+        #expect(service.failure == .couldNotRelease)
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(backend.activeAssertionIDs == [1, 2])
+        clock.advance(by: 60)
+        scheduler.fire()
+        #expect(!service.hasLease(for: .presentation))
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(service.failure == .couldNotRelease)
+    }
+
     @Test("A lease update acquires its replacement before releasing prior assertions")
     func leaseUpdateOrder() throws {
         let (service, backend, _, _) = makeService()
@@ -716,13 +970,15 @@ struct AwakeServiceTests {
         #expect(backend.releaseCount(for: 2) == 1)
     }
 
-    @Test("Shutdown releases user, Away, and Scene assertions exactly once")
+    @Test("Shutdown releases user, Away, Scene, and Presentation assertions exactly once")
     func shutdownReleasesEveryOwner() throws {
-        let (service, backend, _, _) = makeService()
+        let (service, backend, scheduler, clock) = makeService()
         service.setKeepDisplayAwake(true)
         service.start(.untilTurnedOff)
         _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
         _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                     deadline: clock.current.addingTimeInterval(60))
 
         service.shutdown()
         service.shutdown()
@@ -731,7 +987,8 @@ struct AwakeServiceTests {
         #expect(service.leaseStates.isEmpty)
         #expect(!service.hasEffectiveAwakeRequest)
         #expect(backend.activeAssertionIDs.isEmpty)
-        for id in PowerAssertionID(1)...PowerAssertionID(5) {
+        #expect(scheduler.scheduledDate == nil)
+        for id in PowerAssertionID(1)...PowerAssertionID(7) {
             #expect(backend.releaseCount(for: id) == 1)
         }
     }
