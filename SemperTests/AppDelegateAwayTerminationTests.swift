@@ -165,6 +165,38 @@ struct AppDelegateAwayTerminationTests {
         }
     }
 
+    @Test("Termination event waits preserve arrivals before registration")
+    func bufferedTerminationEvent() async throws {
+        let (events, continuation) = AsyncStream.makeStream(of: Void.self)
+        continuation.yield(())
+        continuation.finish()
+        try await waitForEvent(events)
+    }
+
+    @Test("Cancellation releases an event waiter before late cleanup starts", arguments: [false, true])
+    func cancellationReleasesEventWait(waitUntilStarted: Bool) async throws {
+        let probe = TerminationProbe()
+        let (started, continuation) = AsyncStream.makeStream(of: Void.self)
+        let waiter = Task {
+            continuation.yield(())
+            continuation.finish()
+            try await waitForEvent(probe.drainEvents)
+        }
+        if waitUntilStarted {
+            var iterator = started.makeAsyncIterator()
+            await iterator.next()
+        }
+        waiter.cancel()
+        do {
+            try await waiter.value
+            Issue.record("The cancelled event wait returned successfully")
+        } catch is CancellationError {}
+
+        probe.release()
+        #expect(await probe.drain().isEmpty)
+        #expect(probe.drainCount == 1)
+    }
+
     private func withDelegate(
         _ body: (AppDelegate, TerminationProbe) async throws -> Void
     ) async throws {
@@ -188,18 +220,10 @@ struct AppDelegateAwayTerminationTests {
     }
 
     private func waitForEvent(_ events: AsyncStream<Void>) async throws {
-        try await withThrowingTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                for await _ in events { return true }
-                return false
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(10))
-                return false
-            }
-            defer { group.cancelAll() }
-            try #require(try await group.next() == true)
-        }
+        var iterator = events.makeAsyncIterator()
+        let event = await iterator.next()
+        try Task.checkCancellation()
+        try #require(event != nil)
     }
 }
 
