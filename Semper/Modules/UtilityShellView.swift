@@ -274,12 +274,15 @@ struct UtilityShellView: View {
                 if let workspace = runtime.workspace {
                     VStack(alignment: .leading, spacing: 0) {
                         if workspace.presentationReservation != nil {
-                            Text("Presentation owns this workspace preview or recovery. End Presentation before changing it.")
-                                .foregroundStyle(.secondary).padding(24)
+                            Text(
+                                "Presentation owns this workspace preview or recovery. End Presentation before changing it."
+                            )
+                            .foregroundStyle(.secondary).padding(24)
                         }
-                        WorkspaceView(service: workspace)
-                            .disabled(workspace.presentationReservation != nil
-                                || runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                        WorkspaceView(service: workspace, workflowRequest: runtime.workspaceWorkflowRequest)
+                            .disabled(
+                                workspace.presentationReservation != nil
+                                    || runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
                     }
                 } else {
                     startModule(id)
@@ -369,7 +372,16 @@ struct UtilitySettingsView: View {
             .tabItem { Label("Modules", systemImage: "square.grid.2x2") }
             VStack(alignment: .leading, spacing: 16) {
                 Text("Search Semper actions").font(.headline)
-                KeyboardShortcuts.Recorder("Keyboard shortcut", name: UtilityRuntime.searchShortcut)
+                KeyboardShortcuts.Recorder(
+                    "Keyboard shortcut", name: UtilityRuntime.searchShortcut, onChange: runtime.recordSearchShortcut)
+                KeyboardShortcuts.Recorder(
+                    "Prepare Workspace Restore", name: UtilityRuntime.workspaceRestoreShortcut,
+                    onChange: runtime.recordWorkspaceRestoreShortcut)
+                Text("Opens Workspace Restore preparation. Preview and Restore remain separate actions.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let conflict = runtime.workspaceShortcutConflict {
+                    Text(conflict).font(.caption).foregroundStyle(.orange)
+                }
                 if let sound = runtime.usableSound {
                     ShortcutsTab(
                         settings: runtime.settings, accessibility: sound.accessibility,

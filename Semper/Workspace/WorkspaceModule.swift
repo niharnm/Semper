@@ -16,7 +16,24 @@ enum WorkspaceCommand: String, CaseIterable, Sendable {
     }
 }
 
-enum WorkspaceCommandEffect: Sendable { case openWorkspace, completed }
+enum WorkspaceWorkflow: String, Equatable, Sendable {
+    case capture, preview, restore
+}
+
+struct WorkspaceWorkflowRequest: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let workflow: WorkspaceWorkflow
+
+    init(id: UUID = UUID(), workflow: WorkspaceWorkflow) {
+        self.id = id
+        self.workflow = workflow
+    }
+}
+
+enum WorkspaceCommandEffect: Sendable {
+    case openWorkspace(WorkspaceWorkflow)
+    case completed
+}
 
 enum WorkspaceModuleMetadata {
     static let id = "workspace"
@@ -40,9 +57,11 @@ enum WorkspaceModuleMetadata {
 extension WorkspaceService {
     func handle(_ command: WorkspaceCommand) async -> WorkspaceCommandEffect {
         switch command {
-        case .capture, .preview, .restore: return .openWorkspace
+        case .capture: return .openWorkspace(.capture)
+        case .preview: return .openWorkspace(.preview)
+        case .restore: return .openWorkspace(.restore)
         case .undo:
-            guard canUndo else { return .openWorkspace }
+            guard canUndo else { return .openWorkspace(.restore) }
             await undo()
             return .completed
         }

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import KeyboardShortcuts
 import Testing
 
 @testable import Semper
@@ -151,18 +152,42 @@ struct DirectUtilityRuntimeTests {
         try await withRuntime { runtime, probe in
             let undo = UtilityActionID(rawValue: WorkspaceCommand.undo.rawValue)
             #expect(runtime.commands.disabledReason(for: undo) == "No workspace restore is available to undo.")
-            for command in [WorkspaceCommand.capture, .preview, .restore] {
+            var requestIDs = Set<UUID>()
+            for (command, workflow) in [
+                (WorkspaceCommand.capture, WorkspaceWorkflow.capture), (.preview, .preview),
+                (.restore, .restore), (.restore, .restore),
+            ] {
                 #expect(await runtime.commands.execute(.init(rawValue: command.rawValue)) == .completed)
                 #expect(runtime.destination == .module(.workspace))
+                let request = try #require(runtime.workspaceWorkflowRequest)
+                #expect(request.workflow == workflow)
+                #expect(requestIDs.insert(request.id).inserted)
             }
             #expect(await probe.workspaceBackend.permissionPrompts.isEmpty)
+            #expect(await probe.workspaceBackend.moves.isEmpty)
             let service = try #require(runtime.workspace)
             service.selectedApplicationIDs = [probe.application.id]
             service.arrangementName = "Test desk"
             await service.capture()
             let displaced = CGRect(x: 250, y: 180, width: 350, height: 250)
             await probe.workspaceBackend.change(probe.windowID, frame: displaced)
-            await service.makePreview()
+            #expect(await service.makePreview())
+            let selected = service.selectedArrangementID
+            let bindings = service.bindings
+            service.arrangementName = "Unfinished draft"
+            let prompts = await probe.workspaceBackend.permissionPrompts
+            #expect(await runtime.commands.execute(.init(rawValue: WorkspaceCommand.restore.rawValue)) == .completed)
+            let request = try #require(runtime.workspaceWorkflowRequest)
+            #expect(requestIDs.insert(request.id).inserted)
+            #expect(service.selectedArrangementID == selected)
+            #expect(service.arrangementName == "Unfinished draft")
+            #expect(service.selectedApplicationIDs == [probe.application.id])
+            #expect(service.bindings == bindings)
+            #expect(!service.canRestore)
+            await service.restore()
+            #expect(await probe.workspaceBackend.moves.isEmpty)
+            #expect(await probe.workspaceBackend.permissionPrompts == prompts)
+            #expect(await service.makePreview(requestID: request.id))
             await service.restore()
             #expect(service.canUndo)
             #expect(runtime.summary(for: .workspace) == "1 arrangement, undo available")
@@ -170,6 +195,229 @@ struct DirectUtilityRuntimeTests {
             #expect(try await probe.workspaceBackend.current(probe.windowID)?.frame == displaced)
             #expect(runtime.message == service.results.map(\.message).joined(separator: "\n"))
             #expect(runtime.commands.disabledReason(for: undo) == "No workspace restore is available to undo.")
+        }
+    }
+
+    @Test("Reserved and busy Workspace navigation preserves the accepted workflow")
+    func workspaceNavigationAdmission() async throws {
+        try await withRuntime { runtime, probe in
+            #expect(await runtime.commands.execute(.init(rawValue: WorkspaceCommand.capture.rawValue)) == .completed)
+            let accepted = try #require(runtime.workspaceWorkflowRequest)
+            let service = try #require(runtime.workspace)
+            service.selectedApplicationIDs = [probe.application.id]
+            service.arrangementName = "Desk"
+            await service.capture()
+            #expect(await service.makePreview())
+            let plan = try service.makeRestorePlan(selectedSlotIDs: Set(service.preview.map(\.id)))
+            let token = UUID()
+            try service.reserveForPresentation(plan, token: token)
+            let prompts = await probe.workspaceBackend.permissionPrompts
+            for command in [WorkspaceCommand.capture, .preview, .restore] {
+                #expect(
+                    await runtime.commands.execute(.init(rawValue: command.rawValue))
+                        == .unavailable("Workspace Restore is reserved by Presentation."))
+                #expect(runtime.workspaceWorkflowRequest == accepted)
+            }
+            #expect(await probe.workspaceBackend.permissionPrompts == prompts)
+            #expect(await probe.workspaceBackend.moves.isEmpty)
+            try service.releasePresentationReservation(token)
+
+            await probe.workspaceBackend.setDelay(true)
+            let preview = Task { await service.makePreview(requestID: accepted.id) }
+            do {
+                try await waitFor { service.isBusy }
+                for command in [WorkspaceCommand.capture, .preview, .restore] {
+                    #expect(
+                        await runtime.commands.execute(.init(rawValue: command.rawValue))
+                            == .unavailable("Workspace Restore is busy."))
+                    #expect(runtime.workspaceWorkflowRequest == accepted)
+                }
+            } catch {
+                preview.cancel()
+                _ = await preview.value
+                throw error
+            }
+            preview.cancel()
+            _ = await preview.value
+            await probe.workspaceBackend.setDelay(false)
+            #expect(await probe.workspaceBackend.moves.isEmpty)
+            #expect(await runtime.commands.execute(.init(rawValue: WorkspaceCommand.restore.rawValue)) == .completed)
+            #expect(runtime.workspaceWorkflowRequest?.id != accepted.id)
+        }
+    }
+
+    @Test("Workspace shortcut follows metadata without creating Sound or requesting Accessibility")
+    func workspaceShortcutLifecycle() async throws {
+        try await withShortcutDefaults {
+            try await withRuntime { runtime, probe in
+                _ = NSApplication.shared
+                try await runtime.remove(.workspace)
+                runtime.startShellShortcuts()
+                #expect(KeyboardShortcuts.getShortcut(for: UtilityRuntime.workspaceRestoreShortcut) == nil)
+                let shortcut = KeyboardShortcuts.Shortcut(.r, modifiers: [.control, .option])
+                runtime.recordWorkspaceRestoreShortcut(shortcut)
+                #expect(!KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                #expect(probe.creations.isEmpty)
+                try runtime.registry.add(.workspace)
+                try await waitFor { KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut) }
+                #expect(probe.creations.isEmpty)
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .completed)
+                let first = try #require(runtime.workspaceWorkflowRequest)
+                #expect(first.workflow == .restore)
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .completed)
+                #expect(runtime.workspaceWorkflowRequest?.id != first.id)
+                #expect(await probe.workspaceBackend.permissionPrompts.isEmpty)
+                #expect(await probe.workspaceBackend.moves.isEmpty)
+                #expect(probe.creations == [.workspace: 1])
+                try await runtime.pause(.workspace)
+                #expect(!KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .cancelled)
+                try runtime.registry.resume(.workspace)
+                try await waitFor { KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut) }
+                #expect(probe.creations == [.workspace: 1])
+                try await runtime.remove(.workspace)
+                #expect(!KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                #expect(
+                    runtime.settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue]
+                        == ShortcutCodable.from(shortcut))
+                try runtime.registry.add(.workspace)
+                try await waitFor { KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut) }
+                #expect(probe.creations == [.workspace: 1])
+                let queued = Task { await runtime.performWorkspaceRestoreShortcut() }
+                await runtime.shutdown()
+                #expect(await queued.value == .cancelled)
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .cancelled)
+                #expect(!KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                #expect(probe.creations == [.workspace: 1])
+            }
+        }
+    }
+
+    @Test("Workspace recorder rejects Sound and Search conflicts without disabling the incumbent")
+    func workspaceShortcutConflicts() async throws {
+        try await withShortcutDefaults {
+            try await withRuntime { runtime, probe in
+                _ = NSApplication.shared
+                runtime.startShellShortcuts()
+                let original = KeyboardShortcuts.Shortcut(.r, modifiers: [.control, .option])
+                runtime.recordWorkspaceRestoreShortcut(original)
+                let sound = ShortcutAction.targetAppMuteToggle
+                let chord = KeyboardShortcuts.Shortcut(.m, modifiers: [.control, .option])
+                runtime.settings.appSettings.customShortcuts[sound.rawValue] = ShortcutCodable.from(chord)
+                KeyboardShortcuts.setShortcut(chord, for: sound.keyboardShortcutName)
+                KeyboardShortcuts.onKeyDown(for: sound.keyboardShortcutName) {}
+                defer { KeyboardShortcuts.removeHandler(for: sound.keyboardShortcutName) }
+                for (conflict, reason) in [
+                    (chord, "Already used by App Mute."),
+                    (
+                        try #require(KeyboardShortcuts.getShortcut(for: UtilityRuntime.searchShortcut)),
+                        "Already used by Search Semper."
+                    ),
+                ] {
+                    KeyboardShortcuts.setShortcut(conflict, for: UtilityRuntime.workspaceRestoreShortcut)
+                    runtime.recordWorkspaceRestoreShortcut(conflict)
+                    #expect(runtime.workspaceShortcutConflict == reason)
+                    #expect(
+                        runtime.settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue]
+                            == ShortcutCodable.from(original))
+                    #expect(KeyboardShortcuts.getShortcut(for: UtilityRuntime.workspaceRestoreShortcut) == original)
+                    #expect(KeyboardShortcuts.isEnabled(for: sound.keyboardShortcutName))
+                    #expect(KeyboardShortcuts.isEnabled(for: UtilityRuntime.searchShortcut))
+                }
+                #expect(probe.creations.isEmpty)
+                let permit = try runtime.mutationAdmission.acquire(owner: .awayMode, mode: .exclusive)
+                #expect(
+                    await runtime.performWorkspaceRestoreShortcut()
+                        == .unavailable("End Away before changing other utilities."))
+                #expect(runtime.message == "End Away before changing other utilities.")
+                #expect(probe.creations.isEmpty)
+                #expect(runtime.mutationAdmission.release(permit))
+            }
+        }
+    }
+
+    @Test("Workspace shortcut reports service startup failures without constructing Sound")
+    func workspaceShortcutFailure() async throws {
+        try await withShortcutDefaults {
+            try await withRuntime { runtime, probe in
+                _ = NSApplication.shared
+                probe.workspaceCreationFails = true
+                runtime.startShellShortcuts()
+                runtime.recordWorkspaceRestoreShortcut(.init(.r, modifiers: [.control, .option]))
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .failed("Fixture Workspace failure"))
+                #expect(runtime.message == "Fixture Workspace failure")
+                #expect(runtime.workspaceWorkflowRequest == nil)
+                #expect(probe.creations == [.workspace: 1])
+                #expect(await probe.workspaceBackend.permissionPrompts.isEmpty)
+                #expect(await probe.workspaceBackend.moves.isEmpty)
+            }
+        }
+    }
+
+    @Test("Pausing Workspace drains a shortcut already waiting for startup")
+    func workspaceShortcutDrain() async throws {
+        try await withShortcutDefaults {
+            try await withRuntime { runtime, probe in
+                _ = NSApplication.shared
+                let backend = DirectRuntimeHeldWorkspaceBackend()
+                probe.workspaceBackendOverride = backend
+                runtime.startShellShortcuts()
+                runtime.recordWorkspaceRestoreShortcut(.init(.r, modifiers: [.control, .option]))
+                let invocation = Task { await runtime.performWorkspaceRestoreShortcut() }
+                do { try await waitFor { await backend.waiting } } catch {
+                    await backend.release()
+                    _ = await invocation.value
+                    throw error
+                }
+                var paused = false
+                let pause = Task {
+                    try await runtime.pause(.workspace)
+                    paused = true
+                }
+                do {
+                    try await waitFor { !KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut) }
+                    #expect(!paused)
+                    #expect(runtime.workspaceWorkflowRequest == nil)
+                } catch {
+                    await backend.release()
+                    _ = await invocation.value
+                    _ = await pause.result
+                    throw error
+                }
+                await backend.release()
+                #expect(await invocation.value == .cancelled)
+                try await pause.value
+                #expect(paused)
+                #expect(runtime.workspaceWorkflowRequest == nil)
+                #expect(runtime.commands.running.isEmpty)
+                #expect(probe.creations == [.workspace: 1])
+            }
+        }
+    }
+
+    @Test("Changing Search to the Workspace chord disables the conflict and preserves Search")
+    func changingSearchResynchronizesWorkspace() async throws {
+        try await withShortcutDefaults {
+            try await withRuntime { runtime, probe in
+                _ = NSApplication.shared
+                runtime.startShellShortcuts()
+                let chord = KeyboardShortcuts.Shortcut(.r, modifiers: [.control, .option])
+                runtime.recordWorkspaceRestoreShortcut(chord)
+                #expect(KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                KeyboardShortcuts.setShortcut(chord, for: UtilityRuntime.searchShortcut)
+                runtime.recordSearchShortcut(chord)
+                #expect(runtime.workspaceShortcutConflict == "Already used by Search Semper.")
+                #expect(KeyboardShortcuts.getShortcut(for: UtilityRuntime.workspaceRestoreShortcut) == nil)
+                #expect(KeyboardShortcuts.isEnabled(for: UtilityRuntime.searchShortcut))
+                #expect(await runtime.performWorkspaceRestoreShortcut() == .cancelled)
+                let search = KeyboardShortcuts.Shortcut(.k, modifiers: [.command, .option])
+                KeyboardShortcuts.setShortcut(search, for: UtilityRuntime.searchShortcut)
+                runtime.recordSearchShortcut(search)
+                #expect(runtime.workspaceShortcutConflict == nil)
+                #expect(KeyboardShortcuts.isEnabled(for: UtilityRuntime.workspaceRestoreShortcut))
+                #expect(KeyboardShortcuts.isEnabled(for: UtilityRuntime.searchShortcut))
+                #expect(probe.creations.isEmpty)
+            }
         }
     }
 
@@ -299,6 +547,38 @@ struct DirectUtilityRuntimeTests {
         }
     }
 
+    private func withShortcutDefaults(_ body: () async throws -> Void) async throws {
+        let names = ShortcutAction.allCases.map(\.keyboardShortcutName) + [UtilityRuntime.searchShortcut]
+        let saved = names.map { name in
+            (
+                name, UserDefaults.standard.object(forKey: "KeyboardShortcuts_" + name.rawValue),
+                KeyboardShortcuts.getShortcut(for: name), KeyboardShortcuts.isEnabled(for: name)
+            )
+        }
+        defer {
+            for (name, object, shortcut, _) in saved {
+                KeyboardShortcuts.setShortcut(shortcut, for: name)
+                if let object {
+                    UserDefaults.standard.set(object, forKey: "KeyboardShortcuts_" + name.rawValue)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "KeyboardShortcuts_" + name.rawValue)
+                }
+            }
+            for (name, _, _, enabled) in saved {
+                if enabled { KeyboardShortcuts.enable(name) } else { KeyboardShortcuts.disable(name) }
+            }
+        }
+        for name in names { KeyboardShortcuts.setShortcut(nil, for: name) }
+        KeyboardShortcuts.setShortcut(.init(.k, modifiers: [.command, .option]), for: UtilityRuntime.searchShortcut)
+        try await body()
+    }
+
+    private func waitFor(_ condition: () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !(await condition()), ContinuousClock.now < deadline { await Task.yield() }
+        try #require(await condition(), "Expected state was not observed within two seconds")
+    }
+
     private func withRuntime(_ body: (UtilityRuntime, DirectRuntimeProbe) async throws -> Void) async throws {
         let suite = "DirectUtilityRuntimeTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -350,6 +630,8 @@ private final class DirectRuntimeProbe {
     let storageBackend = DirectRuntimeStorageBackend()
     let powerBackend = DirectRuntimePowerBackend()
     var creations: [UtilityModuleID: Int] = [:]
+    var workspaceCreationFails = false
+    var workspaceBackendOverride: (any WorkspaceWindowBackend)?
 
     init(directory: URL) {
         self.directory = directory
@@ -374,10 +656,12 @@ private final class DirectRuntimeProbe {
             workspaceNotificationCenter: NotificationCenter())
     }
 
-    func makeWorkspace() -> WorkspaceService {
+    func makeWorkspace() throws -> WorkspaceService {
         creations[.workspace, default: 0] += 1
+        if workspaceCreationFails { throw UtilityLifecycleError.unavailable("Fixture Workspace failure") }
         return WorkspaceService(
-            backend: workspaceBackend, store: WorkspaceStore(url: directory.appendingPathComponent("arrangements.json"))
+            backend: workspaceBackendOverride ?? workspaceBackend,
+            store: WorkspaceStore(url: directory.appendingPathComponent("arrangements.json"))
         )
     }
 
@@ -453,4 +737,33 @@ private struct DirectRuntimeFileAccess: ShelfFileAccess {
     func state(of url: URL) -> ShelfFileState { .available(isDirectory: false) }
     func bookmark(for url: URL) throws -> Data { throw ShelfFailure.unsupported }
     func resolve(_ bookmark: Data) throws -> URL { throw ShelfFailure.unsupported }
+}
+
+private actor DirectRuntimeHeldWorkspaceBackend: WorkspaceWindowBackend {
+    private(set) var waiting = false
+    private var released = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func applications() async -> [WorkspaceApplication] {
+        waiting = true
+        if !released { await withCheckedContinuation { waiter = $0 } }
+        return []
+    }
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+    func permission(prompt: Bool) -> Bool {
+        Issue.record("Navigation must not request Accessibility")
+        return false
+    }
+    func displays() -> [WorkspaceDisplay] { [] }
+    func windows(in applications: [WorkspaceApplication]) -> [WorkspaceWindowSnapshot] { [] }
+    func current(_ id: WorkspaceWindowID) -> WorkspaceWindowSnapshot? { nil }
+    func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) throws -> WorkspaceMoveObservation {
+        Issue.record("Navigation must not move windows")
+        throw WorkspaceError.permission
+    }
+    func shutdown() {}
 }

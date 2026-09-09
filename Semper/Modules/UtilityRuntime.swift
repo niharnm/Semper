@@ -21,6 +21,8 @@ final class UtilityRuntime {
     private(set) var sound: SoundRuntime?
     private(set) var awake: AwakeService?
     private(set) var workspace: WorkspaceService?
+    private(set) var workspaceWorkflowRequest: WorkspaceWorkflowRequest?
+    private(set) var workspaceShortcutConflict: String?
     private(set) var shelf: ShelfService?
     private(set) var storage: SafeEjectService?
     private(set) var scenes: SceneManager?
@@ -54,13 +56,17 @@ final class UtilityRuntime {
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var stoppingModules: Set<UtilityModuleID> = []
     @ObservationIgnored private var shortcutsStarted = false
+    @ObservationIgnored private var workspaceShortcutRegistered = false
+    @ObservationIgnored private var workspaceShortcutGeneration = UUID()
+    @ObservationIgnored private var shortcutObservationGeneration = UUID()
+    @ObservationIgnored private var workspaceShortcutTasks: [UUID: Task<UtilityCommandResult, Never>] = [:]
     @ObservationIgnored private let shellIcon: MenuBarIconCoordinator
     #if !APP_STORE
         private let ddc: DDCController
     #endif
 
-    static let searchShortcut = KeyboardShortcuts.Name(
-        "search-semper-actions", default: .init(.k, modifiers: [.command, .option]))
+    static let searchShortcut = ShortcutAction.searchShortcut
+    static let workspaceRestoreShortcut = ShortcutAction.restoreWorkspace.keyboardShortcutName
 
     var usableSound: SoundRuntime? {
         guard let sound, !sound.isShutDown,
@@ -159,10 +165,164 @@ final class UtilityRuntime {
         shortcutsStarted = true
         if sound == nil { shellIcon.start() }
         KeyboardShortcuts.onKeyDown(for: Self.searchShortcut) { [weak self] in
-            guard let self else { return }
+            guard let self, !self.shutdownRequested, self.shortcutsStarted else { return }
             self.requestSearchFocus()
             self.onOpenDetail?()
         }
+        observeWorkspaceShortcut()
+    }
+
+    func recordSearchShortcut(_: KeyboardShortcuts.Shortcut?) {
+        guard !shutdownRequested else { return }
+        sound?.shortcutsRegistry.syncRegistrations()
+        syncWorkspaceShortcut()
+        sceneShortcuts?.sync()
+        if shortcutsStarted { KeyboardShortcuts.enable(Self.searchShortcut) }
+    }
+
+    func recordWorkspaceRestoreShortcut(_ shortcut: KeyboardShortcuts.Shortcut?) {
+        guard !shutdownRequested else { return }
+        let action = ShortcutAction.restoreWorkspace
+        let recorded = shortcut.map(ShortcutCodable.from)
+        let conflict = recorded.flatMap { workspaceShortcutConflictDescription(for: $0, checkingScenes: true) }
+        if let conflict {
+            syncWorkspaceShortcut()
+            workspaceShortcutConflict = conflict
+            return
+        }
+        settings.appSettings.customShortcuts[action.rawValue] = recorded
+        syncWorkspaceShortcut()
+        sceneShortcuts?.sync()
+    }
+
+    private func workspaceShortcutConflictDescription(for shortcut: ShortcutCodable, checkingScenes: Bool) -> String? {
+        if ShortcutAction.conflictsWithSearch(shortcut) { return "Already used by Search Semper." }
+        if let action = ShortcutAction.restoreWorkspace.conflictingAction(with: shortcut, settings: settings) {
+            return "Already used by \(action.displayName)."
+        }
+        if checkingScenes,
+            let scene = scenes?.scenes.first(where: {
+                $0.shortcut == SceneShortcut(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
+            })
+        {
+            return "Already used by \(scene.name)."
+        }
+        return nil
+    }
+
+    private var workspaceShortcutAvailable: Bool {
+        shortcutsStarted && !shutdownRequested && !stoppingModules.contains(.workspace)
+            && registry.state(for: .workspace)?.presence == .added
+            && !registry.pausedModuleIDs.contains(.workspace)
+            && registry.state(for: .workspace)?.runtime != .removing
+    }
+
+    private func observeWorkspaceShortcut() {
+        guard shortcutsStarted, !shutdownRequested else { return }
+        let generation = UUID()
+        shortcutObservationGeneration = generation
+        withObservationTracking {
+            _ = registry.state(for: .workspace)
+            _ = registry.pausedModuleIDs
+            _ = settings.appSettings.customShortcuts
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.shortcutObservationGeneration == generation,
+                    self.shortcutsStarted, !self.shutdownRequested
+                else { return }
+                self.observeWorkspaceShortcut()
+            }
+        }
+        syncWorkspaceShortcut()
+        sceneShortcuts?.sync()
+    }
+
+    private func syncWorkspaceShortcut() {
+        let assigned = settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue]
+        workspaceShortcutConflict = assigned.flatMap {
+            workspaceShortcutConflictDescription(for: $0, checkingScenes: false)
+        }
+        let enabled = workspaceShortcutAvailable && workspaceShortcutConflict == nil && assigned != nil
+        let desired = workspaceShortcutConflict == nil ? assigned?.keyboardShortcut : nil
+        guard
+            workspaceShortcutRegistered != enabled
+                || KeyboardShortcuts.getShortcut(for: Self.workspaceRestoreShortcut) != desired
+        else { return }
+        stopWorkspaceShortcut()
+        let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
+        ShortcutAction.preservingOtherRegistrations(
+            excluding: [Self.workspaceRestoreShortcut], additionalNames: sceneNames
+        ) {
+            KeyboardShortcuts.setShortcut(desired, for: Self.workspaceRestoreShortcut)
+            if enabled {
+                workspaceShortcutRegistered = true
+                let generation = workspaceShortcutGeneration
+                KeyboardShortcuts.onKeyDown(for: Self.workspaceRestoreShortcut) { [weak self] in
+                    guard let self, self.workspaceShortcutGeneration == generation else { return }
+                    _ = self.beginWorkspaceRestoreShortcut()
+                }
+            } else {
+                KeyboardShortcuts.disable(Self.workspaceRestoreShortcut)
+            }
+        }
+    }
+
+    private func stopWorkspaceShortcut() {
+        workspaceShortcutGeneration = UUID()
+        workspaceShortcutRegistered = false
+        let sceneNames = scenes?.scenes.compactMap { sceneShortcuts?.name(for: $0.id) } ?? []
+        ShortcutAction.preservingOtherRegistrations(
+            excluding: [Self.workspaceRestoreShortcut], additionalNames: sceneNames
+        ) {
+            KeyboardShortcuts.removeHandler(for: Self.workspaceRestoreShortcut)
+        }
+        for task in workspaceShortcutTasks.values { task.cancel() }
+    }
+
+    private func drainWorkspaceShortcut() async {
+        let pending = Array(workspaceShortcutTasks.values)
+        for task in pending { _ = await task.value }
+    }
+
+    private func beginWorkspaceRestoreShortcut() -> Task<UtilityCommandResult, Never>? {
+        guard workspaceShortcutRegistered, workspaceShortcutAvailable,
+            let assigned = settings.appSettings.customShortcuts[ShortcutAction.restoreWorkspace.rawValue],
+            workspaceShortcutConflictDescription(for: assigned, checkingScenes: false) == nil,
+            workspaceShortcutTasks.isEmpty
+        else { return nil }
+        let id = UUID()
+        let generation = workspaceShortcutGeneration
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return UtilityCommandResult.cancelled }
+            defer { self.workspaceShortcutTasks[id] = nil }
+            guard !Task.isCancelled, self.workspaceShortcutGeneration == generation,
+                self.workspaceShortcutAvailable
+            else { return .cancelled }
+            let result = await self.commands.execute(.init(rawValue: WorkspaceCommand.restore.rawValue))
+            guard !Task.isCancelled, !self.shutdownRequested else { return .cancelled }
+            switch result {
+            case .unavailable(let reason), .failed(let reason), .confirmationRequired(let reason): self.message = reason
+            case .completed, .accepted, .cancelled: break
+            }
+            return result
+        }
+        workspaceShortcutTasks[id] = task
+        return task
+    }
+
+    // Shares the registered callback path without synthesizing a system key event.
+    func performWorkspaceRestoreShortcut() async -> UtilityCommandResult {
+        guard let task = beginWorkspaceRestoreShortcut() else { return .cancelled }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private var workspaceWorkflowDisabledReason: String? {
+        if workspace?.presentationReservation != nil { return "Workspace Restore is reserved by Presentation." }
+        return workspace?.isBusy == true ? "Workspace Restore is busy." : nil
     }
 
     func requestSearchFocus() {
@@ -256,13 +416,19 @@ final class UtilityRuntime {
     func shutdown() async {
         shutdownRequested = true
         statusObserver.stopAll()
+        shortcutObservationGeneration = UUID()
+        stopWorkspaceShortcut()
+        await drainWorkspaceShortcut()
         SemperAppIntentRuntime.uninstallActivation(owner: self)
         SemperSceneAppIntentRuntime.uninstallActivation(owner: self)
         if let scenes { SemperSceneAppIntentRuntime.uninstall(scenes) }
         sound?.stopUserEntryPoints()
         shellIcon.stop()
         if shortcutsStarted {
-            KeyboardShortcuts.removeHandler(for: Self.searchShortcut)
+            ShortcutAction.preservingOtherRegistrations(excluding: [Self.searchShortcut, Self.workspaceRestoreShortcut])
+            {
+                KeyboardShortcuts.removeHandler(for: Self.searchShortcut)
+            }
             shortcutsStarted = false
         }
         let sceneShortcuts = self.sceneShortcuts
@@ -287,6 +453,11 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
+            if module == .workspace { syncWorkspaceShortcut() }
+        }
+        if module == .workspace {
+            stopWorkspaceShortcut()
+            await drainWorkspaceShortcut()
         }
         await commands.cancelAndDrain(module: module)
         try await lifecycle.pause(module)
@@ -306,6 +477,11 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
+            if module == .workspace { syncWorkspaceShortcut() }
+        }
+        if module == .workspace {
+            stopWorkspaceShortcut()
+            await drainWorkspaceShortcut()
         }
         await commands.cancelAndDrain(module: module)
         try await lifecycle.remove(module)
@@ -398,7 +574,10 @@ final class UtilityRuntime {
                         #endif
                         self.audioSceneAdapter = AudioSceneAdapter(
                             engine: sound.audioEngine, commands: sound.audioCommands)
-                        sound.shortcutsRegistry.onShortcutsChanged = { [weak self] in self?.sceneShortcuts?.sync() }
+                        sound.shortcutsRegistry.onShortcutsChanged = { [weak self] in
+                            self?.syncWorkspaceShortcut()
+                            self?.sceneShortcuts?.sync()
+                        }
                     }
                 },
                 stop: { [weak self] _ in
@@ -676,6 +855,7 @@ final class UtilityRuntime {
                         id: .init(rawValue: command.rawValue), module: .workspace, title: command.title,
                         keywords: ["workspace", "windows", "arrangement"], symbolName: WorkspaceModuleMetadata.symbol),
                     disabledReason: { [weak self] in
+                        if let reason = self?.workspaceWorkflowDisabledReason { return reason }
                         guard command == .undo else { return nil }
                         guard let workspace = self?.workspace, !workspace.undoEntries.isEmpty else {
                             return "No workspace restore is available to undo."
@@ -686,8 +866,20 @@ final class UtilityRuntime {
                         guard let self else { throw CancellationError() }
                         try await self.start(.workspace)
                         guard let workspace = self.workspace else { throw CancellationError() }
+                        if let reason = self.workspaceWorkflowDisabledReason {
+                            throw UtilityLifecycleError.unavailable(reason)
+                        }
                         switch await workspace.handle(command) {
-                        case .openWorkspace:
+                        case .openWorkspace(let workflow):
+                            try Task.checkCancellation()
+                            if let reason = self.workspaceWorkflowDisabledReason {
+                                throw UtilityLifecycleError.unavailable(reason)
+                            }
+                            let request = WorkspaceWorkflowRequest(workflow: workflow)
+                            guard workspace.beginWorkflow(request) else {
+                                throw UtilityLifecycleError.unavailable("Workspace Restore is unavailable.")
+                            }
+                            self.workspaceWorkflowRequest = request
                             self.destination = .module(.workspace)
                             self.onOpenDetail?()
                         case .completed:

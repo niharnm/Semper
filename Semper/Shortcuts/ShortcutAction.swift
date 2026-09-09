@@ -1,16 +1,20 @@
 // Semper/Shortcuts/ShortcutAction.swift
+import AppKit
 import Foundation
+import KeyboardShortcuts
 
 /// Actions that can be bound to a user-recordable global keyboard shortcut.
 ///
-/// Adding a new action here is a single enum case + a corresponding arm
-/// in `ShortcutsRegistry.dispatch(_:)`. The `rawValue` is the persistence key
+/// Sound and shell registries own their respective handlers. The `rawValue` is the persistence key
 /// in `AppSettings.customShortcuts` and must be stable across releases.
 enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     case togglePopup
     case targetAppVolumeUp = "frontmostAppVolumeUp"
     case targetAppVolumeDown = "frontmostAppVolumeDown"
     case targetAppMuteToggle = "frontmostAppMuteToggle"
+    case restoreWorkspace
+
+    static var soundActions: [Self] { allCases.filter { $0 != .restoreWorkspace } }
 
     var displayName: String {
         switch self {
@@ -18,6 +22,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .targetAppVolumeUp: "App Volume Up"
         case .targetAppVolumeDown: "App Volume Down"
         case .targetAppMuteToggle: "App Mute"
+        case .restoreWorkspace: "Restore workspace"
         }
     }
 
@@ -27,7 +32,53 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     var supportsRepeat: Bool {
         switch self {
         case .targetAppVolumeUp, .targetAppVolumeDown: true
-        case .togglePopup, .targetAppMuteToggle: false
+        case .togglePopup, .targetAppMuteToggle, .restoreWorkspace: false
         }
+    }
+
+    @MainActor
+    var keyboardShortcutName: KeyboardShortcuts.Name {
+        switch self {
+        case .togglePopup: KeyboardShortcuts.Name("toggle-popup")
+        case .targetAppVolumeUp: KeyboardShortcuts.Name("frontmost-app-volume-up")
+        case .targetAppVolumeDown: KeyboardShortcuts.Name("frontmost-app-volume-down")
+        case .targetAppMuteToggle: KeyboardShortcuts.Name("frontmost-app-mute-toggle")
+        case .restoreWorkspace: KeyboardShortcuts.Name("workspace-restore")
+        }
+    }
+
+    @MainActor
+    static let searchShortcut = KeyboardShortcuts.Name(
+        "search-semper-actions", default: .init(.k, modifiers: [.command, .option]))
+
+    @MainActor
+    static func conflictsWithSearch(_ shortcut: ShortcutCodable) -> Bool {
+        KeyboardShortcuts.getShortcut(for: searchShortcut).map(ShortcutCodable.from) == shortcut
+    }
+
+    // The library unregisters by chord, including when a recorder rejects a duplicate.
+    @MainActor
+    static func preservingOtherRegistrations(
+        excluding names: [KeyboardShortcuts.Name], additionalNames: [KeyboardShortcuts.Name] = [],
+        _ update: () -> Void
+    ) {
+        let candidates = allCases.map(\.keyboardShortcutName) + [searchShortcut] + additionalNames
+        let preserved = candidates.filter { !names.contains($0) && KeyboardShortcuts.isEnabled(for: $0) }
+            .compactMap { name in KeyboardShortcuts.getShortcut(for: name).map { (name, $0) } }
+        update()
+        for (name, shortcut) in preserved where KeyboardShortcuts.getShortcut(for: name) == shortcut {
+            KeyboardShortcuts.enable(name)
+        }
+    }
+
+    @MainActor
+    func assignedShortcut(in settings: SettingsManager) -> ShortcutCodable? {
+        settings.appSettings.customShortcuts[rawValue]
+            ?? KeyboardShortcuts.getShortcut(for: keyboardShortcutName).map(ShortcutCodable.from)
+    }
+
+    @MainActor
+    func conflictingAction(with shortcut: ShortcutCodable, settings: SettingsManager) -> Self? {
+        Self.allCases.first { $0 != self && $0.assignedShortcut(in: settings) == shortcut }
     }
 }

@@ -3,16 +3,18 @@ import SwiftUI
 
 struct WorkspaceView: View {
     @Bindable var service: WorkspaceService
+    var workflowRequest: WorkspaceWorkflowRequest? = nil
     @State private var pendingRemoval: UUID?
     @State private var confirmReset = false
+    @State private var previewedRequestID: UUID?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Workspace Restore").font(.title2.weight(.semibold))
-                        Text("Save where chosen windows belong, then preview before moving them.")
+                        Text(workflowTitle).font(.title2.weight(.semibold))
+                        Text(workflowDescription)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -75,7 +77,7 @@ struct WorkspaceView: View {
                             .font(.callout)
                             HStack {
                                 Button("Preview Arrangement") {
-                                    Task { await service.previewTopologyNotice(notice.id) }
+                                    previewArrangement(noticeID: notice.id)
                                 }
                                 Button("Dismiss") { service.dismissTopologyNotice(notice.id) }
                             }
@@ -85,11 +87,14 @@ struct WorkspaceView: View {
                         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
-                captureSection.disabled(!service.isRunning || service.isBusy || !service.canSave)
-                Divider()
-                savedSection.disabled(!service.isRunning || service.isBusy)
-                if !service.preview.isEmpty {
-                    previewSection.disabled(!service.isRunning || service.isBusy)
+                if workflowRequest?.workflow == .preview || workflowRequest?.workflow == .restore {
+                    restoreSections
+                    Divider()
+                    captureSection.disabled(!service.isRunning || service.isBusy || !service.canSave)
+                } else {
+                    captureSection.disabled(!service.isRunning || service.isBusy || !service.canSave)
+                    Divider()
+                    restoreSections
                 }
                 HStack {
                     Button("Undo Last Restore") { Task { await service.undo() } }.disabled(!service.canUndo)
@@ -121,6 +126,11 @@ struct WorkspaceView: View {
             .padding(24)
         }
         .frame(minWidth: 540, minHeight: 440)
+        .onChange(of: workflowRequest, initial: true) { _, request in
+            previewedRequestID = nil
+            if let request { service.beginWorkflow(request) }
+        }
+        .onChange(of: service.selectedArrangementID) { _, _ in previewedRequestID = nil }
         .confirmationDialog(
             "Delete this saved arrangement?",
             isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })
@@ -136,6 +146,49 @@ struct WorkspaceView: View {
             Button("Delete Workspace Data", role: .destructive) { Task { await service.resetSavedData() } }
         } message: {
             Text("Saved arrangements, live bindings, and undo records will be cleared. Windows stay where they are.")
+        }
+    }
+
+    private var workflowTitle: String {
+        switch workflowRequest?.workflow {
+        case .capture: "Capture workspace"
+        case .preview: "Preview workspace"
+        case .restore: "Restore workspace"
+        case nil: "Workspace Restore"
+        }
+    }
+
+    private var workflowDescription: String {
+        switch workflowRequest?.workflow {
+        case .capture: "Choose apps and name an arrangement, then capture their current window positions."
+        case .preview: "Choose a saved arrangement to preview against open windows and current displays."
+        case .restore: "Choose an arrangement, create a fresh preview, then restore its resolved windows."
+        case nil: "Save where chosen windows belong, then preview before moving them."
+        }
+    }
+
+    @ViewBuilder
+    private var restoreSections: some View {
+        savedSection.disabled(!service.isRunning || service.isBusy)
+        if !service.preview.isEmpty {
+            previewSection.disabled(!service.isRunning || service.isBusy)
+        }
+    }
+
+    private func previewArrangement(noticeID: UUID? = nil) {
+        let requestID = workflowRequest?.id
+        let arrangementID = service.selectedArrangementID
+        Task {
+            let succeeded: Bool
+            if let noticeID {
+                succeeded = await service.previewTopologyNotice(noticeID)
+            } else {
+                succeeded = await service.makePreview(requestID: requestID)
+            }
+            guard succeeded, workflowRequest?.id == requestID, service.selectedArrangementID == arrangementID else {
+                return
+            }
+            previewedRequestID = requestID
         }
     }
 
@@ -179,14 +232,19 @@ struct WorkspaceView: View {
                 Text("Capture an arrangement to add it here.").foregroundStyle(.secondary)
             } else {
                 Picker("Arrangement", selection: $service.selectedArrangementID) {
+                    Text("Choose an arrangement").tag(Optional<UUID>.none)
                     ForEach(service.arrangements) { arrangement in
                         Text(arrangement.name).tag(Optional(arrangement.id))
                     }
                 }
                 HStack {
-                    Button("Preview Restore") { Task { await service.makePreview() } }
+                    Button(workflowRequest?.workflow == .restore ? "Preview Before Restoring" : "Preview Arrangement") {
+                        previewArrangement()
+                    }
+                    .disabled(service.selectedArrangementID == nil)
                     Spacer()
                     Button("Delete Arrangement", role: .destructive) { pendingRemoval = service.selectedArrangementID }
+                        .disabled(service.selectedArrangementID == nil)
                 }
             }
         }
@@ -205,7 +263,10 @@ struct WorkspaceView: View {
                     ? "Restore 1 Resolved Window"
                     : "Restore \(service.preview.filter(\.canRestore).count) Resolved Windows"
             ) { Task { await service.restore() } }
-            .buttonStyle(.borderedProminent).disabled(!service.canRestore)
+            .buttonStyle(.borderedProminent)
+            .disabled(
+                !service.canRestore
+                    || (workflowRequest?.workflow == .restore && previewedRequestID != workflowRequest?.id))
         }
     }
 }

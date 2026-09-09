@@ -51,8 +51,13 @@ Registration interfaces are `WorkspaceModuleMetadata`,
 metadata to the shared catalog without starting a service. All three have no
 module dependency or conflict and use the application's macOS 15.4 minimum.
 
-For commands, `await workspace.handle(command)` returns `.openWorkspace` or
-`.completed`. `ShelfCommandHandler(service: shelf, openDetail: openFiles)` exposes
+For commands, `await workspace.handle(command)` returns `.openWorkspace(workflow)`
+for the distinct capture, preview, or restore intent, or `.completed` after Undo.
+The shell registers a new `WorkspaceWorkflowRequest`, preserves the current
+arrangement selection and live choices, and passes the request to `WorkspaceView`.
+These navigation commands do not request Accessibility or move windows. Busy or
+Presentation-reserved Workspace sessions reject a new workflow request.
+`ShelfCommandHandler(service: shelf, openDetail: openFiles)` exposes
 `execute(_:)`; the shared shell should confirm the broad `shelf.clear` action
 before execution. `try SafeEjectModule.handle(command, service: storage,
 openDetail: openStorage)` navigates to the storage detail surface. `.open` only
@@ -81,6 +86,18 @@ in preview; a missing display requires an explicit destination choice. Binding a
 slot does not move it. Undo compares the observed post-restore frame before
 changing a window, so later manual moves remain intact. Control of every Space
 and automatic matching of recreated windows are not promised.
+
+Choose an arrangement explicitly after opening a saved library. Each Restore
+workflow requires a fresh Preview and a separate Restore action. A new workflow
+invalidates the previous preview without changing the selected arrangement,
+draft name, live window bindings, or display choices. Once Restore starts, it
+owns its window plan and display snapshot through completion.
+
+The Workspace restore shortcut is unassigned by default and can be recorded in
+Settings. It opens Restore preparation without starting Sound, requesting
+Accessibility, or moving windows. Pausing or removing Workspace disables the
+shortcut while preserving its assignment. Search and existing Sound or Scene
+shortcut conflicts are reported without replacing the other assignment.
 
 The optional "Prompt after displays change" preference is off by default. While
 Workspace is running and the preference is enabled, one public AppKit screen

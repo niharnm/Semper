@@ -45,7 +45,7 @@ struct ShortcutsTab: View {
             accessibilityGrantedFeedbackTask = nil
         }
         .confirmationDialog(
-            "Clear all keyboard shortcuts?",
+            "Clear all Sound keyboard shortcuts?",
             isPresented: $showClearAllConfirmation,
             titleVisibility: .visible
         ) {
@@ -54,7 +54,7 @@ struct ShortcutsTab: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes every Semper hotkey assignment.")
+            Text("This removes the Sound hotkey assignments.")
         }
     }
 
@@ -191,7 +191,7 @@ struct ShortcutsTab: View {
                     ],
                     spacing: DesignTokens.Spacing.sm
                 ) {
-                    ForEach(ShortcutAction.allCases, id: \.self) { action in
+                    ForEach(ShortcutAction.soundActions, id: \.self) { action in
                         shortcutCard(for: action)
                     }
                 }
@@ -200,8 +200,8 @@ struct ShortcutsTab: View {
 
             SettingsRowDivider()
             SettingsRow(
-                "Clear All Shortcuts",
-                description: "Remove every custom hotkey assignment."
+                "Clear Sound Shortcuts",
+                description: "Remove Sound hotkey assignments."
             ) {
                 Button("Clear All", role: .destructive) {
                     showClearAllConfirmation = true
@@ -240,9 +240,9 @@ struct ShortcutsTab: View {
                 )
                 .controlSize(.small)
 
-                if let conflictingAction = shortcutsRegistry.conflictingAction(for: action) {
+                if let conflict = shortcutsRegistry.conflictDescription(for: action) {
                     Label(
-                        "Already used by \(conflictingAction.displayName)",
+                        conflict,
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(DesignTokens.Typography.rowDescription)
@@ -315,6 +315,7 @@ struct ShortcutsTab: View {
         case .targetAppVolumeUp: "speaker.wave.3.fill"
         case .targetAppVolumeDown: "speaker.wave.1.fill"
         case .targetAppMuteToggle: "speaker.slash.fill"
+        case .restoreWorkspace: "macwindow.on.rectangle"
         }
     }
 
@@ -341,6 +342,7 @@ struct ShortcutsTab: View {
         case .targetAppVolumeUp: "Raise the selected target app's volume"
         case .targetAppVolumeDown: "Lower the selected target app's volume"
         case .targetAppMuteToggle: "Mute or unmute the selected target app"
+        case .restoreWorkspace: "Prepare a fresh workspace restore preview"
         }
     }
 

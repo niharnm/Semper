@@ -58,6 +58,7 @@ final class WorkspaceService {
     private var receiptOwnerID = UUID()
     private var planGenerationID = UUID()
     private var previewSourceArrangementID: UUID?
+    private var workflowRequestID: UUID?
     private(set) var presentationReservation: UUID?
     private var reservedPlanID: UUID?
     private var reservedReceiptID: UUID?
@@ -131,12 +132,14 @@ final class WorkspaceService {
         if pendingTopologyNotice?.id == id { pendingTopologyNotice = nil }
     }
 
-    func previewTopologyNotice(_ id: UUID) async {
-        guard let notice = topologyNotice, notice.id == id else { return }
-        await makePreview()
-        if pendingTopologyNotice?.id == id, previewSourceArrangementID == notice.arrangementID, !preview.isEmpty {
+    @discardableResult
+    func previewTopologyNotice(_ id: UUID) async -> Bool {
+        guard let notice = topologyNotice, notice.id == id else { return false }
+        let succeeded = await makePreview()
+        if succeeded, pendingTopologyNotice?.id == id, previewSourceArrangementID == notice.arrangementID {
             pendingTopologyNotice = nil
         }
+        return succeeded
     }
 
     private func startTopologyObservationIfNeeded() {
@@ -200,7 +203,9 @@ final class WorkspaceService {
             let loaded = try await self.store.load()
             try Task.checkCancellation()
             self.arrangements = loaded
-            self.selectedArrangementID = loaded.first?.id
+            if !loaded.contains(where: { $0.id == self.selectedArrangementID }) {
+                self.selectedArrangementID = nil
+            }
             self.canSave = true
             self.applications = await self.backend.applications()
             try Task.checkCancellation()
@@ -334,17 +339,45 @@ final class WorkspaceService {
         }
     }
 
-    func makePreview() async {
+    @discardableResult
+    func beginWorkflow(_ request: WorkspaceWorkflowRequest) -> Bool {
+        guard !isStopping, !isShuttingDown, presentationReservation == nil else { return false }
+        guard workflowRequestID != request.id else { return true }
+        workflowRequestID = request.id
+        preview = []
+        previewSourceArrangementID = nil
+        candidates = []
+        previewDisplays = []
+        return true
+    }
+
+    @discardableResult
+    func makePreview(requestID: UUID? = nil) async -> Bool {
+        let expectedRequestID = requestID ?? workflowRequestID
+        let expectedArrangementID = selectedArrangementID
+        guard expectedRequestID == workflowRequestID else { return false }
+        var succeeded = false
         await perform {
+            guard expectedRequestID == self.workflowRequestID,
+                expectedArrangementID == self.selectedArrangementID
+            else { return }
             self.preview = []
             self.previewSourceArrangementID = nil
+            guard expectedArrangementID != nil else {
+                self.errorMessage = "Choose an arrangement before previewing."
+                return
+            }
             try await self.requirePermission()
-            try await self.refreshPreview()
+            succeeded = try await self.refreshPreview(
+                expectedArrangementID: expectedArrangementID, expectedRequestID: expectedRequestID)
         }
+        return succeeded && expectedRequestID == workflowRequestID && expectedArrangementID == selectedArrangementID
     }
 
     func bind(slotID: UUID, to windowID: WorkspaceWindowID?) async {
-        guard isRunning, !isBusy, let slot = selectedArrangement?.windows.first(where: { $0.id == slotID }) else {
+        guard isRunning, !isBusy, !isStopping, !isShuttingDown, presentationReservation == nil,
+            let slot = selectedArrangement?.windows.first(where: { $0.id == slotID })
+        else {
             return
         }
         if let windowID {
@@ -359,7 +392,9 @@ final class WorkspaceService {
     }
 
     func mapDisplay(_ originalID: String, to destinationID: String?) async {
-        guard isRunning, !isBusy, destinationID == nil || displays.contains(where: { $0.id == destinationID }) else {
+        guard isRunning, !isBusy, !isStopping, !isShuttingDown, presentationReservation == nil,
+            destinationID == nil || displays.contains(where: { $0.id == destinationID })
+        else {
             return
         }
         displayMappings[originalID] = destinationID
@@ -391,7 +426,7 @@ final class WorkspaceService {
             let updated = self.arrangements.filter { $0.id != id }
             try await self.store.save(updated)
             self.arrangements = updated
-            if self.selectedArrangementID == id { self.selectedArrangementID = updated.first?.id }
+            if self.selectedArrangementID == id { self.selectedArrangementID = nil }
         }
     }
 
@@ -417,13 +452,14 @@ final class WorkspaceService {
     }
 
     func restore() async {
+        let plan = preview
+        let expectedDisplays = previewDisplays
         await perform(mutatesWindows: true) {
-            try await self.requirePermission()
-            guard !self.preview.isEmpty else {
+            guard !plan.isEmpty else {
                 self.errorMessage = "Preview an arrangement before restoring."
                 return
             }
-            let plan = self.preview
+            try await self.requirePermission()
             var changed: [WorkspaceUndoEntry] = []
             self.results = []
             for item in plan {
@@ -438,7 +474,7 @@ final class WorkspaceService {
                     continue
                 }
                 let topology = await self.backend.displays()
-                guard topology == self.previewDisplays else {
+                guard topology == expectedDisplays else {
                     self.results.append(
                         .init(
                             label: item.placement.label, message: "Displays changed after preview. Preview again.",
@@ -525,16 +561,14 @@ final class WorkspaceService {
         }
     }
 
-    private func refreshPreview() async throws {
-        guard let arrangement = selectedArrangement else {
-            preview = []
-            return
-        }
+    private func refreshPreview(expectedArrangementID: UUID?, expectedRequestID: UUID?) async throws -> Bool {
+        guard let arrangement = selectedArrangement, arrangement.id == expectedArrangementID,
+            workflowRequestID == expectedRequestID
+        else { return false }
         let apps = await backend.applications()
         let bundleIDs = Set(arrangement.windows.map(\.applicationBundleID))
-        candidates = try await backend.windows(in: apps.filter { bundleIDs.contains($0.bundleID) })
-        displays = await backend.displays()
-        previewDisplays = displays
+        let refreshedCandidates = try await backend.windows(in: apps.filter { bundleIDs.contains($0.bundleID) })
+        let refreshedDisplays = await backend.displays()
         var items: [WorkspacePreviewItem] = []
         let resolvedIDs = arrangement.windows.compactMap { bindings[$0.id] }
         for placement in arrangement.windows {
@@ -543,7 +577,7 @@ final class WorkspaceService {
             let state: WorkspaceWindowSnapshot?
             if let liveID { state = try await backend.current(liveID) } else { state = nil }
             let displayID = displayMappings[placement.displayID] ?? placement.displayID
-            let display = displays.first { $0.id == displayID }
+            let display = refreshedDisplays.first { $0.id == displayID }
             let reason: String?
             if let liveID, resolvedIDs.filter({ $0 == liveID }).count > 1 {
                 reason = "This window is assigned to more than one slot. Choose a different window."
@@ -562,9 +596,14 @@ final class WorkspaceService {
                     targetFrame: display.map { WorkspaceGeometry.target(placement.relativeFrame, in: $0.visibleFrame) },
                     reason: reason))
         }
-        guard selectedArrangementID == arrangement.id else { throw WorkspacePlanError.previewRequired }
+        try Task.checkCancellation()
+        guard selectedArrangementID == arrangement.id, workflowRequestID == expectedRequestID else { return false }
+        candidates = refreshedCandidates
+        displays = refreshedDisplays
+        previewDisplays = refreshedDisplays
         preview = items
         previewSourceArrangementID = arrangement.id
+        return true
     }
 
     func makeRestorePlan(selectedSlotIDs: Set<UUID>) throws -> WorkspaceRestorePlan {

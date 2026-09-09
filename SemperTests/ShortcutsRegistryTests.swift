@@ -327,7 +327,7 @@ struct ShortcutsRegistryTests {
     @Test("Recorder test cleanup leaves no assignments for the next recorder")
     func recordCallbacksCleanUpSharedStorage() throws {
         let registry = makeRegistry()
-        let names = ShortcutAction.allCases.map { registry.name(for: $0) }
+        let names = ShortcutAction.soundActions.map { registry.name(for: $0) }
         let priorShortcuts = names.map { KeyboardShortcuts.getShortcut(for: $0) }
         defer {
             registry.clearAllShortcuts()

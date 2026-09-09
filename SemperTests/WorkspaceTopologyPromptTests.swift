@@ -155,6 +155,7 @@ struct WorkspaceTopologyPromptTests {
 
     func activate(_ f: Fixture) async {
         await f.service.start()
+        f.service.selectedArrangementID = f.arrangements.first?.id
         await f.service.setTopologyPromptsEnabled(true)
     }
 
@@ -389,7 +390,7 @@ struct WorkspaceTopologyPromptTests {
         await f.service.previewTopologyNotice(first.id)
         #expect(await f.backend.prompts == [true])
         await f.backend.releaseWindows()
-        await preview.value
+        #expect(await preview.value)
         let next = try #require(f.service.topologyNotice)
         #expect(next.id != first.id)
         #expect(f.service.preview.count == 1)
@@ -415,7 +416,7 @@ struct WorkspaceTopologyPromptTests {
         f.observer.emit(changed(200), callback: 0)
         #expect(f.service.topologyNotice == nil)
         await f.backend.releaseWindows()
-        await preview.value
+        #expect(await preview.value == false)
         await pause.value
         #expect(!f.service.isBusy)
         await f.service.start()
