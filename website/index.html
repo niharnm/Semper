@@ -9,7 +9,7 @@
     />
     <meta
       name="description"
-      content="Semper is an open-source per-app volume mixer for macOS with audio routing, 10-band EQ, AutoEQ headphone correction, and local processing."
+      content="Semper brings everyday Mac controls together. Download Sound for per-app audio, and follow the next Mac utilities in development."
     />
     <meta
       name="robots"
@@ -18,11 +18,11 @@
     <meta name="theme-color" content="#f2eee5" />
     <meta
       property="og:title"
-      content="Semper | Per-App Volume Mixer for macOS"
+      content="Semper | Everyday Controls for Mac"
     />
     <meta
       property="og:description"
-      content="Control each Mac app's volume, audio route, and EQ from one open-source menu-bar app."
+      content="Per-app sound today. More Mac utilities in development, with each module's status, scope, and limits explained."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Semper" />
@@ -37,18 +37,18 @@
     <meta name="twitter:card" content="summary" />
     <meta
       name="twitter:title"
-      content="Semper | Per-App Volume Mixer for macOS"
+      content="Semper | Everyday Controls for Mac"
     />
     <meta
       name="twitter:description"
-      content="Open-source per-app volume, audio routing, and EQ for Mac."
+      content="Sound for your Mac today, with more everyday controls in development."
     />
     <meta
       name="twitter:image"
       content="https://www.semper.systems/assets/semper-icon.png"
     />
     <link rel="canonical" href="https://www.semper.systems/" />
-    <title>Per-App Volume Mixer and Audio Routing for Mac | Semper</title>
+    <title>Sound and Everyday Mac Controls | Semper</title>
     <link
       rel="icon"
       type="image/png"
@@ -75,14 +75,14 @@
             "@type": "SoftwareApplication",
             "@id": "https://www.semper.systems/#software",
             "name": "Semper",
-            "alternateName": "Semper for macOS Audio",
+            "alternateName": "Semper for Mac",
+            "softwareVersion": "1.0.0",
             "url": "https://www.semper.systems/",
-            "description": "Semper is an open-source macOS menu-bar app for per-app volume control, audio routing, equalization, and device control.",
+            "description": "Semper is a macOS menu-bar app for per-app volume control, audio routing, equalization, and device control.",
             "operatingSystem": "macOS 15.4 or later",
             "applicationCategory": "MultimediaApplication",
             "applicationSubCategory": "Per-app volume mixer and audio router",
             "isAccessibleForFree": true,
-            "license": "https://www.apache.org/licenses/LICENSE-2.0",
             "datePublished": "2026-07-31",
             "author": {
               "@id": "https://www.semper.systems/#maintainer"
@@ -92,7 +92,7 @@
               "price": "0",
               "priceCurrency": "USD",
               "url": "https://github.com/niharnm/Semper/releases/latest",
-              "description": "A signed and notarized macOS DMG is available at no charge from GitHub Releases."
+              "description": "Semper v1.0.0 is available at no charge as a macOS DMG from GitHub Releases."
             },
             "featureList": [
               "Per-app volume and mute",
@@ -133,7 +133,7 @@
                 "name": "What is Semper?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Semper is an open-source macOS menu-bar app that gives each audio-producing app its own volume, mute, output route, and equalizer controls."
+                  "text": "Semper is a native Mac utility. The v1.0.0 download provides per-app sound controls. Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, and Away are in development. Presentation is planned. These additional modules are not included in that download."
                 }
               },
               {
@@ -157,7 +157,7 @@
                 "name": "Can I download a stable Semper release?",
                 "acceptedAnswer": {
                   "@type": "Answer",
-                  "text": "Yes. Download the latest signed Semper release from GitHub Releases or install it with Homebrew. Semper requires macOS 15.4 or later."
+                  "text": "The current download is Semper v1.0.0 for Sound. It requires macOS 15.4 or later. Expanded modules are in development and are not included in v1.0.0."
                 }
               },
               {
@@ -188,10 +188,10 @@
       </a>
 
       <nav aria-label="Primary navigation">
-        <a href="#control">Control</a>
-        <a href="#sound">Sound</a>
-        <a href="mac-volume-mixer.html">Guide</a>
-        <a href="#source">Source</a>
+        <a href="#modules">Modules</a>
+        <a href="#control">Sound</a>
+        <a href="#compare">Compare</a>
+        <a href="#release">Download</a>
       </nav>
 
       <a
@@ -210,20 +210,27 @@
     <main id="main-content">
       <section class="hero section" id="top" data-scene="hero">
         <div class="hero-copy">
+          <p class="kicker">Sound today. More in the making.</p>
           <h1>
-            Mac volume control,
-            <em>app by app.</em>
+            Your Mac controls,
+            <em>within reach.</em>
           </h1>
 
           <p class="hero-intro">
-            Semper is an open-source per-app volume mixer for macOS. Turn down
-            a browser, route a call to AirPods, apply an EQ to Music, and leave
-            everything else alone.
+            Start with sound: quiet one app, route a call, and find your mix.
+            Semper is growing into a home for the small Mac controls you
+            reach for every day.
           </p>
 
           <div class="hero-actions">
+            <a class="button button-primary" href="#release">
+              Get Semper for Mac
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 2v10M4 8l4 4 4-4M3 14h10" />
+              </svg>
+            </a>
             <a
-              class="button button-primary"
+              class="text-link hero-source"
               href="https://github.com/niharnm/Semper"
               target="_blank"
               rel="noreferrer"
@@ -242,11 +249,12 @@
                 >Open Semper on GitHub</span
               >
             </a>
-            <a class="text-link" href="#control">
-              See how it works
-              <span aria-hidden="true">↓</span>
-            </a>
           </div>
+          <p class="hero-release-note">
+            <a href="https://github.com/niharnm/Semper/releases/tag/v1.0.0">v1.0.0 · Sound</a>
+            <span>macOS 15.4+</span>
+          </p>
+          <a class="module-jump" href="#modules">Meet the modules <span aria-hidden="true">↓</span></a>
         </div>
 
         <div class="hero-product">
@@ -480,12 +488,120 @@
 
           <div class="model-hint">
             <p>
-              <strong>Try the mixer</strong>
-              <span>Drag a slider or mute an app.</span>
+              <strong>Sound · interactive demo</strong>
+              <span>Controls only this demo.</span>
             </p>
           </div>
         </div>
 
+      </section>
+
+      <section class="modules section" id="modules" aria-labelledby="modules-title">
+        <div class="module-intro">
+          <div>
+            <p class="kicker">A growing set of Mac utilities</p>
+            <h2 id="modules-title">Small controls.<br /><em>Useful every day.</em></h2>
+          </div>
+          <p>Each module has a clear job. Sound is available today.
+            The next modules and their intended scope are listed below.</p>
+        </div>
+        <div class="module-list">
+          <article class="module-row" id="module-sound" data-availability="released">
+            <span class="module-number" aria-hidden="true">01</span>
+            <div class="module-name"><h3>Sound</h3><span class="module-status is-released">Available · v1.0.0</span></div>
+            <div class="module-description">
+              <p>Music at the right level. Calls in the right headphones.
+                Volume, mute, routing, and EQ for individual apps.</p>
+              <a href="#control">Explore Sound <span aria-hidden="true">↗</span></a>
+            </div>
+          </article>
+          <article class="module-row" id="module-awake" data-availability="development">
+            <span class="module-number" aria-hidden="true">02</span>
+            <div class="module-name"><h3>Awake</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Ask your Mac to stay awake for a session. Choose a duration,
+                see what is active, and end it when you are done.</p>
+              <details><summary>Scope and limits</summary><p>Prevents idle sleep while a session is active. Closing the lid, low battery,
+                manual sleep, and macOS policy can still interrupt work.
+                <a href="https://github.com/niharnm/Semper/pull/85">Follow the implementation</a>.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-displays" data-availability="development">
+            <span class="module-number" aria-hidden="true">03</span>
+            <div class="module-name"><h3>Displays</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Adjust the brightness of a supported external display from
+                the same place you manage your sound.</p>
+              <details><summary>Scope and limits</summary><p>Controls depend on the display, cable, and connection path.
+                A monitor being connected does not guarantee hardware brightness support.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-workspace" data-availability="development">
+            <span class="module-number" aria-hidden="true">04</span>
+            <div class="module-name"><h3>Workspace Restore</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Save a layout of selected app windows. Preview where they
+                will go, then restore the layout when you are ready.</p>
+              <details><summary>Scope and limits</summary><p>Designed for selected standard windows with Accessibility permission.
+                Apps, full-screen windows, and changed display connections can limit restoration.
+                Window moves are explicit, with results shown for each window.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-shelf" data-availability="development">
+            <span class="module-number" aria-hidden="true">05</span>
+            <div class="module-name"><h3>File Shelf</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>A temporary place for files, links, images, and text you
+                add, ready to drag into another app.</p>
+              <details><summary>Scope and limits</summary><p>Designed to hold items for the current session unless you choose persistence.
+                It does not watch your clipboard or folders, upload content,
+                or move, rename, or delete original files.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-eject" data-availability="development">
+            <span class="module-number" aria-hidden="true">06</span>
+            <div class="module-name"><h3>Safe Eject</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Select an eligible external or removable volume to eject,
+                then see whether macOS completed the request.</p>
+              <details><summary>Scope and limits</summary><p>Each eject requires your selection. No force eject or silent retries.
+                A visible volume is not proof that it is idle or ready to disconnect.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-scenes" data-availability="development">
+            <span class="module-number" aria-hidden="true">07</span>
+            <div class="module-name"><h3>Scenes</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Bring a few controls together for focused work or a call,
+                then restore the settings the session changed.</p>
+              <details><summary>Scope and limits</summary><p>Scenes are being built around reversible changes to supported Sound,
+                Awake, and display controls. They do not promise to restore every app or window.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-away" data-availability="development">
+            <span class="module-number" aria-hidden="true">08</span>
+            <div class="module-name"><h3>Away</h3><span class="module-status">In development</span></div>
+            <div class="module-description">
+              <p>Cover your workspace with an app privacy curtain while
+                requesting that your Mac stay awake.</p>
+              <details><summary>Scope and limits</summary><p>Away is not a macOS session lock. Use Lock Screen when you need
+                system security. Idle wakefulness does not guarantee that every job keeps running.</p></details>
+            </div>
+          </article>
+          <article class="module-row" id="module-presentation" data-availability="planned">
+            <span class="module-number" aria-hidden="true">09</span>
+            <div class="module-name"><h3>Presentation</h3><span class="module-status">Planned</span></div>
+            <div class="module-description">
+              <p>Preview a set of sound, awake, display, and window changes
+                before presenting, then restore what the session changed.</p>
+              <details><summary>Scope and limits</summary><p>Planned after the individual modules have release evidence.
+                Its scope depends on the controls each module can support and restore.</p></details>
+            </div>
+          </article>
+        </div>
+        <p class="module-footnote">The v1.0.0 download includes Sound only. Every other module listed here is in development or planned.
+          Availability changes only when a packaged release includes them.
+          <a href="https://github.com/niharnm/Semper/releases">Read release notes <span aria-hidden="true">↗</span></a></p>
       </section>
 
       <section class="problem section" data-scene="problem">
@@ -649,7 +765,7 @@
             <div class="card-copy">
               <h3>App by app</h3>
               <p>
-                Volume, mute, boost, EQ, balance, and output live beside the app
+                Volume, mute, boost, EQ, and output live beside the app
                 they affect.
               </p>
             </div>
@@ -773,7 +889,7 @@
                   <path d="M5 4h14v11H5zM9 20h6M12 15v5" />
                 </svg>
               </span>
-              <div><strong>Studio Display</strong><small>DisplayPort</small></div>
+              <div><strong>Supported monitor</strong><small>Illustrative capabilities</small></div>
               <span class="cap-check">Ready</span>
             </div>
             <ul>
@@ -790,7 +906,7 @@
                   <path d="M5 13v-2a7 7 0 0 1 14 0v2M5 12H3v6h4v-6H5ZM19 12h2v6h-4v-6h2Z" />
                 </svg>
               </span>
-              <div><strong>AirPods Pro</strong><small>Bluetooth</small></div>
+              <div><strong>Bluetooth headphones</strong><small>Illustrative capabilities</small></div>
               <span class="cap-check">Ready</span>
             </div>
             <ul>
@@ -802,20 +918,83 @@
         </div>
 
         <p class="capability-note reveal">
-          Capability-aware controls are not decoration. They keep the interface
-          honest when the audio path changes.
+          Examples show how controls can differ, not a tested compatibility list.
+          Volume, balance, and gain depend on the detected output path.
         </p>
+      </section>
+
+      <section class="comparison section" id="compare" aria-labelledby="compare-title">
+        <div class="comparison-heading">
+          <p class="kicker">Choose by the job</p>
+          <h2 id="compare-title">Good tools have<br /><em>different strengths.</em></h2>
+          <p>Semper starts with per-app sound and is expanding into everyday
+            Mac utilities. Here is how its scope compares with established tools.</p>
+        </div>
+        <p class="comparison-scroll-hint">Scroll the table sideways, or focus it and use the arrow keys.</p>
+        <div class="comparison-table-wrap" role="region" aria-label="Feature comparison" tabindex="0">
+          <table class="comparison-table">
+            <caption>Documented features, checked September 8, 2026. This is not a performance ranking.</caption>
+            <thead><tr><th scope="col">The job</th><th scope="col">An established option</th><th scope="col">In Semper</th></tr></thead>
+            <tbody>
+              <tr>
+                <th scope="row">Mix individual apps</th>
+                <td><a href="https://rogueamoeba.com/soundsource/">SoundSource <span aria-hidden="true">↗</span></a><p>Per-app volume and routing, a 10-band EQ, and Audio Unit effects.</p></td>
+                <td><strong>Sound</strong><span class="comparison-status">Available · v1.0.0</span><p>Per-app volume, routing, and a 10-band EQ.</p></td>
+              </tr>
+              <tr>
+                <th scope="row">Shape your audio</th>
+                <td><a href="https://eqmac.app/">eqMac <span aria-hidden="true">↗</span></a><p>Free basic and 10-band EQ. App Mixer and Expert EQ are Pro features.</p></td>
+                <td><strong>Sound</strong><span class="comparison-status">Available · v1.0.0</span><p>App EQ and device-specific AutoEQ headphone correction.</p></td>
+              </tr>
+              <tr>
+                <th scope="row">Control a display</th>
+                <td><a href="https://github.com/waydabber/BetterDisplay">BetterDisplay <span aria-hidden="true">↗</span></a><p>Scaling, brightness, DDC controls, and virtual displays. Some features require Pro or compatible hardware.</p></td>
+                <td><strong>Displays</strong><span class="comparison-status">In development</span><p>Supported external-display brightness. Not included in v1.0.0.</p></td>
+              </tr>
+              <tr>
+                <th scope="row">Keep your Mac awake</th>
+                <td><a href="https://keepingyouawake.app/">KeepingYouAwake <span aria-hidden="true">↗</span></a><p>Timed sessions and an option to deactivate at a low battery level.</p></td>
+                <td><strong>Awake</strong><span class="comparison-status">In development</span><p>Explicit keep-awake sessions. Not included in v1.0.0.</p></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="benchmark-note" id="performance" data-benchmark-status="unmeasured">
+          <div>
+            <p class="kicker">Performance evidence</p>
+            <h3>Measurements before rankings.</h3>
+          </div>
+          <div>
+            <p>No controlled head-to-head results are published here yet.
+              A feature list does not establish which app uses less memory,
+              responds faster, or preserves audio more faithfully.</p>
+            <details>
+              <summary>What a fair comparison needs</summary>
+              <ol>
+                <li>Identify the Mac, macOS version, exact app builds, connected hardware, and enabled features.</li>
+                <li>Run the same job, such as mixing the same audio apps to the same output, with one utility active at a time.</li>
+                <li>Record warmup, sample duration, repeated runs, units, and raw samples. Report variation alongside summaries.</li>
+                <li>Separate idle use from active work, and observational samples from controlled trials. Leave unmeasured products unscored.</li>
+              </ol>
+              <p>Memory and CPU samples alone cannot establish audio latency, sound quality, display compatibility, or battery life.</p>
+              <p><a href="https://github.com/niharnm/Semper/blob/1829ce36bc6b59d3d11ccc609fb0b92579247e65/guide/benchmarks.md">Read the measurement protocol</a>
+                and <a href="https://github.com/niharnm/Semper/blob/1829ce36bc6b59d3d11ccc609fb0b92579247e65/scripts/benchmarks/evidence/validation.md">measurement status</a>.</p>
+            </details>
+          </div>
+        </div>
       </section>
 
       <section class="canary section" id="release" data-scene="canary">
         <div class="canary-layout">
           <div class="canary-copy reveal">
             <p class="kicker">Download</p>
-            <h2>Download Semper for macOS.</h2>
+            <h2>Start with Sound.</h2>
+            <p class="release-version">Current download · v1.0.0</p>
             <p>
-              Download the disk image, drag Semper into Applications, and grant
-              the audio permission on first launch. Semper keeps itself up to
-              date with its built-in updater. Requires macOS 15.4 or later.
+              Get per-app audio controls for macOS 15.4 or later. Download the
+              disk image, drag Semper into Applications, and grant the audio
+              permission on first launch. The development modules above are
+              not included in this release.
             </p>
             <div class="canary-actions">
               <a
@@ -823,7 +1002,7 @@
                 href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"
                 data-release-status
               >
-                Download Semper
+                Download Semper v1.0.0
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M4 12 12 4M6 4h6v6" />
                 </svg>
@@ -903,12 +1082,14 @@
         <div class="source-layout">
           <div class="source-copy reveal">
             <p class="kicker">Built in the open.</p>
-            <h2>Open source. Join the work.</h2>
+            <h2>Read the source. Join the work.</h2>
             <p>
               Semper is actively looking for contributors. Help with Swift,
               SwiftUI, Core Audio, tests, accessibility, device compatibility,
               and technical writing. The source, tests, guides, and issue
-              tracker are open under Apache 2.0.
+              tracker are publicly available. See the repository's
+              <a href="https://github.com/niharnm/Semper/blob/main/LICENSE">licensing information</a>
+              and <a href="https://github.com/niharnm/Semper/blob/main/NOTICE.md">notices</a>.
             </p>
             <a
               class="button button-light"
@@ -997,7 +1178,7 @@
               </a>
             </div>
             <div class="code-proof">
-              <span>Apache-2.0</span>
+              <span>Public repository</span>
               <span>Native SwiftUI</span>
               <span>Unit tested</span>
             </div>
@@ -1038,9 +1219,11 @@
           <article class="faq-card reveal">
             <h3>What is Semper?</h3>
             <p>
-              Semper is an open-source macOS menu-bar app that gives each
-              audio-producing app its own volume, mute, output route, and
-              equalizer controls.
+              Semper is a native Mac utility. The v1.0.0 download provides
+              per-app sound controls. Awake, Displays, Workspace Restore,
+              File Shelf, Safe Eject, Scenes, and Away are in development.
+              Presentation is planned. These additional modules are not
+              included in that download.
             </p>
           </article>
           <article class="faq-card reveal">
@@ -1063,7 +1246,7 @@
           <article class="faq-card reveal">
             <h3>Can I download a stable Semper release?</h3>
             <p>
-              Yes. Download the latest signed release from
+              The current download is v1.0.0 for Sound. Get it from
               <a
                 href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg"
               >GitHub Releases</a>
@@ -1100,11 +1283,11 @@
           height="160"
           alt="Semper app icon"
         />
-        <p class="kicker reveal">Your apps are already separate.</p>
-        <h2 class="reveal">Their volume should be, too.</h2>
+        <p class="kicker reveal">Made for the Mac you use.</p>
+        <h2 class="reveal">Start with your sound.</h2>
         <p class="final-copy reveal">
-          Semper is an open-source project for making macOS audio control make
-          sense. If that matters to you, join in.
+          Try the current Sound release, or help build the next set of useful
+          Mac controls. The work happens in the open.
         </p>
         <div
           class="download-command reveal"
@@ -1180,7 +1363,7 @@
         <span>Semper</span>
       </a>
       <div class="footer-middle">
-        <p class="footer-tagline">Open-source audio control for macOS.</p>
+        <p class="footer-tagline">Sound today. More Mac controls in the making.</p>
         <div class="footer-links" aria-label="Resources and legal">
           <a href="mac-volume-mixer.html">Guide</a>
           <a href="about.html">About</a>
@@ -1188,7 +1371,7 @@
           <a href="terms.html">Terms</a>
         </div>
       </div>
-      <p>© <span id="year">2026</span> Semper · Apache-2.0</p>
+      <p>© <span id="year">2026</span> Semper · <a href="https://github.com/niharnm/Semper/blob/main/LICENSE">Licensing information</a></p>
     </footer>
   </body>
 </html>
