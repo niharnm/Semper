@@ -2728,6 +2728,7 @@ h2 {
 .legal-source p {
   max-width: 540px;
   margin: 0;
+  color: white;
   font-family: var(--display);
   font-size: clamp(1.25rem, 2vw, 1.7rem);
   font-style: italic;
@@ -3521,7 +3522,9 @@ footer p:last-child {
 .module-description a,
 .module-footnote a,
 .comparison-table a,
-.benchmark-note a {
+.benchmark-note a,
+.source-copy p a,
+footer p a {
   text-decoration: underline;
   text-underline-offset: 0.22em;
 }
@@ -3787,6 +3790,14 @@ summary:focus-visible,
 .hero-release-note a:focus-visible,
 .module-jump:focus-visible,
 .modules a:focus-visible,
-.comparison a:focus-visible {
+.comparison a:focus-visible,
+a[href$="/LICENSE"]:focus-visible,
+a[href$="/NOTICE"]:focus-visible {
   outline-color: var(--ink);
+}
+
+.source-copy p a:focus-visible,
+.legal-source a[href$="/LICENSE"]:focus-visible,
+.legal-source a[href$="/NOTICE"]:focus-visible {
+  outline-color: white;
 }
