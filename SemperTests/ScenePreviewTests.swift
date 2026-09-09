@@ -3,7 +3,7 @@ import Synchronization
 import Testing
 @testable import Semper
 
-@Suite("Scene preview and scoped recovery")
+@Suite("Scene preview and scoped recovery", .timeLimit(.minutes(1)))
 struct ScenePreviewTests {
     @Test("Preview and apply share snapshots, ordering, and optional skips")
     func previewMatchesApplyWithoutWriting() async throws {
@@ -278,7 +278,14 @@ struct ScenePreviewTests {
         let suspension = fixture.mock.suspendNextRead(for: .awakeMode)
         let scene = Self.awakeScene()
         let previewTask = Task { try await fixture.coordinator.preview(scene) }
-        #expect(await suspension.waitUntilSuspended())
+        let didSuspend = await suspension.waitUntilSuspended()
+        #expect(didSuspend)
+        guard didSuspend else {
+            previewTask.cancel()
+            await suspension.resume()
+            _ = await previewTask.result
+            return
+        }
 
         await #expect(throws: SceneApplyError.operationInProgress) {
             try await fixture.coordinator.preview(scene)
@@ -309,12 +316,34 @@ struct ScenePreviewTests {
         fixture.mock.makeWritesCancellationAware()
         let writeSuspension = fixture.mock.suspendNextWrite(for: .awakeMode, matching: .awake(.system))
         let applyTask = Task { try await fixture.coordinator.apply(Self.awakeScene()) }
-        #expect(await writeSuspension.waitUntilSuspended())
+        let writeDidSuspend = await writeSuspension.waitUntilSuspended()
+        #expect(writeDidSuspend)
+        guard writeDidSuspend else {
+            applyTask.cancel()
+            await writeSuspension.resume()
+            _ = await applyTask.result
+            return
+        }
         let readSuspension = fixture.mock.suspendNextRead(for: .awakeMode)
         await writeSuspension.resume()
-        #expect(await readSuspension.waitUntilSuspended())
+        let readDidSuspend = await readSuspension.waitUntilSuspended()
+        #expect(readDidSuspend)
+        guard readDidSuspend else {
+            applyTask.cancel()
+            await readSuspension.resume()
+            _ = await applyTask.result
+            return
+        }
         #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.system))
-        let pending = try #require(fixture.journal.transaction)
+        let pending: SceneTransaction
+        do {
+            pending = try #require(fixture.journal.transaction)
+        } catch {
+            applyTask.cancel()
+            await readSuspension.resume()
+            _ = await applyTask.result
+            throw error
+        }
         #expect(pending.entries.first?.phase == .inFlight)
         #expect(pending.entries.first?.appliedValue == nil)
         await #expect(throws: SceneRestoreError.operationInProgress) {
