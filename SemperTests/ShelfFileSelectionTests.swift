@@ -22,17 +22,19 @@ nonisolated private final class ShelfSelectionSignal: @unchecked Sendable {
     }
 
     func wait() async -> Bool {
-        let watchdog = DispatchWorkItem { self.resolve(false) }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: watchdog)
-        defer { watchdog.cancel() }
-        return await withCheckedContinuation { waiting in
-            let existing: Bool? = lock.withLock {
-                if let result { return result }
-                continuation = waiting
-                return nil
+        let received = await withTaskCancellationHandler {
+            await withCheckedContinuation { waiting in
+                let existing: Bool? = lock.withLock {
+                    if let result { return result }
+                    continuation = waiting
+                    return nil
+                }
+                if let existing { waiting.resume(returning: existing) }
             }
-            if let existing { waiting.resume(returning: existing) }
+        } onCancel: {
+            self.resolve(false)
         }
+        return received && !Task.isCancelled
     }
 }
 
@@ -43,15 +45,24 @@ private final class ShelfSelectionChooser: ShelfFileChoosing {
     let entered = ShelfSelectionSignal()
     let cancelled = ShelfSelectionSignal()
     let release = ShelfSelectionSignal()
+    private var heldSelection: Task<Bool, Never>?
 
     func chooseFiles() async -> [URL]? {
+        let release = release
+        let heldSelection = Task.detached { await release.wait() }
+        self.heldSelection = heldSelection
         calls += 1
         entered.resolve(true)
-        guard await release.wait() else { return nil }
+        guard await heldSelection.value else { return nil }
         return selection
     }
 
     func cancel() { cancelled.resolve(true) }
+
+    func finish() async {
+        release.resolve(true)
+        _ = await heldSelection?.value
+    }
 }
 
 nonisolated private final class ShelfSelectionAccess: ShelfFileAccess, @unchecked Sendable {
@@ -173,11 +184,13 @@ struct ShelfFileSelectionTests {
             chooser.release.resolve(true)
             dropRelease.resolve(true)
             await service.shutdown()
+            await chooser.finish()
             throw error
         }
         chooser.release.resolve(true)
         dropRelease.resolve(true)
         await service.shutdown()
+        await chooser.finish()
         #expect(access.balanced)
         #expect(try Data(contentsOf: file) == Data("original bytes".utf8))
         #expect(try Data(contentsOf: secondFile) == Data("second bytes".utf8))
@@ -190,6 +203,30 @@ struct ShelfFileSelectionTests {
         try #require(await f.chooser.entered.wait())
         f.chooser.release.resolve(true)
         try #require(await ShelfSelectionCompletion(f.service).wait())
+    }
+
+    @Test("A held picker survives cancellation until its explicit release")
+    func heldPickerRequiresExplicitRelease() async throws {
+        let chooser = ShelfSelectionChooser()
+        let expected = [URL(fileURLWithPath: "/selection-fixture.txt")]
+        chooser.selection = expected
+        let finished = ShelfSelectionSignal()
+        let request = Task {
+            let result = await chooser.chooseFiles()
+            finished.resolve(true)
+            return result
+        }
+        let entered = await chooser.entered.wait()
+        request.cancel()
+        chooser.cancel()
+        let cancellationObserved = await chooser.cancelled.wait()
+        #expect(entered)
+        #expect(cancellationObserved)
+        #expect(!chooser.release.isResolved)
+        #expect(!finished.isResolved)
+        chooser.release.resolve(true)
+        #expect(await request.value == expected)
+        await chooser.finish()
     }
 
     @Test("Selected files and folders remain references; optional bookmarks reload", arguments: [false, true])
