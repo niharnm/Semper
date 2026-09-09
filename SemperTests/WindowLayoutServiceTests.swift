@@ -510,6 +510,81 @@ struct WindowLayoutServiceTests {
         #expect(await backend.state?.frame == original)
     }
 
+    @Test("Full-height readback retains evidence for manual review without advertising automatic restore",
+        arguments: [false, true])
+    func fullHeightReadbackRequiresReview(_ restoring: Bool) async throws {
+        let (service, backend, _) = fixture()
+        if restoring { try await service.perform(.leftHalf) }
+        let fullHeight = try #require(screen.fullScreenFrame)
+        await backend.setForcedFrame(fullHeight)
+        await #expect(throws: WindowLayoutError.self) {
+            try await service.perform(restoring ? .restore : .leftHalf)
+        }
+        let evidence = try #require(service.previousPlacement)
+        #expect(evidence.before == original)
+        #expect(evidence.after == fullHeight)
+        #expect(evidence.windowID == backend.windowID)
+        #expect(evidence.displays == WindowLayoutGeometry.topologyIdentity([screen]))
+        #expect(service.requiresPlacementReview && !service.canRestore)
+        #expect(service.message == WindowLayoutError.fullHeightReadback.localizedDescription)
+        let writesBeforeReview = await backend.requestedFrames.count
+        await #expect(throws: WindowLayoutError.self) { try await service.perform(.restore) }
+        #expect(await backend.requestedFrames.count == writesBeforeReview)
+        #expect(service.previousPlacement == evidence)
+        #expect(service.message == WindowLayoutError.fullHeightReadback.localizedDescription)
+
+        await service.pause()
+        service.keepCurrentPlacement()
+        #expect(service.requiresPlacementReview && !service.canRestore)
+        #expect(service.previousPlacement == evidence)
+        service.start()
+        #expect(service.requiresPlacementReview && !service.canRestore)
+        #expect(service.previousPlacement == evidence)
+        #expect(service.message == WindowLayoutError.fullHeightReadback.localizedDescription)
+
+        let adjusted = CGRect(x: 70, y: 80, width: 450, height: 350)
+        await backend.setFrame(adjusted)
+        await backend.setForcedFrame(nil)
+        await #expect(throws: WindowLayoutError.self) { try await service.perform(.center) }
+        #expect(await backend.requestedFrames.count == writesBeforeReview)
+        #expect(service.previousPlacement == evidence)
+        service.keepCurrentPlacement()
+        #expect(!service.requiresPlacementReview && service.previousPlacement == nil)
+        try await service.perform(.center)
+        let centered = try #require(await backend.state?.frame)
+        #expect(service.canRestore && !service.requiresPlacementReview)
+        #expect(service.previousPlacement?.before == adjusted)
+
+        await backend.setForcedFrame(CGRect(x: 500, y: 25, width: 420, height: 690))
+        await #expect(throws: WindowLayoutError.self) { try await service.perform(.rightHalf) }
+        #expect(service.canRestore && !service.requiresPlacementReview)
+        #expect(service.message == WindowLayoutError.constrained.localizedDescription)
+        await backend.setForcedFrame(nil)
+        try await service.perform(.restore)
+        #expect(await backend.state?.frame == centered)
+        #expect(!service.canRestore)
+    }
+
+    @Test("Full-height review reason takes precedence over cancellation and backend failure",
+        arguments: [false, true])
+    func fullHeightOutcomePrecedence(_ cancelled: Bool) async throws {
+        let (service, backend, gate) = fixture()
+        let fullHeight = try #require(screen.fullScreenFrame)
+        await backend.setForcedFrame(fullHeight)
+        await backend.setFailure("The app rejected the final size write.")
+        let writeGate = WindowLayoutTestGate()
+        await backend.setWriteGate(writeGate)
+        try await withHeldOperation(gate: writeGate, operation: { try await service.perform(.leftHalf) }) { task in
+            if cancelled { service.cancel() }
+            await writeGate.release()
+            await #expect(throws: WindowLayoutError.self) { try await task.value }
+        }
+        #expect(service.requiresPlacementReview && !service.canRestore)
+        #expect(service.previousPlacement?.after == fullHeight)
+        #expect(service.message == WindowLayoutError.fullHeightReadback.localizedDescription)
+        #expect(gate.activeSharedPermitCount == 0)
+    }
+
     @Test("Missing readback requires acknowledgement and survives pause")
     func unverifiedWriteReview() async throws {
         let (service, backend, _) = fixture()

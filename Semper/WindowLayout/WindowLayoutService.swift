@@ -4,7 +4,8 @@ import Observation
 
 enum WindowLayoutError: LocalizedError {
     case stopped, busy, noTarget, noRestore, placementReview, missingWindow, changedWindow, changedDisplays
-    case invalidPlacement, unsupported(WorkspaceWindowIssue), unverifiedWrite, constrained, writeFailed(String)
+    case invalidPlacement, unsupported(WorkspaceWindowIssue), unverifiedWrite, fullHeightReadback, constrained
+    case writeFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +31,8 @@ enum WindowLayoutError: LocalizedError {
             }
         case .unverifiedWrite:
             "The window change could not be verified. Check the window in its original app, then choose Keep Current Placement."
+        case .fullHeightReadback:
+            "The app returned a full-height window that cannot be restored automatically. Check or adjust the window in its app, then choose Keep Current Placement."
         case .constrained: "The app constrained the placement. The observed change can be restored."
         case .writeFailed(let reason): reason
         }
@@ -39,7 +42,7 @@ enum WindowLayoutError: LocalizedError {
 @Observable
 @MainActor
 final class WindowLayoutService {
-    private struct PreviousPlacement {
+    struct PreviousPlacement: Equatable {
         let windowID: WorkspaceWindowID
         let before: CGRect
         let after: CGRect
@@ -57,7 +60,7 @@ final class WindowLayoutService {
     private let mutationAdmission: MutationAdmissionGate
     private let targetApplication: @MainActor () -> WorkspaceApplication?
     private let targetTracker: WindowLayoutTargetTracker?
-    private var previousPlacement: PreviousPlacement?
+    private(set) var previousPlacement: PreviousPlacement?
     private var operation: Task<Void, any Error>?
     private var pauseTask: Task<Void, Never>?
     private var shutdownTask: Task<Void, Never>?
@@ -177,19 +180,19 @@ final class WindowLayoutService {
                 task.cancel()
             }
         } catch {
-            if error is CancellationError {
-                if !requiresPlacementReview {
+            if !requiresPlacementReview {
+                if error is CancellationError {
                     message = previousPlacement == nil
                         ? "Window action cancelled. No observed change is available to restore."
                         : "Window action cancelled. The observed change remains available to restore."
+                } else if error is MutationAdmissionError {
+                    message = "Finish the active window action or end Away Mode, then try again."
+                } else {
+                    if let workspaceError = error as? WorkspaceError, case .permission = workspaceError {
+                        permission = permission == .granted || permission == .revoked ? .revoked : .denied
+                    }
+                    message = error.localizedDescription
                 }
-            } else if error is MutationAdmissionError {
-                message = "Finish the active window action or end Away Mode, then try again."
-            } else {
-                if let workspaceError = error as? WorkspaceError, case .permission = workspaceError {
-                    permission = permission == .granted || permission == .revoked ? .revoked : .denied
-                }
-                message = error.localizedDescription
             }
             throw error
         }
@@ -284,9 +287,15 @@ final class WindowLayoutService {
             throw WindowLayoutError.writeFailed(observation.failure ?? "The app did not return its current window frame.")
         }
         let reachedTarget = WorkspaceGeometry.approximatelyEqual(after, target)
-        if observation.writeAttempted, observation.before != after {
+        let excludedFrame = WorkspaceGeometry.excludedByDisplayBounds(after, on: displays)
+        if (observation.writeAttempted && observation.before != after) || excludedFrame {
             previousPlacement = PreviousPlacement(
                 windowID: windowID, before: restoring?.before ?? observation.before, after: after, displays: displays)
+        }
+        if excludedFrame {
+            requiresPlacementReview = true
+            message = WindowLayoutError.fullHeightReadback.localizedDescription
+            throw WindowLayoutError.fullHeightReadback
         }
         if restoring != nil, reachedTarget { previousPlacement = nil }
         try Task.checkCancellation()

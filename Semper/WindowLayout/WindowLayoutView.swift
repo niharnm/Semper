@@ -23,7 +23,7 @@ struct WindowLayoutView: View {
                     }
                 }
                 if service.requiresPlacementReview {
-                    Text("Check the affected window before continuing. Its last change could not be verified, so automatic restore is unavailable.")
+                    Text("Check the affected window before continuing. Its last result is outside automatic restore support or could not be verified.")
                         .font(.callout)
                     Button("Keep Current Placement…") { confirmKeepCurrent = true }
                         .disabled(service.isBusy || !service.isRunning)
@@ -45,7 +45,7 @@ struct WindowLayoutView: View {
         .confirmationDialog("Keep this window placement?", isPresented: $confirmKeepCurrent) {
             Button("Keep Current Placement", role: .destructive) { service.keepCurrentPlacement() }
         } message: {
-            Text("This discards the unverified change record. Arrange the window manually if needed before continuing.")
+            Text("This discards the preceding placement record. Arrange the window manually if needed before continuing.")
         }
     }
 }
