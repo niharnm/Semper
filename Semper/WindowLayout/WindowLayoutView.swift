@@ -35,7 +35,7 @@ struct WindowLayoutView: View {
                     })
                 Text("Halves and Maximize use the display area available around the Dock and menu bar. Center keeps the current size. Restore returns the last changed window to its immediately preceding placement and skips later manual changes.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Full-screen, minimized, unsupported, and unverified windows stay unchanged. Choose another app and return here if no target is available. You can assign optional shortcuts in Settings.")
+                Text("Full-height windows and targets are conservatively refused. This can limit halves and Maximize when the menu bar and Dock auto-hide. Minimized, unsupported, and unreadable windows also stay unchanged. You can assign optional shortcuts in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Pausing retains the previous placement. Removing Window Layout or quitting clears that session history.")
                     .font(.caption).foregroundStyle(.secondary)

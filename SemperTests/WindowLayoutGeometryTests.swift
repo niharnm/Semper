@@ -1,4 +1,3 @@
-import ApplicationServices
 import CoreGraphics
 import Testing
 
@@ -26,7 +25,8 @@ struct WindowLayoutGeometryTests {
     @Test("Fractional display origins remain inside usable bounds")
     func fractionalBounds() throws {
         let display = WorkspaceDisplay(
-            id: "fractional", name: "Display", visibleFrame: CGRect(x: -999.75, y: 24.25, width: 999.5, height: 675.5))
+            id: "fractional", name: "Display", visibleFrame: CGRect(x: -999.75, y: 24.25, width: 999.5, height: 675.5),
+            fullScreenFrame: CGRect(x: -999.75, y: 0, width: 999.5, height: 750))
         for action in [WindowLayoutAction.leftHalf, .rightHalf, .maximize, .center] {
             let target = try #require(WindowLayoutGeometry.target(action, frame: original, display: display))
             #expect(display.visibleFrame.contains(target))
@@ -46,7 +46,8 @@ struct WindowLayoutGeometryTests {
     @Test("Center preserves window dimensions on a display left of the primary display")
     func center() throws {
         let display = WorkspaceDisplay(
-            id: "left", name: "Display", visibleFrame: CGRect(x: -1500, y: -200, width: 1200, height: 900))
+            id: "left", name: "Display", visibleFrame: CGRect(x: -1500, y: -200, width: 1200, height: 900),
+            fullScreenFrame: CGRect(x: -1500, y: -225, width: 1200, height: 1000))
         let centered = try #require(WindowLayoutGeometry.target(.center, frame: original, display: display))
         #expect(centered.size == original.size)
         #expect(centered.midX == display.visibleFrame.midX)
@@ -88,18 +89,9 @@ struct WindowLayoutGeometryTests {
         #expect(WindowLayoutGeometry.target(.restore, frame: original, display: display) == nil)
     }
 
-    @Test("Only recognized fullscreen button subroles establish fullscreen state")
-    func fullscreenButtonState() {
-        #expect(WindowLayoutWindowRules.fullscreenState(buttonSubrole: kAXFullScreenButtonSubrole) == false)
-        #expect(WindowLayoutWindowRules.fullscreenState(buttonSubrole: kAXZoomButtonSubrole) == true)
-        #expect(WindowLayoutWindowRules.fullscreenState(buttonSubrole: nil) == nil)
-        #expect(WindowLayoutWindowRules.fullscreenState(buttonSubrole: kAXCloseButtonSubrole) == nil)
-        #expect(WindowLayoutWindowRules.fullscreenState(buttonSubrole: "vendor-button") == nil)
-    }
-
-    @Test("Verified windowed full-height layouts remain eligible for center and restoration")
+    @Test("Usable-area layouts remain eligible while full-height targets are conservatively refused")
     func repeatedLayoutsRetainEligibility() throws {
-        let display = WorkspaceDisplay(
+        let autoHideDisplay = WorkspaceDisplay(
             id: "auto-hide", name: "Display", visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 700),
             fullScreenFrame: CGRect(x: 0, y: 0, width: 1000, height: 700))
         for action in [WindowLayoutAction.leftHalf, .rightHalf, .maximize] {
@@ -109,27 +101,25 @@ struct WindowLayoutGeometryTests {
                 #expect(
                     WindowLayoutWindowRules.issue(
                         standard: true, minimized: false, frame: frame, displays: [display],
-                        movable: true, resizable: true, fullscreen: false) == nil)
+                        movable: true, resizable: true) == nil)
             }
             #expect(
                 WorkspaceWindowRules.issue(
                     standard: true, minimized: false, frame: arranged, displays: [display],
-                    movable: true, resizable: true) == .manualAdjustmentRequired)
+                    movable: true, resizable: true) == nil)
+            #expect(WindowLayoutGeometry.target(action, frame: original, display: autoHideDisplay) == nil)
         }
-        #expect(display.fullScreenFrame == display.visibleFrame)
+        #expect(WindowLayoutGeometry.target(.center, frame: original, display: autoHideDisplay) != nil)
     }
 
-    @Test("True and unknown fullscreen states are refused for ordinary and full-height frames")
-    func refusedFullscreen() {
-        for frame in [original, display.visibleFrame] {
+    @Test("Full-height windows retain the existing conservative exclusion regardless of width")
+    func refusedFullHeight() throws {
+        let fullBounds = try #require(display.fullScreenFrame)
+        for frame in [fullBounds, CGRect(x: 0, y: 0, width: 400, height: fullBounds.height)] {
             #expect(
                 WindowLayoutWindowRules.issue(
                     standard: true, minimized: false, frame: frame, displays: [display],
-                    movable: true, resizable: true, fullscreen: true) == .unsupported)
-            #expect(
-                WindowLayoutWindowRules.issue(
-                    standard: true, minimized: false, frame: frame, displays: [display],
-                    movable: true, resizable: true, fullscreen: nil) == .unknownState)
+                    movable: true, resizable: true) == .manualAdjustmentRequired)
         }
     }
 
@@ -138,19 +128,19 @@ struct WindowLayoutGeometryTests {
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: false, minimized: false, frame: original, displays: [display],
-                movable: true, resizable: true, fullscreen: false) == .unsupported)
+                movable: true, resizable: true) == .unsupported)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: true, frame: original, displays: [display],
-                movable: true, resizable: true, fullscreen: false) == .minimized)
+                movable: true, resizable: true) == .minimized)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: original, displays: [display],
-                movable: false, resizable: true, fullscreen: false) == .unsupported)
+                movable: false, resizable: true) == .unsupported)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: original, displays: [display],
-                movable: true, resizable: false, fullscreen: false) == .unsupported)
+                movable: true, resizable: false) == .unsupported)
     }
 
     @Test("Missing role, minimized, frame, display and capability reads remain unknown")
@@ -158,26 +148,32 @@ struct WindowLayoutGeometryTests {
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: nil, minimized: false, frame: original, displays: [display],
-                movable: true, resizable: true, fullscreen: false) == .unknownState)
+                movable: true, resizable: true) == .unknownState)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: nil, frame: original, displays: [display],
-                movable: true, resizable: true, fullscreen: false) == .unknownState)
+                movable: true, resizable: true) == .unknownState)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: nil, displays: [display],
-                movable: true, resizable: true, fullscreen: false) == .unknownState)
+                movable: true, resizable: true) == .unknownState)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: original, displays: [],
-                movable: true, resizable: true, fullscreen: false) == .unknownState)
+                movable: true, resizable: true) == .unknownState)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: original, displays: [display],
-                movable: nil, resizable: true, fullscreen: false) == .unknownState)
+                movable: nil, resizable: true) == .unknownState)
         #expect(
             WindowLayoutWindowRules.issue(
                 standard: true, minimized: false, frame: original, displays: [display],
-                movable: true, resizable: nil, fullscreen: false) == .unknownState)
+                movable: true, resizable: nil) == .unknownState)
+        let unknownDisplay = WorkspaceDisplay(id: "unknown", name: "Display", visibleFrame: display.visibleFrame)
+        #expect(
+            WindowLayoutWindowRules.issue(
+                standard: true, minimized: false, frame: original, displays: [unknownDisplay],
+                movable: true, resizable: true) == .unknownState)
+        #expect(WindowLayoutGeometry.target(.leftHalf, frame: original, display: unknownDisplay) == nil)
     }
 }

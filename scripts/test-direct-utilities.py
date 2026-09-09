@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULES = ("Workspace", "Shelf", "Storage")
-TEST_PREFIXES = ("Workspace", "Shelf", "SafeEject", "WindowLayout", "MutationAdmissionGate")
+TEST_PREFIXES = ("Workspace", "Shelf", "SafeEject", "WindowLayout", "MutationAdmissionGate", "UtilityLifecycle")
 # Shell shortcut tests use the app's package dependencies and run through Xcode.
 APP_TESTS = {"WorkspaceShortcutIsolationTests.swift"}
 
@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix="semper-direct-utilities-") as directory
     tests.mkdir(parents=True)
     (sources / "MutationAdmissionGate.swift").symlink_to(ROOT / "Semper/Utilities/MutationAdmissionGate.swift")
     (sources / "ModuleRegistry.swift").symlink_to(ROOT / "Semper/Modules/ModuleRegistry.swift")
+    (sources / "UtilityLifecycle.swift").symlink_to(ROOT / "Semper/Modules/UtilityLifecycle.swift")
     for name in ("WindowLayoutModels.swift", "WindowLayoutService.swift", "WindowLayoutTargetTracker.swift"):
         (sources / name).symlink_to(ROOT / "Semper/WindowLayout" / name)
     for module in MODULES:

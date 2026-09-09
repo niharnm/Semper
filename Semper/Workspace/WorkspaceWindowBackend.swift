@@ -184,9 +184,29 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
     }
 
     func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) async throws -> WorkspaceMoveObservation {
+        try await moveWindow(id, to: frame, expected: expected, expectedDisplays: nil)
+    }
+
+    func move(
+        _ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect, expectedDisplays: [WorkspaceDisplay]
+    ) async throws -> WorkspaceMoveObservation {
+        try await moveWindow(id, to: frame, expected: expected, expectedDisplays: expectedDisplays)
+    }
+
+    private func moveWindow(
+        _ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect, expectedDisplays: [WorkspaceDisplay]?
+    ) async throws -> WorkspaceMoveObservation {
         guard WorkspaceGeometry.valid(frame), let state = try await current(id), let before = state.frame,
             let handle = handles[id]
         else { throw WorkspaceError.missing }
+        if let expectedDisplays,
+            WindowLayoutGeometry.topologyIdentity(currentDisplays) != WindowLayoutGeometry.topologyIdentity(expectedDisplays)
+        {
+            return .init(
+                before: before, after: before,
+                failure: "The displays changed before the window layout was applied. Check the window and try again.",
+                writeAttempted: false)
+        }
         guard state.issue == nil else {
             return .init(before: before, after: before, failure: state.issue?.message, writeAttempted: false)
         }
@@ -251,11 +271,11 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
     private func snapshot(_ id: WorkspaceWindowID, deadline: ContinuousClock.Instant) throws -> WorkspaceWindowSnapshot
     {
         guard let handle = handles[id] else { throw WorkspaceError.missing }
-        func value(_ name: String, from element: AXUIElement? = nil) throws -> CFTypeRef? {
+        func value(_ name: String) throws -> CFTypeRef? {
             try Task.checkCancellation()
             guard ContinuousClock.now < deadline else { throw WorkspaceWindowReadError.timeout }
             var value: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(element ?? handle.element, name as CFString, &value)
+            let result = AXUIElementCopyAttributeValue(handle.element, name as CFString, &value)
             if result == .invalidUIElement { throw WorkspaceError.missing }
             if result == .cannotComplete && handle.policy == .windowLayout { throw WorkspaceWindowReadError.timeout }
             return result == .success ? value : nil
@@ -277,19 +297,11 @@ actor AccessibilityWorkspaceBackend: WindowLayoutWindowBackend {
                     movable: moveResult == .success ? movable.boolValue : nil,
                     resizable: sizeResult == .success ? resizable.boolValue : nil)
             case .windowLayout:
-                var fullscreen: Bool?
-                if let button = try value(kAXFullScreenButtonAttribute), CFGetTypeID(button) == AXUIElementGetTypeID() {
-                    let buttonElement = button as! AXUIElement
-                    AXUIElementSetMessagingTimeout(buttonElement, messageTimeout)
-                    fullscreen = WindowLayoutWindowRules.fullscreenState(
-                        buttonSubrole: try value(kAXSubroleAttribute, from: buttonElement) as? String)
-                }
                 issue = WindowLayoutWindowRules.issue(
                     standard: role.map { $0 == kAXStandardWindowSubrole }, minimized: minimized, frame: frame,
                     displays: currentDisplays,
                     movable: moveResult == .success ? movable.boolValue : nil,
-                    resizable: sizeResult == .success ? resizable.boolValue : nil,
-                    fullscreen: fullscreen)
+                    resizable: sizeResult == .success ? resizable.boolValue : nil)
             }
             return .init(id: id, application: handle.application, ordinal: handle.ordinal, frame: frame, issue: issue)
         } catch is CancellationError { throw CancellationError() } catch {

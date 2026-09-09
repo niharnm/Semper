@@ -17,13 +17,14 @@ enum WindowLayoutError: LocalizedError {
         case .missingWindow: "The original app or window is no longer available. No replacement window was chosen."
         case .changedWindow: "The window changed since the last action. Its later placement was preserved."
         case .changedDisplays: "The displays changed. Check the window and try a new layout action."
-        case .invalidPlacement: "This placement does not fit an available display's usable area."
+        case .invalidPlacement:
+            "This placement does not fit the usable display area or reaches the display's full height. Try Center with a smaller window."
         case .unsupported(let issue):
             switch issue {
             case .unsupported:
-                "This window does not support layout actions. Fullscreen and nonstandard windows are excluded."
+                "This must be a standard window that allows moving and resizing."
             case .unknownState:
-                "The app did not provide a verifiable window state, including whether it is fullscreen."
+                "The app did not provide readable window geometry or move and resize capabilities."
             case .minimized: "Unminimize the window in its app before arranging it."
             default: issue.message
             }
@@ -212,7 +213,7 @@ final class WindowLayoutService {
     }
 
     private func arrange(_ action: WindowLayoutAction, application: WorkspaceApplication) async throws {
-        let displays = topologyIdentity(await backend.displays())
+        let displays = WindowLayoutGeometry.topologyIdentity(await backend.displays())
         guard let snapshot = try await backend.focusedWindow(in: application),
             snapshot.application == application
         else { throw WindowLayoutError.missingWindow }
@@ -227,13 +228,16 @@ final class WindowLayoutService {
             current.application == application
         else { throw WindowLayoutError.missingWindow }
         guard try supportedFrame(current) == frame else { throw WindowLayoutError.changedWindow }
-        guard topologyIdentity(await backend.displays()) == displays else { throw WindowLayoutError.changedDisplays }
+        guard WindowLayoutGeometry.topologyIdentity(await backend.displays()) == displays else {
+            throw WindowLayoutError.changedDisplays
+        }
         try Task.checkCancellation()
         if WorkspaceGeometry.approximatelyEqual(frame, target) {
             message = "The window is already in this placement."
             return
         }
-        let observation = try await backend.move(windowID, to: target, expected: frame)
+        let observation = try await backend.move(
+            windowID, to: target, expected: frame, expectedDisplays: displays)
         try record(observation, windowID: windowID, target: target, displays: displays, restoring: nil)
         message = "\(action.title) applied and verified. Restore returns to the preceding placement."
     }
@@ -244,13 +248,14 @@ final class WindowLayoutService {
         else { throw WindowLayoutError.missingWindow }
         let frame = try supportedFrame(current)
         guard frame == previous.after else { throw WindowLayoutError.changedWindow }
-        let displays = topologyIdentity(await backend.displays())
+        let displays = WindowLayoutGeometry.topologyIdentity(await backend.displays())
         guard displays == previous.displays else { throw WindowLayoutError.changedDisplays }
         guard displays.contains(where: { $0.visibleFrame.contains(previous.before) }) else {
             throw WindowLayoutError.invalidPlacement
         }
         try Task.checkCancellation()
-        let observation = try await backend.move(previous.windowID, to: previous.before, expected: previous.after)
+        let observation = try await backend.move(
+            previous.windowID, to: previous.before, expected: previous.after, expectedDisplays: displays)
         try record(
             observation, windowID: previous.windowID, target: previous.before,
             displays: displays, restoring: previous)
@@ -292,11 +297,5 @@ final class WindowLayoutService {
             }
             throw WindowLayoutError.constrained
         }
-    }
-
-    private func topologyIdentity(_ displays: [WorkspaceDisplay]) -> [WorkspaceDisplay] {
-        displays.map {
-            WorkspaceDisplay(id: $0.id, name: "", visibleFrame: $0.visibleFrame, fullScreenFrame: $0.fullScreenFrame)
-        }.sorted { $0.id < $1.id }
     }
 }

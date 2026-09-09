@@ -57,11 +57,13 @@ private actor WindowLayoutTestBackend: WindowLayoutWindowBackend {
     var permissionPrompts: [Bool] = []
     var focusedApplications: [WorkspaceApplication] = []
     var requestedFrames: [CGRect] = []
+    var expectedDisplaySnapshots: [[WorkspaceDisplay]] = []
     var applicationScanCount = 0
     var shutdownCalls = 0
     var displayReads = 0
     var changedTopology: [WorkspaceDisplay]?
     var focusGate: WindowLayoutTestGate?
+    var beforeWriteGate: WindowLayoutTestGate?
     var writeGate: WindowLayoutTestGate?
     var forcedFrame: CGRect?
     var frameBeforeWrite: CGRect?
@@ -123,6 +125,24 @@ private actor WindowLayoutTestBackend: WindowLayoutWindowBackend {
         return .init(before: before, after: missingReadback ? nil : after, failure: failureAfterWrite, writeAttempted: true)
     }
 
+    func move(
+        _ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect, expectedDisplays: [WorkspaceDisplay]
+    ) async throws -> WorkspaceMoveObservation {
+        expectedDisplaySnapshots.append(expectedDisplays)
+        if let beforeWriteGate { await beforeWriteGate.hold() }
+        try Task.checkCancellation()
+        guard let state = try current(id), let before = state.frame else { throw WorkspaceError.missing }
+        guard WindowLayoutGeometry.topologyIdentity(displays())
+            == WindowLayoutGeometry.topologyIdentity(expectedDisplays)
+        else {
+            return .init(
+                before: before, after: before,
+                failure: "The displays changed before the window layout was applied. Check the window and try again.",
+                writeAttempted: false)
+        }
+        return try await move(id, to: frame, expected: expected)
+    }
+
     func shutdown() {
         shutdownCalls += 1
         state = nil
@@ -134,6 +154,7 @@ private actor WindowLayoutTestBackend: WindowLayoutWindowBackend {
     func setFailure(_ value: String?) { failureAfterWrite = value }
     func setFrameBeforeWrite(_ value: CGRect?) { frameBeforeWrite = value }
     func setFocusGate(_ gate: WindowLayoutTestGate) { focusGate = gate }
+    func setBeforeWriteGate(_ gate: WindowLayoutTestGate) { beforeWriteGate = gate }
     func setWriteGate(_ gate: WindowLayoutTestGate) { writeGate = gate }
     func setChangedTopology(_ value: [WorkspaceDisplay]) { changedTopology = value }
     func setScreens(_ value: [WorkspaceDisplay]) { screens = value }
@@ -157,7 +178,8 @@ struct WindowLayoutServiceTests {
     let app = WorkspaceApplication(
         pid: 432, bundleID: "test.layout", name: "Layout Test", launchDate: Date(timeIntervalSince1970: 42))
     let screen = WorkspaceDisplay(
-        id: "layout-display", name: "Display", visibleFrame: CGRect(x: 0, y: 25, width: 1000, height: 700))
+        id: "layout-display", name: "Display", visibleFrame: CGRect(x: 0, y: 25, width: 1000, height: 700),
+        fullScreenFrame: CGRect(x: 0, y: 0, width: 1000, height: 800))
     let original = CGRect(x: 100, y: 100, width: 400, height: 300)
 
     private func fixture(
@@ -373,6 +395,83 @@ struct WindowLayoutServiceTests {
         await backend.setScreens([.init(id: screen.id, name: screen.name, visibleFrame: original)])
         await #expect(throws: WindowLayoutError.self) { try await service.perform(.restore) }
         #expect(await backend.requestedFrames.count == 1)
+    }
+
+    @Test("Display changes during the backend's final suspension prevent layout and restore writes",
+        arguments: [false, true], [0, 1, 2])
+    func changedTopologyAtWriteBoundary(_ restoring: Bool, _ changedField: Int) async throws {
+        let (service, backend, _) = fixture()
+        if restoring { try await service.perform(.leftHalf) }
+        let unchangedFrame = try #require(await backend.state?.frame)
+        let initialWriteCount = await backend.requestedFrames.count
+        let beforeWrite = WindowLayoutTestGate()
+        await backend.setBeforeWriteGate(beforeWrite)
+        let action: WindowLayoutAction = restoring ? .restore : .leftHalf
+        try await withHeldOperation(gate: beforeWrite, operation: { try await service.perform(action) }) { task in
+            let changed = WorkspaceDisplay(
+                id: changedField == 0 ? "replaced-display" : screen.id, name: screen.name,
+                visibleFrame: changedField == 1
+                    ? CGRect(x: 40, y: 25, width: 960, height: 700) : screen.visibleFrame,
+                fullScreenFrame: changedField == 2
+                    ? CGRect(x: 0, y: 0, width: 1000, height: 850) : screen.fullScreenFrame)
+            await backend.setScreens([changed])
+            #expect(await backend.state?.frame == unchangedFrame)
+            await beforeWrite.release()
+            await #expect(throws: WindowLayoutError.self) { try await task.value }
+        }
+        #expect(await backend.requestedFrames.count == initialWriteCount)
+        #expect(await backend.state?.frame == unchangedFrame)
+        #expect(await backend.expectedDisplaySnapshots.last == WindowLayoutGeometry.topologyIdentity([screen]))
+        #expect(service.message?.contains("displays changed before") == true)
+        #expect(service.canRestore == restoring)
+    }
+
+    @Test("Display names and enumeration order may change without blocking layout or restore",
+        arguments: [false, true])
+    func displayNamesAndOrderAtWriteBoundary(_ restoring: Bool) async throws {
+        let (service, backend, _) = fixture()
+        let other = WorkspaceDisplay(
+            id: "other-display", name: "Other", visibleFrame: CGRect(x: 1000, y: 25, width: 1000, height: 700),
+            fullScreenFrame: CGRect(x: 1000, y: 0, width: 1000, height: 800))
+        await backend.setScreens([screen, other])
+        if restoring { try await service.perform(.leftHalf) }
+        let beforeWrite = WindowLayoutTestGate()
+        await backend.setBeforeWriteGate(beforeWrite)
+        let action: WindowLayoutAction = restoring ? .restore : .leftHalf
+        try await withHeldOperation(gate: beforeWrite, operation: { try await service.perform(action) }) { task in
+            await backend.setScreens([
+                .init(id: other.id, name: "Renamed other", visibleFrame: other.visibleFrame,
+                    fullScreenFrame: other.fullScreenFrame),
+                .init(id: screen.id, name: "Renamed display", visibleFrame: screen.visibleFrame,
+                    fullScreenFrame: screen.fullScreenFrame),
+            ])
+            await beforeWrite.release()
+            try await task.value
+        }
+        let halfFrame = try #require(WindowLayoutGeometry.target(.leftHalf, frame: original, display: screen))
+        let expectedFrame = restoring ? original : halfFrame
+        #expect(await backend.state?.frame == expectedFrame)
+        #expect(await backend.requestedFrames.count == (restoring ? 2 : 1))
+        #expect(await backend.expectedDisplaySnapshots.last == WindowLayoutGeometry.topologyIdentity([screen, other]))
+    }
+
+    @Test("Auto-hidden system bars refuse full-height targets while a smaller window can still center",
+        arguments: [WindowLayoutAction.leftHalf, .rightHalf, .maximize])
+    func autoHiddenBarsConservativeLimit(_ action: WindowLayoutAction) async throws {
+        let (service, backend, _) = fixture()
+        let fullFrame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        await backend.setScreens([
+            .init(id: screen.id, name: screen.name, visibleFrame: fullFrame, fullScreenFrame: fullFrame),
+        ])
+        await #expect(throws: WindowLayoutError.self) { try await service.perform(action) }
+        #expect(await backend.requestedFrames.isEmpty)
+        #expect(await backend.state?.frame == original)
+        #expect(service.message == WindowLayoutError.invalidPlacement.localizedDescription)
+        try await service.perform(.center)
+        #expect(await backend.requestedFrames.count == 1)
+        #expect(await backend.state?.frame == CGRect(x: 300, y: 250, width: 400, height: 300))
+        try await service.perform(.restore)
+        #expect(await backend.state?.frame == original)
     }
 
     @Test("A previous placement outside usable displays is not restored")

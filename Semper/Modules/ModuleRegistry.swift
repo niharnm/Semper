@@ -78,7 +78,7 @@ struct UtilityModuleDescriptor: Identifiable, Equatable, Sendable {
                 localDataPolicy:
                     "Window identity and the previous placement stay in memory. Pausing preserves them; removing the module or quitting clears them. No window titles are collected.",
                 conflicts: ["Finish active Workspace Restore work and end Away before arranging windows."],
-                hardwareRequirements: ["Only standard windows with verified windowed state and move/resize support are supported."]
+                hardwareRequirements: ["Requires standard windows with readable geometry and move/resize support. Full-height windows and targets are conservatively refused."]
             )),
         .init(
             id: .shelf, title: "File Shelf", summary: "Keep references to files close at hand.", symbolName: "tray.fill"
