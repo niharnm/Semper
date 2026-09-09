@@ -59,7 +59,7 @@ not download a Semper DMG from an unofficial source.
 ## Architecture Highlights
 
 - **Independent Utilities**: Home provides module summaries, attention items, up to four pinned actions, search, and recent action outcomes for the current session. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
-- **Manual Window Layout, under review**: Five optional actions arrange eligible windows into halves, maximize, center, or restore the preceding placement. Full-height windows and targets are refused, which can limit halves and maximize when both the Dock and menu bar auto-hide. Source integration and native acceptance are tracked in the [product status guide](guide/product-status.md#window-layout).
+- **Manual Window Layout**: Five optional actions arrange eligible windows into halves, maximize, center, or restore the preceding placement. Full-height windows and targets are refused, which can limit halves and maximize when both the Dock and menu bar auto-hide. Source integration and native acceptance are tracked in the [product status guide](guide/product-status.md#window-layout).
 - **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Authenticated Away Curtain**: One opaque panel covers each display, ordinary input is filtered, and local widgets can show time, battery, Away duration, and awake-request state.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
@@ -128,7 +128,7 @@ in your keychain so macOS can recognize later source updates as the same app.
 - [Direct Utilities: Workspace Restore, File Shelf, Safe Eject](guide/direct-utilities.md)
 - [Choose Files in File Shelf](guide/shelf-file-selection.md)
 - [Presentation Controls](guide/presentation-controls.md)
-- [Window Layout Status](guide/product-status.md#window-layout)
+- [Window Layout](guide/window-layout.md)
 - [Awake Sessions](guide/awake-sessions.md)
 - [URL Schemes](guide/url-schemes.md)
 - [App Shortcuts](guide/app-shortcuts.md)

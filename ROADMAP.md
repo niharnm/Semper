@@ -1,9 +1,11 @@
 # Semper roadmap
 
-Semper is one menu bar app with nine utility modules: Sound, Awake, Displays,
-Workspace Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation. All
-nine are integrated on `main`. The downloadable release is v1.0.0, which
-contains Sound only. This roadmap orders the work to deliver the whole suite as
+Semper's source in this change set contains ten utility modules: Sound, Awake,
+Displays, Workspace Restore, Window Layout, File Shelf, Safe Eject, Scenes,
+Away, and Presentation. The baseline has nine integrated modules. Window Layout
+becomes the tenth integrated module when this change set merges into `main`.
+The downloadable release is v1.0.0, which contains Sound only. This roadmap
+orders the work to deliver the whole suite as
 dependable signed releases without hiding experimental behavior. Per-module
 state lives in the [product status guide](guide/product-status.md).
 
@@ -33,8 +35,9 @@ state lives in the [product status guide](guide/product-status.md).
 
 ### 3. Window Layout acceptance and compatibility
 
-The implementation is under review in [PR #106](https://github.com/niharnm/Semper/pull/106).
-It becomes the tenth integrated module only when its source lands on `main`.
+The cleared implementation from [PR #106](https://github.com/niharnm/Semper/pull/106)
+is included in this change set. Integration requires its merge to `main`;
+native acceptance remains open. See the [Window Layout guide](guide/window-layout.md).
 
 - Verify all five manual commands, optional shortcuts, Home/search/pinned
   actions, intended-window selection, and later manual changes on real apps.
@@ -42,8 +45,9 @@ It becomes the tenth integrated module only when its source lands on `main`.
   windows and targets are refused; halves and maximize can be unavailable when
   both Dock and menu bar auto-hide. Smaller-window center and restore still
   require eligible geometry.
-- An excluded or unreadable result requires manual review. Verify that its
-  recovery message survives cancellation and pause until acknowledged.
+- After an attempted write, an excluded or unreadable result requires manual
+  review. Verify that its recovery message survives cancellation and pause
+  until acknowledged.
 - Resolve full-height compatibility through verified behavior before broad
   support claims. Preserve Workspace Restore's protections. No automatic tiling
   or persisted window history is included.
@@ -127,7 +131,8 @@ discussion and include a hardware test plan.
   Homebrew are current.
 - Integrated on `main` and in no download yet: Awake, Displays, Workspace
   Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation.
-- Under review, not integrated: Window Layout and File Shelf's Resize a Copy.
+- Implemented in this change set, awaiting integration: Window Layout.
+- Under review, not integrated: File Shelf's Resize a Copy.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, Accessibility window operations, volume ejection, and permission
   behavior.
