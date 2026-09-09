@@ -34,6 +34,8 @@ final class UtilityRuntime {
     var message: String?
     @ObservationIgnored private let soundFactory:
         @MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime
+    @ObservationIgnored private let displayFactory:
+        @MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService
     @ObservationIgnored private let awakeFactory: @MainActor () throws -> AwakeService
     @ObservationIgnored private let workspaceFactory: @MainActor () throws -> WorkspaceService
     @ObservationIgnored private let shelfFactory: @MainActor () throws -> ShelfService
@@ -55,7 +57,6 @@ final class UtilityRuntime {
     @ObservationIgnored private let shellIcon: MenuBarIconCoordinator
     #if !APP_STORE
         private let ddc: DDCController
-        @ObservationIgnored private var ddcUsers: Set<UtilityModuleID> = []
     #endif
 
     static let searchShortcut = KeyboardShortcuts.Name(
@@ -103,10 +104,22 @@ final class UtilityRuntime {
         shelfFactory: @escaping @MainActor () throws -> ShelfService = { ShelfService() },
         storageFactory: @escaping @MainActor () throws -> SafeEjectService = { SafeEjectService() },
         sceneLibraryStore: (any SceneLibraryStoring)? = nil,
-        sceneJournalStore: (any SceneJournalStoring)? = nil
+        sceneJournalStore: (any SceneJournalStoring)? = nil,
+        displayFactory:
+            (@MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService)? = nil
     ) throws {
         self.settings = settings
         self.soundFactory = soundFactory
+        self.displayFactory = displayFactory ?? { controller, admission in
+            #if APP_STORE
+                return DisplayControlService()
+            #else
+                guard let controller else {
+                    throw UtilityLifecycleError.unavailable("Display control transport is unavailable.")
+                }
+                return DisplayControlService(ddcController: controller, mutationAdmission: admission)
+            #endif
+        }
         self.workspaceFactory = workspaceFactory
         self.shelfFactory = shelfFactory
         self.storageFactory = storageFactory
@@ -132,6 +145,9 @@ final class UtilityRuntime {
         shellIcon = MenuBarIconCoordinator(settings: settings)
         #if !APP_STORE
             ddc = DDCController(settingsManager: settings)
+            guard ddc.installMutationAdmission(admission) else {
+                throw UtilityLifecycleError.unavailable("Display control transport could not join shared admission.")
+            }
         #endif
         try installServices()
         try installActions()
@@ -255,9 +271,6 @@ final class UtilityRuntime {
         for module in registry.modules { await commands.cancelAndDrain(module: module.id) }
         await scenes?.cancelAndDrain()
         await lifecycle.shutdown()
-        #if !APP_STORE
-            if ddcUsers.isEmpty { await ddc.stopAndDrain() }
-        #endif
         settings.flushSync()
     }
 
@@ -332,9 +345,13 @@ final class UtilityRuntime {
             return "\(count) saved \(count == 1 ? "scene" : "scenes")"
                 + (scenes.hasPendingRestore ? ", previous setup available" : "")
         case .displays:
-            guard let displays else { return "Open Displays to check supported controls." }
-            let count = displays.displays.count
-            return "\(count) supported \(count == 1 ? "display" : "displays")"
+            #if APP_STORE
+                return "Display controls are unavailable in the App Store build."
+            #else
+                guard let displays else { return "Open Displays to check supported controls." }
+                let count = displays.displays.filter { !$0.features.isEmpty }.count
+                return count == 0 ? "No readable display controls" : "\(count) supported \(count == 1 ? "display" : "displays")"
+            #endif
         case .presentation:
             guard let presentation else { return "Open Presentation to prepare a timed session." }
             switch presentation.phase {
@@ -363,8 +380,6 @@ final class UtilityRuntime {
                     guard let self else { throw CancellationError() }
                     self.shellIcon.stop()
                     #if !APP_STORE
-                        if self.ddcUsers.isEmpty { self.ddc.start() }
-                        self.ddcUsers.insert(.sound)
                         self.sound = try self.soundFactory(self.settings, self.ddc)
                     #else
                         self.sound = try self.soundFactory(self.settings, nil)
@@ -373,6 +388,9 @@ final class UtilityRuntime {
                         try sound.audioEngine.installMutationAdmission(self.mutationAdmission)
                         try sound.deviceVolumeMonitor.installMutationAdmission(self.mutationAdmission)
                         try sound.audioCommands.installMutationAdmission(self.mutationAdmission)
+                        #if !APP_STORE
+                            self.ddc.start()
+                        #endif
                         self.audioSceneAdapter = AudioSceneAdapter(
                             engine: sound.audioEngine, commands: sound.audioCommands)
                         sound.shortcutsRegistry.onShortcutsChanged = { [weak self] in self?.sceneShortcuts?.sync() }
@@ -385,17 +403,38 @@ final class UtilityRuntime {
                     let sound = self.sound
                     try await sound?.shutdownAndDrain()
                     #if !APP_STORE
-                        if self.ddcUsers.isSubset(of: [.sound]) {
-                            await self.ddc.stopAndDrain()
-                        } else {
-                            try await self.ddc.performSerialized { () }
-                        }
-                        self.ddcUsers.remove(.sound)
+                        await self.ddc.stopAndDrain()
                     #endif
                     sound?.audioCommands.finishShutdownAfterBackendDrain()
                     self.sound = nil
                     self.audioSceneAdapter = nil
                     if self.shortcutsStarted, !self.lifecycle.isShuttingDown { self.shellIcon.start() }
+                }))
+        try lifecycle.register(
+            .displays,
+            binding: UtilityServiceBinding(
+                start: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    if self.displays == nil {
+                        #if !APP_STORE
+                            self.displays = try self.displayFactory(self.ddc, self.mutationAdmission)
+                        #else
+                            self.displays = try self.displayFactory(nil, self.mutationAdmission)
+                        #endif
+                    }
+                    if let displays = self.displays {
+                        displays.start()
+                        self.displaySceneAdapter = DisplaySceneAdapter(displays: displays)
+                        await displays.probe()
+                    }
+                },
+                stop: { [weak self] reason in
+                    guard let self, let displays = self.displays else { return }
+                    try self.requirePresentationDependencyCanStop(.displays)
+                    try await self.requireSceneDependencyCanStop(.displays)
+                    await displays.stopAndDrain()
+                    self.displaySceneAdapter = nil
+                    if reason != .pause { self.displays = nil }
                 }))
         try lifecycle.register(
             .awake,
@@ -943,6 +982,23 @@ final class UtilityRuntime {
                     runtime = sound.audioEngine.activeProcessingTapCount > 0 ? .active : .ready
                 }
                 return .init(runtime: runtime, permission: permission)
+            }
+        case .displays:
+            guard let displays else { return }
+            statusObserver.observe(module: module) {
+                let runtime: ModuleRuntimeState
+                #if APP_STORE
+                    runtime = .limited(reason: "Display controls are unavailable in the App Store build.")
+                #else
+                    if !displays.isRunning {
+                        runtime = .limited(reason: "Displays is stopped.")
+                    } else if !displays.displays.contains(where: { !$0.features.isEmpty }) {
+                        runtime = .limited(reason: "No readable display controls were found.")
+                    } else {
+                        runtime = .ready
+                    }
+                #endif
+                return .init(runtime: runtime, permission: .notRequired)
             }
         case .awake:
             guard let awake else { return }
