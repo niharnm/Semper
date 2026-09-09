@@ -1,8 +1,11 @@
 import Foundation
+import Observation
 
 nonisolated enum MutationAdmissionOwner: Hashable, Sendable {
     case scene
     case awayMode
+    case presentation
+    case manual
 }
 
 nonisolated enum MutationAdmissionMode: Sendable {
@@ -37,6 +40,7 @@ final class MutationAdmissionPermit {
     }
 }
 
+@Observable
 @MainActor
 final class MutationAdmissionGate {
     private let gateID = UUID()
