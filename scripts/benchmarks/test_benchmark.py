@@ -193,6 +193,41 @@ class EvidenceTests(unittest.TestCase):
                 self.assertEqual(benchmark.main(), 1)
             self.assertFalse(output.exists())
 
+    def test_matching_power_endpoints_disclose_unobserved_transition(self):
+        import macos
+        item = evidence()
+        power_states = ["AC Power"]
+
+        def metadata_snapshot():
+            return item["machine"] | {"power_source": power_states[-1]}
+
+        def trials_with_power_transition(*_):
+            power_states.extend(["Battery Power", "AC Power"])
+            return item["trials"]
+
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "observation.json"
+            argv = ["benchmark.py", "observe", "--pid", "1", "--app", "/Fixture.app",
+                    "--product", "Fixture", "--job", "inactive", "--workload", "fixture",
+                    "--configuration", "fixture", "--build-label", "fixture", "--confound",
+                    "fixture", "--warmup-seconds", "0", "--intervals-per-repeat", "2",
+                    "--repeats", "2", "--output", str(output)]
+            with patch.object(sys, "argv", argv), \
+                 patch.object(benchmark, "collector_fingerprint", return_value="a" * 64), \
+                 patch.object(macos, "app_identity", return_value=item["build"] | item["_local"]), \
+                 patch.object(macos, "machine_metadata", side_effect=metadata_snapshot) as snapshots, \
+                 patch.object(benchmark, "collect_trials", side_effect=trials_with_power_transition):
+                self.assertEqual(benchmark.main(), 0)
+            self.assertEqual(snapshots.call_count, 2)
+            self.assertEqual(power_states, ["AC Power", "Battery Power", "AC Power"])
+            public = benchmark.public_evidence(json.loads(output.read_text()))
+            self.assertEqual(public["machine"]["power_source"], "AC Power")
+            self.assertIn(
+                "Power source is checked only before and after all trials; intervening transitions are not monitored.",
+                public["limitations"],
+            )
+            self.assertFalse(public["comparison_eligible"])
+
     def test_unmeasured_cannot_smuggle_zero_metrics(self):
         item = dict(schema_version=1, product="Semper", status="unmeasured",
                     recorded_at="2026-09-09T00:00:00Z", comparison_eligible=False,

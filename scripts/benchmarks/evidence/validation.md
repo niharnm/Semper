@@ -5,7 +5,8 @@ in this directory are all `unmeasured` and reject numeric metric fields.
 
 ## Collector validation
 
-- Mac17,9, Apple M5 Pro, 15 logical CPUs, 24 GiB RAM, AC power.
+- Mac17,9, Apple M5 Pro, 15 logical CPUs, 24 GiB RAM; power-source endpoint
+  snapshots both reported AC. Intervening power changes were not monitored.
 - macOS 27.0 build 26A5425a, arm64 Python 3.14.6, timebase 24,000,000 Hz.
 - Native collector CPU conversion compared with Python `process_time_ns` over a
   50 ms self-process CPU interval: ratio 0.999933. This is a unit sanity check,
@@ -15,7 +16,9 @@ in this directory are all `unmeasured` and reject numeric metric fields.
   six 0.5-second intervals per window, 12 intervals and 14 boundary samples total.
   That process exited normally. Fixture output remains outside the repository.
 - `python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py' -v`:
-  38 tests passed.
+  39 tests passed, including a mocked AC-to-battery-to-AC regression that checks
+  the mandatory endpoint-only disclosure. The suite runs in the existing
+  `website-smoke` CI job without native process measurements.
 - Python bytecode compilation passed for the four collector/test modules.
 - Existing `scripts/test_release_tools.py`: 7 tests passed.
 - Existing `scripts/test_website_tools.py`: 9 tests passed.

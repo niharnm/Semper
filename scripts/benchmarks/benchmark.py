@@ -21,6 +21,7 @@ LIMITATIONS = [
     "No controlled competitor comparison or claim of total product overhead.",
     "Sampled RSS and physical footprint are distinct from energy or battery life.",
     "Installed version metadata does not verify an official release artifact.",
+    "Power source is checked only before and after all trials; intervening transitions are not monitored.",
 ]
 BUILD_KEYS = {
     "bundle_id", "version", "build", "executable_sha256", "plist_sha256", "image_uuid",
@@ -312,7 +313,7 @@ def main() -> int:
             trials = collect_trials(args.pid, identity, protocol, macos.sample)
             require(macos.app_identity(args.app, args.pid) == identity,
                     "App identity or version changed during collection")
-            require(macos.machine_metadata() == machine, "Machine configuration changed during collection")
+            require(macos.machine_metadata() == machine, "Machine metadata differs between endpoint snapshots")
             require(collector_fingerprint() == collector_sha256, "Collector source changed during collection")
             evidence.update(
                 collector_sha256=collector_sha256,

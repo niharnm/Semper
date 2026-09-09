@@ -281,6 +281,8 @@
           "minLength": 1
         },
         "power_source": {
+          "title": "Power source at matching endpoint snapshots",
+          "description": "Observed before the first warmup and after all trials. Matching values do not rule out intervening power-source transitions.",
           "type": "string",
           "minLength": 1
         },
@@ -385,7 +387,7 @@
         },
         "limitations": {
           "type": "array",
-          "minItems": 5,
+          "minItems": 6,
           "items": {
             "type": "string",
             "minLength": 1

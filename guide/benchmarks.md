@@ -13,8 +13,9 @@ macOS, Python 3.10 or newer, and Apple's command-line tools (`xcrun dwarfdump`) 
 executable UUID verification. There are no Python package dependencies.
 
 Each measurement contains the hardware model, CPU, logical CPU count, memory size,
-OS version/build, collector architecture, Python version, power source and hardware
-timebase frequency. It also contains bundle ID, version/build, executable UUID and
+OS version/build, collector architecture, Python version, power source snapshots
+at start and end, and hardware timebase frequency. It also contains bundle ID,
+version/build, executable UUID and
 target architecture (matched to that UUID),
 binary and Info.plist SHA-256 hashes, collector hash, workload/configuration,
 warmup, interval, repeat count, raw samples, summaries and limitations.
@@ -45,10 +46,16 @@ Repeated samples within a window are correlated, not independent trials.
 Sampling uses actual monotonic timestamps and absolute deadlines. Each interval
 must remain within 25% of its requested duration, and each repeat must cover the
 declared duration. Missed cadence, counter regression, process exit/restart,
-executable or version changes, power-source changes, missing samples and changed
-collector files fail the run. It emits no result on failure. Keep the failed
-attempt's stderr and record the reason before retrying; do not silently discard
+executable or version changes, different machine metadata at start and end,
+missing samples and changed collector files fail the run. It emits no result on
+failure. Keep the failed attempt's stderr and record the reason before retrying; do not silently discard
 unfavorable or interrupted attempts.
+
+`machine.power_source` reports the matching snapshots taken before the first
+warmup and after all trials. Differing endpoints fail the run. Power source is
+not monitored between those snapshots: an AC-to-battery-to-AC transition can
+pass, so matching endpoints do not establish uninterrupted AC operation. This
+limitation is mandatory in every exported observation.
 
 CPU units follow [Apple's rusage assignment](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/kern/bsd_kern.c#L1257-L1261)
 and [Mach-time counter definition](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/osfmk/kern/recount.h#L135-L137).
