@@ -7,6 +7,7 @@ protocol WorkspaceWindowBackend: Sendable {
     func displays() async -> [WorkspaceDisplay]
     func windows(in applications: [WorkspaceApplication]) async throws -> [WorkspaceWindowSnapshot]
     func current(_ id: WorkspaceWindowID) async throws -> WorkspaceWindowSnapshot?
+    // After the first write attempt, return observed state even on cancellation or failure.
     func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) async throws -> WorkspaceMoveObservation
     func shutdown() async
 }
@@ -138,20 +139,22 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
             let handle = handles[id]
         else { throw WorkspaceError.missing }
         guard state.issue == nil else {
-            return .init(before: before, after: before, failure: state.issue?.message)
+            return .init(before: before, after: before, failure: state.issue?.message, writeAttempted: false)
         }
         guard before == expected else {
             return .init(
                 before: before, after: before,
-                failure: "The window changed after preview. Preview again before restoring.")
+                failure: "The window changed after preview. Preview again before restoring.", writeAttempted: false)
         }
         var position = frame.origin
         var size = frame.size
         guard let positionValue = AXValueCreate(.cgPoint, &position), let sizeValue = AXValueCreate(.cgSize, &size)
         else {
-            return .init(before: before, after: before, failure: "The requested frame is invalid.")
+            return .init(
+                before: before, after: before, failure: "The requested frame is invalid.", writeAttempted: false)
         }
         var failure: String?
+        var writeAttempted = false
         // A second size write lets the destination display apply its own size constraints.
         for (attribute, value) in [
             (kAXSizeAttribute, sizeValue), (kAXPositionAttribute, positionValue), (kAXSizeAttribute, sizeValue),
@@ -164,6 +167,7 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
                 failure = WorkspaceError.permission.localizedDescription
                 break
             }
+            writeAttempted = true
             let result = AXUIElementSetAttributeValue(handle.element, attribute as CFString, value)
             if result != .success {
                 failure =
@@ -174,7 +178,7 @@ actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
         }
         let after = readFrame(handle.element)
         if after == nil && failure == nil { failure = "The app did not return the resulting window frame." }
-        return WorkspaceMoveObservation(before: before, after: after, failure: failure)
+        return WorkspaceMoveObservation(before: before, after: after, failure: failure, writeAttempted: writeAttempted)
     }
 
     func shutdown() {
