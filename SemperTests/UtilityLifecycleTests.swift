@@ -100,6 +100,41 @@ struct UtilityLifecycleTests {
         }
     }
 
+    @Test("Cancelling a startup caller cancels shared work and awaits uncancelled cleanup", arguments: [false, true])
+    func callerCancellation(joinedCaller: Bool) async throws {
+        try await withLifecycle { registry, lifecycle in
+            let startEntered = LifecycleLatch()
+            let startRelease = LifecycleLatch()
+            var startupCancelled = false
+            var cleanupCount = 0
+            try lifecycle.register(
+                .awake,
+                binding: .init(
+                    start: {
+                        startEntered.open()
+                        await startRelease.wait()
+                        startupCancelled = Task.isCancelled
+                        try Task.checkCancellation()
+                    },
+                    stop: { _ in
+                        #expect(!Task.isCancelled)
+                        cleanupCount += 1
+                    }))
+            let first = Task { try await lifecycle.start(.awake) }
+            await startEntered.wait()
+            let second = Task { try await lifecycle.start(.awake) }
+            await advanceTasks()
+            if joinedCaller { second.cancel() } else { first.cancel() }
+            await advanceTasks()
+            startRelease.open()
+            await #expect(throws: CancellationError.self) { try await first.value }
+            await #expect(throws: CancellationError.self) { try await second.value }
+            #expect(startupCancelled)
+            #expect(cleanupCount == 1)
+            #expect(registry.state(for: .awake)?.runtime != .ready)
+        }
+    }
+
     @Test("Removal hides commands before drain and re-add starts a fresh service")
     func removalAndReaddition() async throws {
         try await withLifecycle { registry, lifecycle in

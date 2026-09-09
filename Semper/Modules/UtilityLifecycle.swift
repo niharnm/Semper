@@ -51,11 +51,18 @@ final class UtilityLifecycle {
     }
 
     func start(_ id: UtilityModuleID) async throws {
+        try Task.checkCancellation()
         guard !isShuttingDown else { throw UtilityLifecycleError.shuttingDown }
         guard !stopping.contains(id) else { throw ModuleRegistryError.transitionInProgress(id) }
         guard registry.state(for: id)?.presence == .added else { throw ModuleRegistryError.moduleNotAdded(id) }
         guard !registry.pausedModuleIDs.contains(id) else { throw ModuleRegistryError.modulePaused(id) }
-        if let task = starting[id] { return try await task.value }
+        if let task = starting[id] {
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        }
         if let reason = cleanupFailures[id] {
             try registry.setRuntime(.failed(reason: reason), for: id)
             throw UtilityLifecycleError.cleanupRequired(reason: reason)
@@ -77,7 +84,8 @@ final class UtilityLifecycle {
                 self.started.insert(id)
             } catch {
                 if !self.stopping.contains(id), !self.isShuttingDown {
-                    do { try await binding.stop(.pause) } catch {
+                    let cleanup = Task { @MainActor in try await binding.stop(.pause) }
+                    do { try await cleanup.value } catch {
                         let reason = "Startup cleanup failed: \(error.localizedDescription)"
                         self.cleanupFailures[id] = reason
                         self.failures[id] = reason
@@ -92,7 +100,11 @@ final class UtilityLifecycle {
             }
         }
         starting[id] = task
-        try await task.value
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     func pause(_ id: UtilityModuleID) async throws {
