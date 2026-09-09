@@ -11,11 +11,12 @@ struct SemperModuleTests {
         #expect(SemperModule.sound.id == "sound")
         #expect(SemperModule.awake.id == "awake")
         #expect(SemperModule.displays.id == "displays")
+        #expect(SemperModule.away.id == "away")
     }
 
     @Test("Module order starts with Home")
     func moduleOrder() {
-        #expect(SemperModule.allCases == [.home, .sound, .awake, .displays])
+        #expect(SemperModule.allCases == [.home, .sound, .awake, .displays, .away])
     }
 
     @Test("The popup opens on Home")

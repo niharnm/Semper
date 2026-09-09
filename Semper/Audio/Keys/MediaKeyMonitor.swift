@@ -59,6 +59,7 @@ final class MediaKeyMonitor {
 
     /// Plays the system volume-feedback pop on volume key steps. Wired by SemperApp after init.
     var feedbackPlayer: VolumeFeedbackPlayer?
+    var isInputSuppressed: () -> Bool = { false }
 
     init(
         decoder: any MediaKeyEventDecoding,
@@ -226,6 +227,7 @@ final class MediaKeyMonitor {
 
     /// Applies a decoded `MediaKeyEvent` to the default output device.
     func handle(_ event: MediaKeyEvent, shiftHeld: Bool = false, optionHeld: Bool = false) {
+        guard !isInputSuppressed() else { return }
         let volumeMonitor = audioEngine.deviceVolumeMonitor
         let deviceID = volumeMonitor.defaultDeviceID
         guard deviceID.isValid else {
@@ -401,6 +403,7 @@ final class MediaKeyMonitor {
     fileprivate func processSystemDefined(_ cgEvent: CGEvent) -> Bool {
         // Pass through if disabled mid-race; never silently eat another app's media keys.
         guard settingsManager.appSettings.mediaKeyControlEnabled else { return false }
+        if isInputSuppressed() { return true }
         guard let nsEvent = NSEvent(cgEvent: cgEvent) else { return false }
         // Subtype 8 is the media-key channel; aux-button / brightness are pass-through.
         guard nsEvent.subtype.rawValue == 8 else { return false }

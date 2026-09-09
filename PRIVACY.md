@@ -11,6 +11,7 @@ Semper is an open-source macOS menu bar utility. This policy explains what the S
 - Semper does not require an account.
 - Audio is processed on your Mac. Semper does not record captured audio to a file, upload it, or send it to the project maintainers.
 - Awake sessions use local macOS power assertions. Their active state is kept in memory and is not restored after Semper quits.
+- Away Mode stores its non-secret appearance and behavior choices locally. A salted PIN verifier is stored only in the device-only macOS Keychain, and an imported curtain photo is copied into Semper's Application Support folder after metadata is removed.
 - App, device, routing, volume, EQ, and shortcut settings are stored locally on your Mac.
 - Experiment assignments use random, surface-local identifiers stored on your Mac or in your browser. Semper does not receive them.
 - Semper makes network requests only for features that need them, including fetching AutoEQ data from GitHub and checking for app updates when an update feed is configured and you request or allow a check.
@@ -35,6 +36,9 @@ Semper handles the following information locally to provide its features:
 - **Audio and Bluetooth device information.** This can include device names, device identifiers, transport type, capabilities, connection state, volume, mute state, and routing choices. Semper reads paired Bluetooth audio devices so you can connect them from the app.
 - **Preferences.** This includes per-app volume, mute, routing, boost, and EQ settings; device preferences; AutoEQ selections; imported EQ profiles; display choices; and keyboard shortcuts.
 - **Awake session state.** While Awake is active, Semper keeps the selected duration, end time, and display choice in memory. It does not save an active Awake session across app launches.
+- **Away Mode preferences.** Semper saves the selected authentication method, disclosure completion, theme, accent, message, widget choices and placement, managed photo filename, photo fit, motion level, display-awake choice, and dim delay in its local settings file. The active Away session, authentication attempts, entered digits, failed-attempt count, and cooldown are kept only in memory.
+- **Away Mode PIN.** When you choose a PIN, Semper stores a salted PIN verifier in a non-synchronizing, device-only generic-password item in the macOS Keychain. The Keychain service is `systems.semper.Semper.away-mode` and the account is `pin`. Semper does not store the four PIN digits, and it never receives or stores your Mac account password, Touch ID data, or Apple Watch credential.
+- **Away Mode photo.** An imported PNG, JPEG, or HEIC image is validated, reduced to a longest edge of at most 8192 pixels, re-encoded as a managed JPEG without source metadata, and stored under `~/Library/Application Support/Semper/Away`. The original file is not changed.
 - **Experiment assignments.** The app stores a random identifier and its assigned interface variants in local preferences. These values are not based on your Apple identity, hardware identifiers, apps, audio, or device settings.
 - **Diagnostics.** Semper writes operational messages and errors to the macOS unified logging system. These logs remain under macOS control unless you choose to share them.
 
@@ -48,8 +52,12 @@ Semper may ask for:
 - **Microphone.** Used when Semper works with input-capable audio devices and input monitoring. Semper does not intentionally save or transmit microphone audio.
 - **Bluetooth.** Used to list and connect paired Bluetooth audio devices.
 - **Accessibility.** Optional. Used to intercept the system media keys for Semper's volume controls.
+- **Accessibility and Input Monitoring.** Away Mode requires Accessibility permission to install its active session event filter. If macOS still denies the filter, Semper directs you to Input Monitoring as an additional permission.
+- **System authentication.** Away Mode can ask macOS to verify the current device owner. The system dialog may offer Touch ID, Apple Watch, or the Mac account password. Semper receives only the result.
 
 Starting an Awake session does not ask for a macOS privacy permission. It uses public system power assertions only while you have an active session.
+
+Away Mode is a Semper privacy curtain, not the macOS Lock Screen and not an operating-system security boundary. Force Quit, a Semper crash, restart, administrator or Accessibility control, remote access, authorized capture software, and display-change timing can expose content behind the curtain. Idle-sleep assertions do not prevent lid-close sleep, manual Sleep, or forced low-power sleep.
 
 You can grant, review, or revoke these permissions in macOS System Settings under Privacy & Security. Features that depend on a revoked permission will stop working.
 
@@ -87,6 +95,7 @@ Do not include private audio, credentials, or other sensitive information in a p
 - App experiment assignments remain in local preferences until you remove Semper's preferences.
 - Website experiment assignments remain until you clear site data for `semper.systems`.
 - AutoEQ downloads and imported profiles remain in the Semper Application Support folder until you remove them.
+- Away Mode preferences and its managed photo remain until you replace or reset them, or remove Semper's Application Support data. Reset All deletes the managed Away photo and the Away PIN Keychain item. Removing only the Application Support folder does not delete the Keychain item.
 - To remove local Semper data, quit Semper and delete `~/Library/Application Support/Semper`. You can also remove Semper preferences through macOS. Revoking permissions is a separate step in Privacy & Security settings.
 - Public GitHub activity is retained and controlled through GitHub. Website request data is retained by Vercel under its policies.
 - Information sent privately to maintainers is kept only as long as reasonably needed to respond, maintain project records, handle security concerns, or meet legal obligations.

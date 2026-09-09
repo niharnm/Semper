@@ -20,6 +20,30 @@ struct ShortcutsRegistryTests {
         #expect(recorder.toggleCount == 1)
     }
 
+    @Test("Away shortcut routes to the Away handler")
+    func dispatchAwayMode() {
+        let handler = RecordingAwayShortcutHandler()
+        let registry = makeRegistry(awayHandler: handler)
+
+        registry.dispatch(.toggleAwayMode)
+
+        #expect(handler.callCount == 1)
+    }
+
+    @Test("Guarded Away mode suppresses ordinary shortcuts")
+    func guardedAwaySuppressesOrdinaryShortcuts() {
+        let popup = RecordingPopupController()
+        let handler = RecordingAwayShortcutHandler()
+        handler.blocksOrdinaryShortcuts = true
+        let registry = makeRegistry(popupController: popup, awayHandler: handler)
+
+        registry.dispatch(.togglePopup)
+        registry.dispatch(.toggleAwayMode)
+
+        #expect(popup.toggleCount == 0)
+        #expect(handler.callCount == 1)
+    }
+
     @Test("dispatch(.targetAppVolumeUp) raises volume on the matched app")
     func dispatchFrontmostVolumeUpHappyPath() {
         let app = makeAudioApp(id: 1, bundleID: "com.test.app")
@@ -247,12 +271,14 @@ struct ShortcutsRegistryTests {
         #expect(ShortcutAction.targetAppVolumeDown.supportsRepeat == true)
         #expect(ShortcutAction.targetAppMuteToggle.supportsRepeat == false)
         #expect(ShortcutAction.togglePopup.supportsRepeat == false)
+        #expect(ShortcutAction.toggleAwayMode.supportsRepeat == false)
     }
 
     @Test("name(for: .togglePopup) is the stable persistence identifier")
     func nameStable() {
         let registry = makeRegistry()
         #expect(registry.name(for: .togglePopup).rawValue == "toggle-popup")
+        #expect(registry.name(for: .toggleAwayMode).rawValue == "toggle-away-mode")
         #expect(registry.name(for: .targetAppVolumeUp).rawValue == "frontmost-app-volume-up")
         #expect(registry.name(for: .targetAppVolumeDown).rawValue == "frontmost-app-volume-down")
         #expect(registry.name(for: .targetAppMuteToggle).rawValue == "frontmost-app-mute-toggle")
@@ -485,7 +511,8 @@ struct ShortcutsRegistryTests {
         resolver: (any TargetAppResolving)? = nil,
         audioEngine: (any AudioEngineDispatching)? = nil,
         audioCommands: (any AudioCommandDispatching)? = nil,
-        hud: (any PerAppHUDPresenting)? = nil
+        hud: (any PerAppHUDPresenting)? = nil,
+        awayHandler: (any AwayShortcutHandling)? = nil
     ) -> ShortcutsRegistry {
         let resolvedEngine = audioEngine ?? RecordingAudioEngine(apps: [])
         let resolvedCommands: any AudioCommandDispatching
@@ -519,7 +546,8 @@ struct ShortcutsRegistryTests {
             resolver: resolver ?? StubTargetResolver(target: nil),
             audioEngine: resolvedEngine,
             audioCommands: resolvedCommands,
-            hud: hud ?? RecordingHUDController()
+            hud: hud ?? RecordingHUDController(),
+            awayHandler: awayHandler
         )
     }
 
@@ -545,6 +573,16 @@ struct ShortcutsRegistryTests {
 final class RecordingPopupController: MenuBarPopupControlling {
     var toggleCount = 0
     func toggle() { toggleCount += 1 }
+}
+
+@MainActor
+final class RecordingAwayShortcutHandler: AwayShortcutHandling {
+    var blocksOrdinaryShortcuts = false
+    var callCount = 0
+
+    func handleAwayShortcut() {
+        callCount += 1
+    }
 }
 
 @MainActor

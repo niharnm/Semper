@@ -1,8 +1,10 @@
 import Foundation
+import Sparkle
 import Testing
 @testable import Semper
 
 @Suite("Update manager")
+@MainActor
 struct UpdateManagerTests {
     private let validPublicKey = Data(repeating: 1, count: 32).base64EncodedString()
 
@@ -66,4 +68,65 @@ struct UpdateManagerTests {
             ).isEnabled
         )
     }
+
+    @Test("installation continues immediately when relaunch is not deferred")
+    func installationIsNotDeferred() {
+        let deferral = UpdateInstallationDeferral()
+        var invocationCount = 0
+
+        #expect(!deferral.postpone { invocationCount += 1 })
+        deferral.resume()
+
+        #expect(invocationCount == 0)
+    }
+
+    @Test("deferred installation handlers resume exactly once")
+    func deferredInstallationResumesOnce() {
+        let deferral = UpdateInstallationDeferral()
+        deferral.shouldDefer = { true }
+        var firstInvocationCount = 0
+        var secondInvocationCount = 0
+
+        #expect(deferral.postpone { firstInvocationCount += 1 })
+        #expect(deferral.postpone { secondInvocationCount += 1 })
+        #expect(firstInvocationCount == 0)
+        #expect(secondInvocationCount == 0)
+
+        deferral.resume()
+        deferral.resume()
+
+        #expect(firstInvocationCount == 1)
+        #expect(secondInvocationCount == 1)
+    }
+
+    @Test("Sparkle delegate postpones relaunch while Away requests deferral")
+    func sparkleDelegateDefersRelaunch() {
+        let suiteName = "SemperUpdateManagerTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let manager = UpdateManager(
+            bundle: Bundle(for: UpdateManagerTestAnchor.self),
+            userDefaults: defaults
+        )
+        let controller = SPUStandardUpdaterController(
+            startingUpdater: false,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        manager.shouldDeferRelaunch = { true }
+        var invocationCount = 0
+
+        let postponed = manager.updater(
+            controller.updater,
+            shouldPostponeRelaunchForUpdate: SUAppcastItem.empty(),
+            untilInvokingBlock: { invocationCount += 1 }
+        )
+
+        #expect(postponed)
+        #expect(invocationCount == 0)
+        manager.resumeDeferredInstallation()
+        #expect(invocationCount == 1)
+    }
 }
+
+private final class UpdateManagerTestAnchor: NSObject {}

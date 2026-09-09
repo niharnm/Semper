@@ -9,9 +9,11 @@ struct URLHandlerTests {
     func updateURLStartsUpdateCheck() {
         let engine = URLHandlerEngineStub()
         var updateCheckCount = 0
-        let handler = URLHandler(audioEngine: engine, audioCommands: RecordingAudioCommandSink()) {
-            updateCheckCount += 1
-        }
+        let handler = URLHandler(
+            audioEngine: engine,
+            audioCommands: RecordingAudioCommandSink(),
+            checkForUpdates: { updateCheckCount += 1 }
+        )
 
         handler.handleURL(URL(string: "semper://update")!)
 
@@ -22,9 +24,11 @@ struct URLHandlerTests {
     func unknownURLDoesNotStartUpdateCheck() {
         let engine = URLHandlerEngineStub()
         var updateCheckCount = 0
-        let handler = URLHandler(audioEngine: engine, audioCommands: RecordingAudioCommandSink()) {
-            updateCheckCount += 1
-        }
+        let handler = URLHandler(
+            audioEngine: engine,
+            audioCommands: RecordingAudioCommandSink(),
+            checkForUpdates: { updateCheckCount += 1 }
+        )
 
         handler.handleURL(URL(string: "semper://unknown")!)
 
@@ -132,6 +136,62 @@ struct URLHandlerTests {
         }
 
         #expect(scenes.restoreCount == 1)
+    }
+
+    @Test("Away Mode blocks URL mutations until it ends")
+    func awayModeBlocksURLMutations() {
+        let commands = RecordingAudioCommandSink()
+        let scenes = RecordingSceneCommands()
+        let mutationPermission = URLMutationPermissionProbe(allowsMutations: false)
+        var updateCheckCount = 0
+        let handler = URLHandler(
+            audioEngine: URLHandlerEngineStub(),
+            audioCommands: commands,
+            sceneCommands: scenes,
+            allowsMutations: { mutationPermission.allowsMutations },
+            checkForUpdates: { updateCheckCount += 1 }
+        )
+        let volumeURL = URL(
+            string: "semper://set-volumes?app=com.test.inactive&volume=25"
+        )!
+
+        let blockedURLs = [
+            volumeURL,
+            URL(string: "semper://step-volume?app=com.test.inactive&direction=up")!,
+            URL(string: "semper://set-mute?app=com.test.inactive&muted=true")!,
+            URL(string: "semper://toggle-mute?app=com.test.inactive")!,
+            URL(string: "semper://set-device?app=com.test.inactive&device=output.usb")!,
+            URL(string: "semper://apply-scene?id=\(UUID().uuidString)")!,
+            URL(string: "semper://restore-scene")!,
+            URL(string: "semper://reset?app=com.test.inactive")!,
+        ]
+        for url in blockedURLs {
+            handler.handleURL(url)
+        }
+        handler.handleURL(URL(string: "semper://update")!)
+
+        #expect(commands.calls.isEmpty)
+        #expect(scenes.appliedIDs.isEmpty)
+        #expect(scenes.restoreCount == 0)
+        #expect(updateCheckCount == 1)
+
+        mutationPermission.allowsMutations = true
+        handler.handleURL(volumeURL)
+
+        #expect(commands.calls.count == 1)
+        #expect(commands.calls.first?.command == .setAppVolume(
+            target: .persisted("com.test.inactive"),
+            volume: 0.25
+        ))
+    }
+}
+
+@MainActor
+private final class URLMutationPermissionProbe {
+    var allowsMutations: Bool
+
+    init(allowsMutations: Bool) {
+        self.allowsMutations = allowsMutations
     }
 }
 

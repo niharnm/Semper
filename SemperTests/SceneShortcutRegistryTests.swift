@@ -25,6 +25,25 @@ struct SceneShortcutRegistryTests {
         clear(registry, sceneIDs: [scene.id])
     }
 
+    @Test("A scene shortcut cannot reuse the Away Mode shortcut")
+    func rejectsAwayModeConflict() {
+        let settings = makeSettings()
+        let shortcut = SceneShortcut(keyCode: 19, modifiers: 768)
+        settings.appSettings.customShortcuts[ShortcutAction.toggleAwayMode.rawValue] = ShortcutCodable(
+            keyCode: shortcut.keyCode,
+            modifiers: shortcut.modifiers
+        )
+        let scene = makeScene(name: "Studio", shortcut: shortcut)
+        let manager = SceneShortcutManagerStub(scenes: [scene])
+        let registry = SceneShortcutRegistry(settings: settings, sceneManager: manager)
+
+        registry.start()
+
+        #expect(KeyboardShortcuts.getShortcut(for: registry.name(for: scene.id)) == nil)
+        #expect(registry.conflicts[scene.id] == "Already used by Away Mode.")
+        clear(registry, sceneIDs: [scene.id])
+    }
+
     @Test("Duplicate stored scene shortcuts are all left unregistered")
     func rejectsStoredSceneConflicts() {
         let settings = makeSettings()
@@ -134,6 +153,26 @@ struct SceneShortcutRegistryTests {
         #expect(manager.reportedFailure == SceneManagerError.mutationsBlocked.localizedDescription)
     }
 
+    @Test("Away Mode suppresses scene shortcut dispatch")
+    func awayModeSuppressesSceneShortcut() async {
+        let settings = makeSettings()
+        let scene = makeScene(
+            name: "Studio",
+            shortcut: SceneShortcut(keyCode: 23, modifiers: 768)
+        )
+        let manager = SceneShortcutManagerStub(scenes: [scene])
+        let registry = SceneShortcutRegistry(
+            settings: settings,
+            sceneManager: manager,
+            allowsShortcuts: { false }
+        )
+
+        await registry.performShortcut(for: scene.id)
+
+        #expect(manager.applyCallCount == 0)
+        #expect(manager.reportedFailure == nil)
+    }
+
     private func makeSettings() -> SettingsManager {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SemperSceneShortcutTests-\(UUID().uuidString)")
@@ -171,12 +210,14 @@ private final class SceneShortcutManagerStub: SceneShortcutManaging {
     var scenes: [SemperScene]
     var applyError: (any Error)?
     private(set) var reportedFailure: String?
+    private(set) var applyCallCount = 0
 
     init(scenes: [SemperScene]) {
         self.scenes = scenes
     }
 
     func applyScene(id: UUID) async throws -> SceneCommandExecution {
+        applyCallCount += 1
         if let applyError { throw applyError }
         return SceneCommandExecution(message: "Applied")
     }
