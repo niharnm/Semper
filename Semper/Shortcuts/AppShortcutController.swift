@@ -327,6 +327,8 @@ final class AppShortcutController {
             .permissionDenied
         case .unsupportedRoute(let message):
             .unsupportedRoute(message)
+        case .sceneOperationInProgress:
+            .writeFailed
         case .writeFailed:
             .writeFailed
         }

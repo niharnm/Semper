@@ -1,0 +1,191 @@
+// SemperTests/SceneTestSupport.swift
+import Foundation
+import Synchronization
+@testable import Semper
+
+nonisolated struct SceneMockError: Error, Equatable {
+    let message: String
+}
+
+nonisolated struct SceneWriteRecord: Equatable, Sendable {
+    let control: SceneControl
+    let value: SceneValue
+}
+
+/// In-memory adapter standing in for all three domains. Records every write
+/// attempt (including failed ones) in one global log so tests can assert
+/// exact apply, rollback, and restore ordering across controls.
+nonisolated final class SceneControlAdapterMock: SceneControlAdapting {
+    private struct State {
+        var capabilities: [SceneControl: SceneControlCapability] = [:]
+        var values: [SceneControl: SceneValue] = [:]
+        var failingReadControls: Set<SceneControl> = []
+        var failingWriteControls: Set<SceneControl> = []
+        var failingWriteValues: [SceneControl: SceneValue] = [:]
+        var unavailableTargets: [SceneControl: String] = [:]
+        var prerequisites: [SceneControl: [SceneControlPrerequisite]] = [:]
+        var mutationsAfterWrite: [SceneControl: SceneWriteRecord] = [:]
+        var readsToFailAfterWrite: [SceneControl: SceneControl] = [:]
+        var stuckControls: Set<SceneControl> = []
+        var writeLog: [SceneWriteRecord] = []
+    }
+
+    private let state = Mutex(State())
+
+    func seed(_ control: SceneControl, capability: SceneControlCapability = .readWrite, value: SceneValue) {
+        state.withLock {
+            $0.capabilities[control] = capability
+            $0.values[control] = value
+        }
+    }
+
+    func setCapability(_ capability: SceneControlCapability, for control: SceneControl) {
+        state.withLock { $0.capabilities[control] = capability }
+    }
+
+    /// Simulates external change (user drift) without logging a write.
+    func setCurrentValue(_ value: SceneValue, for control: SceneControl) {
+        state.withLock { $0.values[control] = value }
+    }
+
+    func currentValue(for control: SceneControl) -> SceneValue? {
+        state.withLock { $0.values[control] }
+    }
+
+    func failReads(for control: SceneControl) {
+        state.withLock { _ = $0.failingReadControls.insert(control) }
+    }
+
+    func rejectTarget(for control: SceneControl, reason: String) {
+        state.withLock { $0.unavailableTargets[control] = reason }
+    }
+
+    func require(_ prerequisite: SceneControl, beforeWriting trigger: SceneControl) {
+        state.withLock {
+            $0.prerequisites[trigger, default: []].append(
+                SceneControlPrerequisite(control: prerequisite)
+            )
+        }
+    }
+
+    func mutate(
+        _ control: SceneControl,
+        to value: SceneValue,
+        afterWriting trigger: SceneControl
+    ) {
+        state.withLock {
+            $0.mutationsAfterWrite[trigger] = SceneWriteRecord(
+                control: control,
+                value: value
+            )
+        }
+    }
+
+    func failReadsAfterWrite(
+        for control: SceneControl,
+        afterWriting trigger: SceneControl
+    ) {
+        state.withLock {
+            $0.readsToFailAfterWrite[trigger] = control
+        }
+    }
+
+    /// Fails writes to `control`; when `value` is given, only writes of that
+    /// exact value fail, so targeted apply or rollback steps can be broken.
+    func failWrites(for control: SceneControl, matching value: SceneValue? = nil) {
+        state.withLock {
+            if let value {
+                $0.failingWriteValues[control] = value
+            } else {
+                _ = $0.failingWriteControls.insert(control)
+            }
+        }
+    }
+
+    func clearWriteFailures(for control: SceneControl) {
+        state.withLock {
+            $0.failingWriteControls.remove(control)
+            $0.failingWriteValues[control] = nil
+        }
+    }
+
+    /// Writes succeed but the stored value never changes, so readback
+    /// verification fails.
+    func stick(_ control: SceneControl) {
+        state.withLock { _ = $0.stuckControls.insert(control) }
+    }
+
+    var writeLog: [SceneWriteRecord] {
+        state.withLock { $0.writeLog }
+    }
+
+    // MARK: SceneControlAdapting
+
+    func capability(for control: SceneControl) async -> SceneControlCapability {
+        state.withLock { $0.capabilities[control] ?? .unsupported }
+    }
+
+    func preflightTarget(_ value: SceneValue, for control: SceneControl) async -> SceneTargetPreflight {
+        state.withLock {
+            $0.unavailableTargets[control].map(SceneTargetPreflight.unavailable) ?? .ready
+        }
+    }
+
+    func prerequisites(
+        of value: SceneValue,
+        for control: SceneControl
+    ) async -> [SceneControlPrerequisite] {
+        state.withLock { $0.prerequisites[control] ?? [] }
+    }
+
+    func readValue(for control: SceneControl) async throws -> SceneValue {
+        try state.withLock {
+            if $0.failingReadControls.contains(control) {
+                throw SceneMockError(message: "read failed for \(control)")
+            }
+            guard let value = $0.values[control] else {
+                throw SceneMockError(message: "no value seeded for \(control)")
+            }
+            return value
+        }
+    }
+
+    func writeValue(_ value: SceneValue, for control: SceneControl) async throws {
+        try state.withLock {
+            $0.writeLog.append(SceneWriteRecord(control: control, value: value))
+            if $0.failingWriteControls.contains(control) {
+                throw SceneMockError(message: "write failed for \(control)")
+            }
+            if let failing = $0.failingWriteValues[control], failing == value {
+                throw SceneMockError(message: "write failed for \(control)")
+            }
+            if !$0.stuckControls.contains(control) {
+                $0.values[control] = value
+            }
+            if let mutation = $0.mutationsAfterWrite.removeValue(forKey: control) {
+                $0.values[mutation.control] = mutation.value
+            }
+            if let failedRead = $0.readsToFailAfterWrite.removeValue(forKey: control) {
+                _ = $0.failingReadControls.insert(failedRead)
+            }
+        }
+    }
+}
+
+nonisolated enum SceneTestSupport {
+    /// One mock serves audio, display, and power so ordering assertions can
+    /// span domains through a single write log.
+    static func registry(_ mock: SceneControlAdapterMock) -> SceneAdapterRegistry {
+        SceneAdapterRegistry(audio: mock, display: mock, power: mock)
+    }
+
+    static func makeTemporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperSceneTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Whole-second date so ISO 8601 journal encoding round-trips exactly.
+    static let fixedDate = Date(timeIntervalSince1970: 1_757_000_000)
+}

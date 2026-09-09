@@ -12,6 +12,7 @@ private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var audioEngine: AudioEngine?
     var audioCommands: (any AudioCommandDispatching)?
+    var sceneCommands: (any SceneCommandHandling)?
     var updateManager: UpdateManager?
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let urlHandler = URLHandler(
             audioEngine: audioEngine,
             audioCommands: audioCommands,
+            sceneCommands: sceneCommands,
             checkForUpdates: updateManager.checkForUpdates
         )
 
@@ -64,6 +66,10 @@ struct SemperApp: App {
     @State private var resolver: TargetAppResolver
     @State private var experimentManager: ExperimentManager
     @State private var awakeService: AwakeService
+    @State private var awakeController: AwakeController
+    @State private var displayService: DisplayControlService
+    @State private var sceneManager: SceneManager
+    @State private var sceneShortcutRegistry: SceneShortcutRegistry
     @StateObject private var updateManager: UpdateManager
     @State private var showMenuBarExtra = true
 
@@ -87,6 +93,8 @@ struct SemperApp: App {
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,
                 shortcutsRegistry: shortcutsRegistry,
+                sceneManager: sceneManager,
+                sceneShortcutRegistry: sceneShortcutRegistry,
                 updateManager: updateManager
             )
         }
@@ -115,11 +123,16 @@ struct SemperApp: App {
             hudController: hudController,
             mediaKeyMonitor: mediaKeyMonitor,
             experimentManager: experimentManager,
-            awakeService: awakeService
+            awakeService: awakeService,
+            sceneManager: sceneManager,
+            awakeController: awakeController,
+            displayService: displayService
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
             shortcutsRegistry.start()
+            sceneShortcutRegistry.start()
+            await sceneManager.prepare()
         }
     }
 
@@ -173,6 +186,30 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
+        let awakeController = AwakeController()
+        #if !APP_STORE
+        let displayService = DisplayControlService(ddcController: engine.ddcController)
+        #else
+        let displayService = DisplayControlService()
+        #endif
+        let sceneManager = SceneManager(
+            engine: engine,
+            commands: commandDispatcher,
+            awake: awakeController,
+            displays: displayService
+        )
+        let sceneShortcutRegistry = SceneShortcutRegistry(
+            settings: settings,
+            sceneManager: sceneManager
+        )
+        sceneManager.onScenesChanged = { [weak sceneShortcutRegistry] in
+            sceneShortcutRegistry?.sync()
+        }
+        _awakeController = State(initialValue: awakeController)
+        _displayService = State(initialValue: displayService)
+        _sceneManager = State(initialValue: sceneManager)
+        _sceneShortcutRegistry = State(initialValue: sceneShortcutRegistry)
+        SemperSceneAppIntentRuntime.install(sceneManager)
         let callMode = CallModeCoordinator(
             settings: settings,
             overlayStore: engine.modeOverlayStore,
@@ -362,6 +399,9 @@ struct SemperApp: App {
             audioCommands: commandDispatcher,
             hud: hud
         )
+        registry.onShortcutsChanged = { [weak sceneShortcutRegistry] in
+            sceneShortcutRegistry?.sync()
+        }
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
@@ -369,6 +409,7 @@ struct SemperApp: App {
         // Pass URL action dependencies to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
+        _appDelegate.wrappedValue.sceneCommands = sceneManager
         _appDelegate.wrappedValue.updateManager = updater
 
         // DeviceVolumeMonitor is now created and started inside AudioEngine
@@ -390,7 +431,7 @@ struct SemperApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake] _ in
+        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake, awakeController] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
@@ -398,6 +439,7 @@ struct SemperApp: App {
                 hud.shutdown()
                 callMode.shutdown()
                 bluetoothHDGuard.shutdown()
+                awakeController.stop()
                 awake.shutdown()
                 engine.shutdown()
                 settings.flushSync()

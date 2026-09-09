@@ -1,0 +1,22 @@
+{
+  "scenes" : [
+    {
+      "actions" : [
+        {
+          "control" : {
+            "awakeMode" : {}
+          },
+          "importance" : "required",
+          "target" : {
+            "awake" : {
+              "_0" : "system"
+            }
+          }
+        }
+      ],
+      "id" : "7E537460-65C7-44EF-B8F1-C80EC090EFD7",
+      "name" : "Fixture Desk"
+    }
+  ],
+  "version" : 1
+}

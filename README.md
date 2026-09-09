@@ -11,7 +11,7 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake prevents automatic idle sleep for a chosen duration or until you turn it off.
+Native macOS utilities in one menu bar app. Sound provides independent app volume, routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake prevents automatic idle sleep for a chosen duration. External Displays adds verified brightness and contrast controls, while Scenes group reversible settings.
 
 [semper.systems](https://www.semper.systems/)
 
@@ -60,6 +60,8 @@ not download a Semper DMG from an unofficial source.
 - **Verified Per-Output Gain & Peak Limiting**: Above-unity software master gain is offered only after Semper confirms an active single-output processing route, and its displayed range matches the enforced output limit (up to 300%).
 - **AutoEQ Engine**: 10-band parametric EQ supporting AutoEQ headphone profiles and custom user presets.
 - **Ramped Mono Audio**: Combines left and right channels for managed apps without abrupt signal changes, while retaining output balance control.
+- **Transactional Scenes**: Saves audio, Awake, and supported external display settings together, verifies each change, and keeps a restore point that respects later user changes.
+- **External Display Controls**: Reads and sets brightness and contrast on uniquely identified DDC-compatible displays outside App Store builds.
 - **Liquid Glass Interface**: High-vibrancy macOS design system with dynamic Tahoe-style HUDs, balance controls, and menu bar interaction.
 
 ## Requirements

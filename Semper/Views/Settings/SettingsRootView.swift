@@ -14,10 +14,12 @@ struct SettingsRootView: View {
     @Bindable var mediaKeyStatus: MediaKeyStatus
     let mediaKeyMonitor: MediaKeyMonitor
     let shortcutsRegistry: ShortcutsRegistry
+    @Bindable var sceneManager: SceneManager
+    @Bindable var sceneShortcutRegistry: SceneShortcutRegistry
     @ObservedObject var updateManager: UpdateManager
 
     enum Section: String, Hashable, CaseIterable, Identifiable {
-        case general, audio, shortcuts, updates, about
+        case general, audio, scenes, shortcuts, updates, about
 
         var id: Self { self }
 
@@ -25,6 +27,7 @@ struct SettingsRootView: View {
             switch self {
             case .general: "General"
             case .audio: "Audio"
+            case .scenes: "Scenes"
             case .shortcuts: "Shortcuts"
             case .updates: "Updates"
             case .about: "About"
@@ -35,6 +38,7 @@ struct SettingsRootView: View {
             switch self {
             case .general: "Choose how Semper starts, looks, and lives in your menu bar"
             case .audio: "Volume, processing, and device behavior"
+            case .scenes: "Save and recall audio, display, and Awake settings"
             case .shortcuts: "Media keys, HUD, and global hotkeys"
             case .updates: "Version and automatic update settings"
             case .about: "Version, links, and project information"
@@ -45,6 +49,7 @@ struct SettingsRootView: View {
             switch self {
             case .general: "gearshape"
             case .audio: "speaker.wave.2"
+            case .scenes: "circle.grid.2x2"
             case .shortcuts: "command"
             case .updates: "arrow.triangle.2.circlepath"
             case .about: "info.circle"
@@ -200,6 +205,11 @@ struct SettingsRootView: View {
                 callMode: callMode,
                 bluetoothHDGuard: bluetoothHDGuard,
                 deviceVolumeMonitor: deviceVolumeMonitor
+            )
+        case .scenes:
+            ScenesTab(
+                sceneManager: sceneManager,
+                shortcutRegistry: sceneShortcutRegistry
             )
         case .shortcuts:
             ShortcutsTab(

@@ -12,6 +12,8 @@ protocol DeviceVolumeProviding: AnyObject {
     var defaultInputDeviceID: AudioDeviceID { get }
     var defaultDeviceUID: String? { get }
     var defaultInputDeviceUID: String? { get }
+    var systemDeviceUID: String? { get }
+    var isSystemFollowingDefault: Bool { get }
     var volumes: [AudioDeviceID: Float] { get }
     var muteStates: [AudioDeviceID: Bool] { get }
     var inputVolumes: [AudioDeviceID: Float] { get }
@@ -67,6 +69,8 @@ protocol DeviceVolumeProviding: AnyObject {
 
 extension DeviceVolumeProviding {
     var alertVolume: Float { 1 }
+    var systemDeviceUID: String? { nil }
+    var isSystemFollowingDefault: Bool { false }
 
     func setAlertVolume(_ volume: Float) {}
 
