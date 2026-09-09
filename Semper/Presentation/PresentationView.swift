@@ -28,7 +28,15 @@ struct PresentationView: View {
                         .textSelection(.enabled)
                 }
                 if controller.isBusy {
-                    HStack { ProgressView().controlSize(.small); Text("Finishing the current operation…") }
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Finishing the current operation…")
+                        if controller.canCancelOperation {
+                            Button("Cancel Presentation") { run { try await controller.stop() } }
+                                .keyboardShortcut(.cancelAction)
+                                .help("Cancel preparation or startup and restore any applied changes.")
+                        }
+                    }
                 }
                 if controller.reservation == nil {
                     if runtime.scenes?.hasPendingRestore == true {
@@ -304,6 +312,7 @@ struct PresentationView: View {
     private func run(_ action: @escaping @MainActor () async throws -> Void) {
         Task { @MainActor in
             do { errorMessage = nil; try await action() }
+            catch is CancellationError { errorMessage = nil }
             catch { errorMessage = error.localizedDescription }
         }
     }

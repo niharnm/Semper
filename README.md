@@ -11,7 +11,9 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake requests that macOS prevent automatic idle sleep for a chosen duration. Away covers each display with a customizable privacy curtain and requires Mac authentication or a Semper PIN to exit. External Displays provides supported brightness, contrast, volume, and input controls, while Scenes group reversible settings.
+Control windows, files, displays, power, and sound from one native macOS menu bar app. Add the utilities you need, use them independently, or combine settings with Scenes and Presentation. Away provides an authenticated privacy curtain.
+
+The current download, v1.0.0, contains Sound. The other modules are integrated in this repository and are in development toward the next release. The [product status guide](guide/product-status.md) records each module's state.
 
 [semper.systems](https://www.semper.systems/)
 
@@ -33,6 +35,10 @@ Semper is an open-source project founded and led by [**Nihar Manchikakapudi**](h
 
 Open the disk image and drag **Semper** into **Applications**. Requires
 macOS 15.4 or later.
+
+The current release is v1.0.0, published 2026-08-26, and contains the Sound
+utility. The other modules described above are not in this download; building
+from source runs current development code.
 
 With [Homebrew](https://brew.sh):
 
@@ -115,6 +121,10 @@ in your keychain so macOS can recognize later source updates as the same app.
 
 ## Documentation & Guides
 
+- [Product Status](guide/product-status.md)
+- [Module Shell](guide/module-shell.md)
+- [Direct Utilities: Workspace Restore, File Shelf, Safe Eject](guide/direct-utilities.md)
+- [Awake Sessions](guide/awake-sessions.md)
 - [URL Schemes](guide/url-schemes.md)
 - [App Shortcuts](guide/app-shortcuts.md)
 - [Experiments](guide/experiments.md)

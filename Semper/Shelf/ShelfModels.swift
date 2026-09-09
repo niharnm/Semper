@@ -57,9 +57,9 @@ nonisolated enum ShelfFileState: Equatable, Sendable {
     var message: String {
         switch self {
         case .available(let directory): directory ? "Folder reference" : "File reference"
-        case .missing: "Original file is missing. Locate it in Finder and drop it again."
+        case .missing: "Original file is missing. Locate it in Finder and add it again."
         case .cloudOnly: "Download this item in Finder, then refresh the shelf."
-        case .inaccessible: "File access is unavailable. Drop the item again to grant access."
+        case .inaccessible: "File access is unavailable. Choose or drop the item again to grant access."
         }
     }
     var isAvailable: Bool {
@@ -79,7 +79,7 @@ nonisolated enum ShelfFailure: Error, Equatable, LocalizedError, Sendable {
         case .unsupported: "This drop has no supported file, image, link, or plain-text representation."
         case .missing: "The original file is missing."
         case .cloudOnly: "Download this item in Finder before using it."
-        case .inaccessible: "The item cannot be read. Check access in Finder and drop it again."
+        case .inaccessible: "The item cannot be read. Check access in Finder, then choose or drop it again."
         case .invalidStore: "Saved shelf data could not be read. It has been left untouched."
         case .storeVersion: "This saved shelf uses a newer format. It has been left untouched."
         case .storeWrite: "The shelf could not save its local data."
