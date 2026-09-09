@@ -30,9 +30,9 @@ enum WorkspaceModuleMetadata {
     static let permissionReason =
         "Accessibility is used only after an invoked window action to read, move, and resize chosen windows."
     static let backgroundWork =
-        "No monitoring or automatic rearrangement. Window operations run only when invoked. Pausing cancels and drains current work."
+        "Optional display-change notifications while running, off by default. Window operations run only when invoked. Pausing removes observation and drains current work."
     static let localDataPolicy =
-        "Named arrangements and display-relative slots are saved locally until deleted. No window titles are collected. Live window bindings and undo records last for the current session."
+        "Named arrangements, display-relative slots, and the display-prompt preference are saved locally until deleted. No window titles are collected. Live window bindings, notices, and undo records last for the current session."
     static let dependencies: [String] = []
     static let conflicts: [String] = []
 }

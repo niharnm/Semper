@@ -17,6 +17,8 @@ final class WorkspaceService {
     private(set) var results: [WorkspaceWindowResult] = []
     private(set) var errorMessage: String?
     private(set) var canSave = false
+    private(set) var topologyPromptsEnabled = false
+    private(set) var isUpdatingTopologyPreference = false
     private(set) var undoEntries: [WorkspaceUndoEntry] = []
     var selectedApplicationIDs: Set<String> = []
     private var arrangementSelection: UUID?
@@ -26,6 +28,7 @@ final class WorkspaceService {
             guard presentationReservation == nil else { return }
             if arrangementSelection != newValue {
                 arrangementSelection = newValue
+                pendingTopologyNotice = nil
                 preview = []
                 bindings = [:]
                 displayMappings = [:]
@@ -38,6 +41,13 @@ final class WorkspaceService {
     private var previewDisplays: [WorkspaceDisplay] = []
     private let backend: any WorkspaceWindowBackend
     private let store: WorkspaceStore
+    private let topologyObserver: any WorkspaceTopologyObserving
+    private var pendingTopologyNotice: WorkspaceTopologyNotice?
+    private var topologyBaseline: [WorkspaceDisplay]?
+    private var topologyObservationGeneration = UUID()
+    private var isObservingTopology = false
+    private var topologyPreferenceTask: Task<Void, Never>?
+    private var isResettingSavedData = false
     private var operation: Task<Void, Never>?
     private var prompted = false
     private var isStopping = false
@@ -56,12 +66,16 @@ final class WorkspaceService {
 
     init(
         backend: any WorkspaceWindowBackend, store: WorkspaceStore,
-        mutationAdmission: MutationAdmissionGate? = nil
+        mutationAdmission: MutationAdmissionGate? = nil,
+        topologyObserver: (any WorkspaceTopologyObserving)? = nil
     ) {
         self.backend = backend
         self.store = store
+        self.topologyObserver = topologyObserver ?? WorkspaceTopologyObserver()
         self.mutationAdmission = mutationAdmission
     }
+
+    isolated deinit { topologyObserver.stop() }
 
     convenience init(mutationAdmission: MutationAdmissionGate? = nil) {
         let directory = URL.applicationSupportDirectory.appending(path: "Semper/Workspace", directoryHint: .isDirectory)
@@ -75,6 +89,94 @@ final class WorkspaceService {
     var canRestore: Bool { preview.contains(where: \.canRestore) && isRunning && !isBusy }
     var canUndo: Bool { !undoEntries.isEmpty && isRunning && !isBusy }
 
+    var topologyNotice: WorkspaceTopologyNotice? {
+        guard isRunning, topologyPromptsEnabled, !isBusy, !isStopping, !isShuttingDown,
+            presentationReservation == nil, mutationAdmission?.activeSharedPermitCount ?? 0 == 0,
+            mutationAdmission?.activeExclusiveOwner == nil,
+            let notice = pendingTopologyNotice, notice.arrangementID == selectedArrangement?.id
+        else { return nil }
+        return notice
+    }
+
+    func setTopologyPromptsEnabled(_ enabled: Bool) async {
+        guard !isUpdatingTopologyPreference, !isResettingSavedData, !isStopping, !isShuttingDown else { return }
+        isUpdatingTopologyPreference = true
+        if !enabled {
+            topologyPromptsEnabled = false
+            stopTopologyObservation()
+        }
+        let task = Task { @MainActor in
+            defer {
+                self.isUpdatingTopologyPreference = false
+                self.topologyPreferenceTask = nil
+            }
+            do {
+                try await self.store.saveTopologyPromptsEnabled(enabled)
+                self.topologyPromptsEnabled = enabled
+                self.startTopologyObservationIfNeeded()
+            } catch {
+                let reason = self.message(for: error)
+                self.errorMessage =
+                    enabled
+                    ? reason
+                    : "Prompts are off for this active session. The saved setting could not be changed; "
+                        + "starting Workspace again may enable prompts. " + reason
+            }
+        }
+        topologyPreferenceTask = task
+        await task.value
+    }
+
+    func dismissTopologyNotice(_ id: UUID) {
+        if pendingTopologyNotice?.id == id { pendingTopologyNotice = nil }
+    }
+
+    func previewTopologyNotice(_ id: UUID) async {
+        guard let notice = topologyNotice, notice.id == id else { return }
+        await makePreview()
+        if pendingTopologyNotice?.id == id, previewSourceArrangementID == notice.arrangementID, !preview.isEmpty {
+            pendingTopologyNotice = nil
+        }
+    }
+
+    private func startTopologyObservationIfNeeded() {
+        guard isRunning, topologyPromptsEnabled, !isStopping, !isShuttingDown, !isResettingSavedData,
+            !isObservingTopology
+        else { return }
+        let generation = UUID()
+        topologyObservationGeneration = generation
+        isObservingTopology = true
+        let baseline = topologyObserver.start { [weak self] displays in
+            guard let self, self.topologyObservationGeneration == generation, self.isObservingTopology,
+                self.isRunning, self.topologyPromptsEnabled
+            else { return }
+            let snapshot = self.topologyIdentity(displays)
+            guard snapshot != self.topologyBaseline else { return }
+            self.topologyBaseline = snapshot
+            guard let arrangement = self.selectedArrangement else {
+                self.pendingTopologyNotice = nil
+                return
+            }
+            self.pendingTopologyNotice = WorkspaceTopologyNotice(
+                id: UUID(), arrangementID: arrangement.id, arrangementName: arrangement.name)
+        }
+        topologyBaseline = topologyIdentity(baseline)
+    }
+
+    private func stopTopologyObservation() {
+        topologyObservationGeneration = UUID()
+        if isObservingTopology { topologyObserver.stop() }
+        isObservingTopology = false
+        topologyBaseline = nil
+        pendingTopologyNotice = nil
+    }
+
+    private func topologyIdentity(_ displays: [WorkspaceDisplay]) -> [WorkspaceDisplay] {
+        displays.map {
+            WorkspaceDisplay(id: $0.id, name: "", visibleFrame: $0.visibleFrame, fullScreenFrame: $0.fullScreenFrame)
+        }.sorted { $0.id < $1.id }
+    }
+
     func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
         guard !isRunning, operation == nil, presentationReservation == nil,
             mutationAdmission == nil || mutationAdmission === gate
@@ -84,8 +186,16 @@ final class WorkspaceService {
 
     func start() async {
         guard !isRunning, !isStopping, !isShuttingDown, operation == nil else { return }
+        guard !isUpdatingTopologyPreference else { return }
         isRunning = true
+        isUpdatingTopologyPreference = true
         await perform {
+            defer { self.isUpdatingTopologyPreference = false }
+            self.topologyPromptsEnabled = false
+            do { self.topologyPromptsEnabled = try await self.store.loadTopologyPromptsEnabled() } catch {
+                self.errorMessage = self.message(for: error)
+            }
+            try Task.checkCancellation()
             self.canSave = false
             let loaded = try await self.store.load()
             try Task.checkCancellation()
@@ -93,6 +203,8 @@ final class WorkspaceService {
             self.selectedArrangementID = loaded.first?.id
             self.canSave = true
             self.applications = await self.backend.applications()
+            try Task.checkCancellation()
+            self.startTopologyObservationIfNeeded()
         }
     }
 
@@ -106,12 +218,15 @@ final class WorkspaceService {
             return
         }
         isStopping = true
+        stopTopologyObservation()
         planGenerationID = UUID()
         isRunning = false
         let pending = operation
+        let preference = topologyPreferenceTask
         pending?.cancel()
         let task = Task { @MainActor in
             await pending?.value
+            await preference?.value
             self.operation = nil
             self.managedOperationID = nil
             self.isBusy = false
@@ -126,7 +241,8 @@ final class WorkspaceService {
 
     func shutdown() async {
         guard presentationReservation == nil else {
-            errorMessage = "Presentation still owns this Workspace session. Finish its recovery before removing Workspace."
+            errorMessage =
+                "Presentation still owns this Workspace session. Finish its recovery before removing Workspace."
             return
         }
         if let shutdownTask {
@@ -134,6 +250,7 @@ final class WorkspaceService {
             return
         }
         isShuttingDown = true
+        stopTopologyObservation()
         let task = Task { @MainActor in
             await self.pause()
             await self.backend.shutdown()
@@ -279,7 +396,16 @@ final class WorkspaceService {
     }
 
     func resetSavedData() async {
+        guard !isUpdatingTopologyPreference, !isResettingSavedData else {
+            errorMessage = "Wait for the display prompt preference or saved-data reset to finish, then try again."
+            return
+        }
+        isResettingSavedData = true
+        defer { isResettingSavedData = false }
         await perform {
+            self.topologyPromptsEnabled = false
+            self.stopTopologyObservation()
+            try await self.store.resetTopologyPreference()
             try await self.store.save([])
             self.arrangements = []
             self.selectedArrangementID = nil
@@ -471,7 +597,7 @@ final class WorkspaceService {
     }
 
     func releasePresentationReservation(_ token: UUID, keepingCurrent: Bool = false) throws {
-        guard presentationReservation == token, (!reservedRecoveryPending || keepingCurrent), operation == nil else {
+        guard presentationReservation == token, !reservedRecoveryPending || keepingCurrent, operation == nil else {
             throw WorkspacePlanError.busy
         }
         presentationReservation = nil
@@ -561,7 +687,8 @@ final class WorkspaceService {
             WorkspaceStepReceipt(step: $0.step, outcome: .notAttempted, observation: nil, recovery: $0.recovery)
         }
         if ownerToken != nil, presentationReservation == ownerToken, reservedReceiptID != original.operationID {
-            return receipt(planID: original.planID, reversing: original.operationID, steps: initial, issue: .invalidPlan)
+            return receipt(
+                planID: original.planID, reversing: original.operationID, steps: initial, issue: .invalidPlan)
         }
         guard original.ownerID == receiptOwnerID, initial.count <= 200,
             Set(initial.map(\.slotID)).count == initial.count
@@ -739,8 +866,9 @@ final class WorkspaceService {
             ownerToken == nil || reservedPlanID == planID
         else { return receipt(planID: planID, reversing: reversing, steps: initial, issue: .busy) }
         let permit: MutationAdmissionPermit?
-        do { permit = try mutationAdmission?.acquire(owner: .manual, mode: .shared) }
-        catch { return receipt(planID: planID, reversing: reversing, steps: initial, issue: .mutationsBlocked) }
+        do { permit = try mutationAdmission?.acquire(owner: .manual, mode: .shared) } catch {
+            return receipt(planID: planID, reversing: reversing, steps: initial, issue: .mutationsBlocked)
+        }
         defer { if let permit { mutationAdmission?.release(permit) } }
         if Task.isCancelled { return receipt(planID: planID, reversing: reversing, steps: initial, cancelled: true) }
         guard isRunning, !isStopping, !isShuttingDown else {
@@ -797,8 +925,7 @@ final class WorkspaceService {
             return
         }
         let permit: MutationAdmissionPermit?
-        do { permit = mutatesWindows ? try mutationAdmission?.acquire(owner: .manual, mode: .shared) : nil }
-        catch {
+        do { permit = mutatesWindows ? try mutationAdmission?.acquire(owner: .manual, mode: .shared) : nil } catch {
             errorMessage = "End Away Mode before moving windows."
             return
         }

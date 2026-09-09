@@ -53,6 +53,38 @@ struct WorkspaceView: View {
                         Button("Cancel", action: service.cancel)
                     }
                 }
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(
+                        "Prompt after displays change",
+                        isOn: Binding(
+                            get: { service.topologyPromptsEnabled },
+                            set: { enabled in Task { await service.setTopologyPromptsEnabled(enabled) } }
+                        )
+                    )
+                    .disabled(service.isUpdatingTopologyPreference)
+                    Text(
+                        "While Workspace is running, display changes can offer a fresh preview of the selected arrangement. Windows move only when you choose Restore."
+                    )
+                    .font(.caption).foregroundStyle(.secondary)
+                    if let notice = service.topologyNotice {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Displays changed", systemImage: "display.2").font(.headline)
+                            Text(
+                                "Preview \(notice.arrangementName) against the current displays before restoring any windows."
+                            )
+                            .font(.callout)
+                            HStack {
+                                Button("Preview Arrangement") {
+                                    Task { await service.previewTopologyNotice(notice.id) }
+                                }
+                                Button("Dismiss") { service.dismissTopologyNotice(notice.id) }
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
                 captureSection.disabled(!service.isRunning || service.isBusy || !service.canSave)
                 Divider()
                 savedSection.disabled(!service.isRunning || service.isBusy)

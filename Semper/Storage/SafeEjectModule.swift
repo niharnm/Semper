@@ -2,6 +2,14 @@ import Foundation
 
 enum SafeEjectCommand: String, Sendable, CaseIterable {
     case open = "storage.open"
+    case ejectAllEligible = "storage.ejectAllEligible"
+
+    var title: String {
+        switch self {
+        case .open: "Open Safe Eject"
+        case .ejectAllEligible: "Review all eligible volumes"
+        }
+    }
 }
 
 struct SafeEjectModuleDescriptor: Sendable {
@@ -20,18 +28,20 @@ struct SafeEjectModuleDescriptor: Sendable {
 enum SafeEjectModule {
     static let descriptor = SafeEjectModuleDescriptor(
         id: "storage", name: "Safe Eject",
-        purpose: "Eject selected external storage and check the observed result.",
-        symbol: "eject.circle", commands: [.open], surfaces: ["detail"], permissions: [],
+        purpose: "Review external storage to eject and check each observed result.",
+        symbol: "eject.circle", commands: SafeEjectCommand.allCases, surfaces: ["detail"], permissions: [],
         backgroundWork: "Mount, unmount, rename, sleep and wake notifications while running. No polling.",
         localDataPolicy:
-            "Up to 20 results in session memory. No persistent storage or diagnostics containing names or paths.",
+            "Up to 20 recent results and one batch report in session memory. No persistent storage or diagnostics containing names or paths.",
         settingsSchemaVersion: 1
     )
 
     @MainActor
-    static func handle(_ command: SafeEjectCommand, openDetail: () -> Void) {
+    static func handle(_ command: SafeEjectCommand, service: SafeEjectService, openDetail: () -> Void) throws {
+        defer { openDetail() }
         switch command {
-        case .open: openDetail()
+        case .open: break
+        case .ejectAllEligible: _ = try service.prepareBatch().get()
         }
     }
 }
