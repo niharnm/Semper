@@ -299,6 +299,13 @@ struct UtilityShellView: View {
                 } else {
                     startModule(id)
                 }
+            case .windowLayout:
+                if let service = runtime.windowLayout {
+                    WindowLayoutView(service: service, commands: runtime.commands)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
             case .shelf:
                 if let shelf = runtime.shelf {
                     ShelfDetailView(service: shelf)
@@ -410,6 +417,17 @@ struct UtilitySettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if let conflict = runtime.awayShortcutConflict {
                     Text(conflict).font(.caption).foregroundStyle(.orange)
+                }
+                Text("Window Layout").font(.headline)
+                Text("Optional shortcuts arrange the frontmost app window. Add and resume Window Layout before using them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(ShortcutAction.windowLayoutActions, id: \.self) { action in
+                    KeyboardShortcuts.Recorder(
+                        action.displayName, name: action.keyboardShortcutName,
+                        onChange: { runtime.recordWindowLayoutShortcut($0, action: action) })
+                    if let conflict = runtime.windowLayoutShortcutConflicts[action] {
+                        Text(conflict).font(.caption).foregroundStyle(.orange)
+                    }
                 }
                 if let sound = runtime.usableSound {
                     ShortcutsTab(

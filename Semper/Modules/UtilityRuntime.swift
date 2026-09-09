@@ -32,6 +32,8 @@ final class UtilityRuntime {
     private(set) var workspace: WorkspaceService?
     private(set) var workspaceWorkflowRequest: WorkspaceWorkflowRequest?
     private(set) var workspaceShortcutConflict: String?
+    private(set) var windowLayout: WindowLayoutService?
+    private(set) var windowLayoutShortcutConflicts: [ShortcutAction: String] = [:]
     private(set) var shelf: ShelfService?
     private(set) var storage: SafeEjectService?
     private(set) var scenes: SceneManager?
@@ -57,6 +59,7 @@ final class UtilityRuntime {
         @MainActor (AudioEngine.SharedDDCController?, MutationAdmissionGate) throws -> DisplayControlService
     @ObservationIgnored private let awakeFactory: @MainActor () throws -> AwakeService
     @ObservationIgnored private let workspaceFactory: @MainActor () throws -> WorkspaceService
+    @ObservationIgnored private let windowLayoutFactory: @MainActor (MutationAdmissionGate) throws -> WindowLayoutService
     @ObservationIgnored private let shelfFactory: @MainActor () throws -> ShelfService
     @ObservationIgnored private let storageFactory: @MainActor () throws -> SafeEjectService
     @ObservationIgnored private let sceneLibraryStore: (any SceneLibraryStoring)?
@@ -145,6 +148,9 @@ final class UtilityRuntime {
         soundFactory: (@MainActor (SettingsManager, AudioEngine.SharedDDCController?) throws -> SoundRuntime)? = nil,
         awakeFactory: (@MainActor () throws -> AwakeService)? = nil,
         workspaceFactory: @escaping @MainActor () throws -> WorkspaceService = { WorkspaceService() },
+        windowLayoutFactory: @escaping @MainActor (MutationAdmissionGate) throws -> WindowLayoutService = {
+            WindowLayoutService(mutationAdmission: $0)
+        },
         shelfFactory: @escaping @MainActor () throws -> ShelfService = { ShelfService() },
         storageFactory: @escaping @MainActor () throws -> SafeEjectService = { SafeEjectService() },
         sceneLibraryStore: (any SceneLibraryStoring)? = nil,
@@ -168,6 +174,7 @@ final class UtilityRuntime {
             #endif
         }
         self.workspaceFactory = workspaceFactory
+        self.windowLayoutFactory = windowLayoutFactory
         self.shelfFactory = shelfFactory
         self.storageFactory = storageFactory
         self.sceneLibraryStore = sceneLibraryStore
@@ -231,6 +238,11 @@ final class UtilityRuntime {
         recordShellShortcut(shortcut, action: .toggleAwayMode)
     }
 
+    func recordWindowLayoutShortcut(_ shortcut: KeyboardShortcuts.Shortcut?, action: ShortcutAction) {
+        guard action.windowLayoutAction != nil else { return }
+        recordShellShortcut(shortcut, action: action)
+    }
+
     private func recordShellShortcut(_ shortcut: KeyboardShortcuts.Shortcut?, action: ShortcutAction) {
         guard !shutdownRequested else { return }
         let recorded = shortcut.map(ShortcutCodable.from)
@@ -251,8 +263,7 @@ final class UtilityRuntime {
         let candidates =
             recording
             ? ShortcutAction.allCases
-            : ShortcutAction.soundActions
-                + (action == .toggleAwayMode ? [.restoreWorkspace] : [])
+            : ShortcutAction.soundActions + ShortcutAction.shellActions.prefix { $0 != action }
         if let owner = candidates.first(where: { $0 != action && $0.assignedShortcut(in: settings) == shortcut }) {
             return "Already used by \(owner.displayName)."
         }
@@ -267,11 +278,14 @@ final class UtilityRuntime {
     }
 
     private func setShellShortcutConflict(_ conflict: String?, action: ShortcutAction) {
-        if action == .restoreWorkspace { workspaceShortcutConflict = conflict } else { awayShortcutConflict = conflict }
+        if action == .restoreWorkspace { workspaceShortcutConflict = conflict }
+        else if action == .toggleAwayMode { awayShortcutConflict = conflict }
+        else if action.windowLayoutAction != nil { windowLayoutShortcutConflicts[action] = conflict }
     }
 
     private func shellShortcutModule(_ action: ShortcutAction) -> UtilityModuleID {
-        action == .restoreWorkspace ? .workspace : .away
+        if action.windowLayoutAction != nil { return .windowLayout }
+        return action == .restoreWorkspace ? .workspace : .away
     }
 
     private func shellShortcutAvailable(_ action: ShortcutAction) -> Bool {
@@ -362,7 +376,8 @@ final class UtilityRuntime {
             guard !Task.isCancelled, self.shellShortcutRegistrations[action] == generation,
                 self.shellShortcutAvailable(action)
             else { return .cancelled }
-            let command = action == .restoreWorkspace ? WorkspaceCommand.restore.rawValue : "away.toggle"
+            let command = action.windowLayoutAction?.rawValue
+                ?? (action == .restoreWorkspace ? WorkspaceCommand.restore.rawValue : "away.toggle")
             let result = await self.commands.execute(.init(rawValue: command))
             guard !self.shutdownRequested else { return .cancelled }
             switch result {
@@ -381,6 +396,11 @@ final class UtilityRuntime {
 
     func performAwayShortcut() async -> UtilityCommandResult {
         await performShellShortcut(.toggleAwayMode)
+    }
+
+    func performWindowLayoutShortcut(_ action: ShortcutAction) async -> UtilityCommandResult {
+        guard action.windowLayoutAction != nil else { return .cancelled }
+        return await performShellShortcut(action)
     }
 
     private func performShellShortcut(_ action: ShortcutAction) async -> UtilityCommandResult {
@@ -569,7 +589,7 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
-            if [.workspace, .away].contains(module) { syncShellShortcuts() }
+            if [.workspace, .away, .windowLayout].contains(module) { syncShellShortcuts() }
         }
         for action in ShortcutAction.shellActions where shellShortcutModule(action) == module {
             stopShellShortcut(action)
@@ -594,7 +614,7 @@ final class UtilityRuntime {
         defer {
             stoppingModules.remove(module)
             observeStatus(for: module)
-            if [.workspace, .away].contains(module) { syncShellShortcuts() }
+            if [.workspace, .away, .windowLayout].contains(module) { syncShellShortcuts() }
         }
         for action in ShortcutAction.shellActions where shellShortcutModule(action) == module {
             stopShellShortcut(action)
@@ -640,6 +660,10 @@ final class UtilityRuntime {
             let count = workspace.arrangements.count
             return "\(count) \(count == 1 ? "arrangement" : "arrangements"), "
                 + (workspace.canUndo ? "undo available" : "no restore to undo")
+        case .windowLayout:
+            guard let windowLayout else { return "Open Window Layout to arrange a window." }
+            if let message = windowLayout.message { return message }
+            return windowLayout.canRestore ? "Previous window placement available" : "Ready for a window action"
         case .shelf:
             guard let shelf else { return "Open File Shelf to collect items." }
             return "\(shelf.items.count) \(shelf.items.count == 1 ? "item" : "items") on the shelf"
@@ -898,6 +922,24 @@ final class UtilityRuntime {
                     }
                 }))
         try lifecycle.register(
+            .windowLayout,
+            binding: UtilityServiceBinding(
+                start: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    if self.windowLayout == nil {
+                        self.windowLayout = try self.windowLayoutFactory(self.mutationAdmission)
+                    }
+                    self.windowLayout?.start()
+                },
+                stop: { [weak self] reason in
+                    guard let self, let service = self.windowLayout else { return }
+                    if reason == .pause { await service.pause() }
+                    else {
+                        await service.shutdown()
+                        self.windowLayout = nil
+                    }
+                }))
+        try lifecycle.register(
             .shelf,
             binding: UtilityServiceBinding(
                 start: { [weak self] in
@@ -1047,7 +1089,7 @@ final class UtilityRuntime {
                 return sound.audioCommands.dispatch(command, context: context)
             })
         for module in registry.modules
-        where [.sound, .awake, .workspace, .scenes, .displays, .presentation, .away].contains(module.id) {
+        where [.sound, .awake, .workspace, .windowLayout, .scenes, .displays, .presentation, .away].contains(module.id) {
             actions.append(
                 UtilityActionHandler(
                     descriptor: .init(
@@ -1130,6 +1172,29 @@ final class UtilityRuntime {
                             }
                             self.message = workspace.results.map(\.message).joined(separator: "\n")
                         }
+                    }))
+        }
+        for action in WindowLayoutAction.allCases {
+            actions.append(
+                UtilityActionHandler(
+                    descriptor: .init(
+                        id: .init(rawValue: action.rawValue), module: .windowLayout, title: action.title,
+                        keywords: ["window", "layout", "arrange", "snap", "position"], symbolName: action.symbolName),
+                    disabledReason: { [weak self] in
+                        if self?.windowLayout?.isBusy == true { return "A window action is still running." }
+                        if self?.windowLayout?.requiresPlacementReview == true {
+                            return "Review the unverified window placement in Window Layout."
+                        }
+                        if action == .restore, self?.windowLayout?.canRestore != true {
+                            return "No previous window placement is available."
+                        }
+                        return nil
+                    },
+                    perform: { [weak self] in
+                        guard let self else { throw CancellationError() }
+                        try await self.start(.windowLayout)
+                        guard let service = self.windowLayout else { throw CancellationError() }
+                        try await service.perform(action)
                     }))
         }
         let shelfMetadata = ShelfModuleRegistration()
@@ -1508,6 +1573,17 @@ final class UtilityRuntime {
                     runtime = workspace.isBusy ? .active : .ready
                 }
                 return .init(runtime: runtime, permission: permission)
+            }
+        case .windowLayout:
+            guard let service = windowLayout else { return }
+            statusObserver.observe(module: module) {
+                let state: ModuleRuntimeState
+                if service.isBusy { state = .active }
+                else if service.requiresPlacementReview { state = .limited(reason: service.message ?? "Review the window placement.") }
+                else if service.permission == .denied || service.permission == .revoked {
+                    state = .limited(reason: "Accessibility access is unavailable.")
+                } else { state = .ready }
+                return .init(runtime: state, permission: service.permission)
             }
         case .shelf:
             guard let shelf else { return }

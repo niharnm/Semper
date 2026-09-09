@@ -83,6 +83,32 @@ struct MutationAdmissionGateTests {
         #expect(firstGate.activeSharedPermitCount == 0)
     }
 
+    @Test("Window actions serialize with Workspace writes while lifecycle permits remain available")
+    func windowWriteAdmission() throws {
+        let gate = MutationAdmissionGate()
+        let layout = try gate.acquire(owner: .manualWindow, mode: .shared)
+        let lifecycle = try gate.acquire(owner: .manual, mode: .shared)
+        let presentation = try gate.acquire(owner: .presentation, mode: .shared)
+        for owner in [MutationAdmissionOwner.manualWindow, .workspaceWindow] {
+            #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.manualWindow])) {
+                try gate.acquire(owner: owner, mode: .shared)
+            }
+        }
+        #expect(gate.release(layout))
+        let workspace = try gate.acquire(owner: .workspaceWindow, mode: .shared)
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.workspaceWindow])) {
+            try gate.acquire(owner: .manualWindow, mode: .shared)
+        }
+        #expect(gate.release(workspace))
+        #expect(gate.release(lifecycle))
+        #expect(gate.release(presentation))
+        let away = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        #expect(throws: MutationAdmissionError.exclusivePermitActive(owner: .awayMode)) {
+            try gate.acquire(owner: .manualWindow, mode: .shared)
+        }
+        #expect(gate.release(away))
+    }
+
     @Test("A shared permit remains held across suspension")
     func sharedPermitRemainsHeldAcrossSuspension() async throws {
         let gate = MutationAdmissionGate()

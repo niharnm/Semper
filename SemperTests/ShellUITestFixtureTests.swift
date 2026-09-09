@@ -229,6 +229,7 @@
 
         private func expectServicesAbsent(_ runtime: UtilityRuntime) {
             #expect(runtime.sound == nil && runtime.awake == nil && runtime.workspace == nil)
+            #expect(runtime.windowLayout == nil)
             #expect(runtime.shelf == nil && runtime.storage == nil && runtime.displays == nil)
             #expect(runtime.away == nil && runtime.scenes == nil && runtime.presentation == nil)
             #expect(runtime.sceneShortcuts == nil && runtime.onOpenDetail == nil)

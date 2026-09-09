@@ -8,6 +8,25 @@ import Testing
 @MainActor
 @Suite("Workspace shortcut isolation", .serialized)
 struct WorkspaceShortcutIsolationTests {
+    @Test("Window shortcuts remain shell-owned when Sound clears its shortcuts", arguments: ShortcutAction.windowLayoutActions)
+    func soundDoesNotOwnWindowLayout(_ action: ShortcutAction) throws {
+        try withSynchronousSettings { settings in
+            let chord = KeyboardShortcuts.Shortcut(.l, modifiers: [.control, .option])
+            settings.appSettings.customShortcuts[action.rawValue] = ShortcutCodable.from(chord)
+            KeyboardShortcuts.setShortcut(chord, for: action.keyboardShortcutName)
+            KeyboardShortcuts.onKeyDown(for: action.keyboardShortcutName) {}
+            defer { KeyboardShortcuts.removeHandler(for: action.keyboardShortcutName) }
+            let sound = makeRegistry(settings)
+            defer { sound.stop() }
+            sound.start()
+            #expect(!sound.dispatch(action))
+            #expect(!action.supportsRepeat)
+            sound.clearAllShortcuts()
+            #expect(settings.appSettings.customShortcuts[action.rawValue] == ShortcutCodable.from(chord))
+            #expect(KeyboardShortcuts.isEnabled(for: action.keyboardShortcutName))
+        }
+    }
+
     @Test("Sound registration and Clear All leave Workspace owned by the shell")
     func soundDoesNotOwnWorkspace() throws {
         try withSynchronousSettings { settings in
