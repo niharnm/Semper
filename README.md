@@ -11,7 +11,7 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Native, per-application audio mixing and DSP engine for macOS. Semper resides in your menu bar, providing independent volume control, per-app output routing, ISO 226 equal-loudness contour compensation, AutoEQ headphone correction, and a Liquid Glass interface.
+Native macOS utilities in one menu bar app. Sound provides independent app volume, output routing, ISO 226 equal-loudness compensation, and AutoEQ headphone correction. Awake prevents automatic idle sleep for a chosen duration or until you turn it off.
 
 [semper.systems](https://www.semper.systems/)
 
@@ -52,6 +52,8 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
+- **Modular Menu Bar Shell**: Sound and Awake share one compact switcher while keeping their runtime state independent.
+- **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and are released when the session ends or Semper quits.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
 - **ISO 226 Equal-Loudness Compensation**: Dynamic frequency contour adjustment matching human psychoacoustics at varying volume levels.
 - **Capability-Aware Audio Routing**: Per-application routing to independent output devices (e.g. video calls to AirPods, music to desktop monitors) with automatic hardware capability detection.
@@ -63,9 +65,10 @@ not download a Semper DMG from an unofficial source.
 ## Requirements
 
 - macOS 15.4 or later
-- Screen & System Audio Recording permission (required for CoreAudio process taps)
-- Microphone permission (only for input-device monitoring)
-- Accessibility permission (optional for system media-key control)
+- Starting an Awake session requires no additional macOS permission.
+- Sound requires Screen & System Audio Recording permission for CoreAudio process taps.
+- Microphone permission is used only for input-device monitoring.
+- Accessibility permission is optional for system media-key control.
 
 ## Building from Source
 

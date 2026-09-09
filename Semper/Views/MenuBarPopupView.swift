@@ -35,6 +35,10 @@ struct MenuBarPopupView: View {
     let mediaKeyMonitor: MediaKeyMonitor
     let experimentManager: ExperimentManager
 
+    let awakeService: AwakeService
+
+    @State private var selectedModule: SemperModule = SemperModule.initial
+
     /// Memoized sorted output devices - only recomputed when device list or default changes
     @State private var sortedDevices: [AudioDevice] = []
 
@@ -112,31 +116,37 @@ struct MenuBarPopupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            popupHeader
-            if audioEngine.audioProcessingState != .active {
-                AudioRecoveryStatusStrip(
-                    audioEngine: audioEngine,
-                    onResume: { dispatchAudioProcessing(.active) }
-                )
-            } else if bluetoothHDGuard.pendingPrompt != nil {
-                BluetoothHDGuardPromptStrip(guardCoordinator: bluetoothHDGuard)
-            } else if callMode.pendingPrompt != nil {
-                CallModePromptStrip(callMode: callMode)
-            } else {
-                AudioStatusStrip(store: audioActivityStore)
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    mainContent(scrollProxy: proxy)
+            moduleSwitcherBar
+            if selectedModule == .sound {
+                popupHeader
+                if audioEngine.audioProcessingState != .active {
+                    AudioRecoveryStatusStrip(
+                        audioEngine: audioEngine,
+                        onResume: { dispatchAudioProcessing(.active) }
+                    )
+                } else if bluetoothHDGuard.pendingPrompt != nil {
+                    BluetoothHDGuardPromptStrip(guardCoordinator: bluetoothHDGuard)
+                } else if callMode.pendingPrompt != nil {
+                    CallModePromptStrip(callMode: callMode)
+                } else {
+                    AudioStatusStrip(store: audioActivityStore)
                 }
-                .scrollIndicators(.never)
-                .frame(maxHeight: popupDimensions.maxContentHeight)
-                .onChange(of: selectedRow) { _, newFocus in
-                    guard let newFocus else { return }
-                    withAnimation(DesignTokens.Animation.hover) {
-                        proxy.scrollTo(newFocus, anchor: .center)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        mainContent(scrollProxy: proxy)
+                    }
+                    .scrollIndicators(.never)
+                    .frame(maxHeight: popupDimensions.maxContentHeight)
+                    .onChange(of: selectedRow) { _, newFocus in
+                        guard let newFocus else { return }
+                        withAnimation(DesignTokens.Animation.hover) {
+                            proxy.scrollTo(newFocus, anchor: .center)
+                        }
                     }
                 }
+            } else {
+                AwakeModuleView(awake: awakeService)
+                popupFooter
             }
         }
         .frame(width: popupDimensions.width)
@@ -214,6 +224,7 @@ struct MenuBarPopupView: View {
             isPopupVisible = true
             popupVisibility.isVisible = true
             audioEngine.bluetoothDeviceMonitor.refresh()
+            selectedModule = SemperModule.initial
             syncNavOrder()
             hasKeyboardEngaged = false
             selectedRow = nil
@@ -236,11 +247,19 @@ struct MenuBarPopupView: View {
             // in-popup pickers don't collapse edit mode.
             exitEditModeSaving()
         }
-        // Single focus anchor on the body root. `.onKeyPress` only fires when
-        // the modifier-owning view (or a focused descendant) has focus, so the
-        // anchor must claim it on popup open. `.focusEffectDisabled` suppresses
-        // the OS-drawn focus ring around the entire popup.
-        .focusable()
+        .onChange(of: selectedModule) { _, module in
+            hasKeyboardEngaged = false
+            selectedRow = nil
+            textEntry.buffer = nil
+            if module == .sound {
+                anchorFocused = true
+            } else {
+                anchorFocused = false
+                exitEditModeSaving()
+            }
+        }
+        // Sound keeps the popup key anchor. Awake leaves keys with its controls.
+        .focusable(selectedModule == .sound)
         .focusEffectDisabled()
         .focused($anchorFocused)
         // [.down, .repeat] is required so holding a key keeps moving the
@@ -260,6 +279,52 @@ struct MenuBarPopupView: View {
         }
     }
 
+    // MARK: - Module Switcher
+
+    private var moduleSwitcherBar: some View {
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            ModuleSwitcher(selection: $selectedModule, isAwakeActive: awakeService.isActive)
+
+            Spacer(minLength: 0)
+
+            if selectedModule == .sound, awakeService.isActive {
+                // The compact popup cannot fit the full hint next to the
+                // switcher and gear, so fall back to the bare end time
+                // rather than truncating it mid-string.
+                ViewThatFits(in: .horizontal) {
+                    Text(awakeStatusHint)
+                    Text(awakeStatusHintShort)
+                    Text("")
+                }
+                .font(DesignTokens.Typography.caption)
+                .foregroundStyle(DesignTokens.Colors.textSecondary)
+                .lineLimit(1)
+                .accessibilityLabel(awakeStatusHint)
+            }
+
+            settingsButton
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    private var awakeStatusHint: String {
+        guard let session = awakeService.session else { return "" }
+        if let endsAt = session.endsAt {
+            return "Awake until \(endsAt.formatted(date: .omitted, time: .shortened))"
+        }
+        return "Awake until turned off"
+    }
+
+    private var awakeStatusHintShort: String {
+        guard let session = awakeService.session else { return "" }
+        if let endsAt = session.endsAt {
+            return endsAt.formatted(date: .omitted, time: .shortened)
+        }
+        return "On"
+    }
+
     // MARK: - Popup Header
 
     private var popupHeader: some View {
@@ -272,7 +337,6 @@ struct MenuBarPopupView: View {
 
             audioProcessingButton
             editPriorityButton
-            settingsButton
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -484,6 +548,7 @@ struct MenuBarPopupView: View {
         }
         .buttonStyle(.plain)
         .help("Settings")
+        .accessibilityLabel("Settings")
     }
 
     /// Handles Escape key: closes EQ first, then dismisses the popup.
@@ -1586,6 +1651,7 @@ struct MenuBarPopupView: View {
     }
 
     private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        guard selectedModule == .sound else { return .ignored }
         // `.onKeyPress` also fires for focused descendants; yield while a TextField is editing so its Return commits via onSubmit instead of activating a row.
         if NSApp.keyWindow?.firstResponder is NSTextView { return .ignored }
         // Keyboard entry mode: the popup owns every key so the anchor keeps first responder.

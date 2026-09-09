@@ -63,6 +63,7 @@ struct SemperApp: App {
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var resolver: TargetAppResolver
     @State private var experimentManager: ExperimentManager
+    @State private var awakeService: AwakeService
     @StateObject private var updateManager: UpdateManager
     @State private var showMenuBarExtra = true
 
@@ -113,7 +114,8 @@ struct SemperApp: App {
             popupVisibility: popupVisibility,
             hudController: hudController,
             mediaKeyMonitor: mediaKeyMonitor,
-            experimentManager: experimentManager
+            experimentManager: experimentManager,
+            awakeService: awakeService
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
@@ -147,6 +149,8 @@ struct SemperApp: App {
         let updater = UpdateManager()
         _updateManager = StateObject(wrappedValue: updater)
         _experimentManager = State(initialValue: ExperimentManager())
+        let awake = AwakeService(backend: IOPMPowerAssertionBackend())
+        _awakeService = State(initialValue: awake)
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
         let engine = AudioEngine(
@@ -386,7 +390,7 @@ struct SemperApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator] _ in
+        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
@@ -394,6 +398,7 @@ struct SemperApp: App {
                 hud.shutdown()
                 callMode.shutdown()
                 bluetoothHDGuard.shutdown()
+                awake.shutdown()
                 engine.shutdown()
                 settings.flushSync()
             }
