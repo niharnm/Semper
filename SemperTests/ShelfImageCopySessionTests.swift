@@ -102,7 +102,8 @@ nonisolated private final class ImageSessionCopier: ShelfImageCopying, @unchecke
         writing = ImageSessionGate(held: holdWrite)
         self.failWrite = failWrite
         temporary = ShelfImageTemporaryCopy(
-            url: root.appendingPathComponent(".semper-image-copy-\(UUID()).tmp"), device: 7, inode: 11)
+            url: root.appendingPathComponent(".semper-image-copy-\(UUID()).tmp"), device: 7, inode: 11,
+            parentDevice: 7, parentInode: 13)
     }
 
     func inspect(_ source: URL, access: any ShelfFileAccess) throws -> ShelfImageCopyPlan {

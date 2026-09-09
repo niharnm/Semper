@@ -479,7 +479,11 @@ struct ShelfImageCopyTests {
         try original.write(to: temporary)
         var info = stat()
         try #require(lstat(temporary.path, &info) == 0)
-        let token = ShelfImageTemporaryCopy(url: temporary, device: info.st_dev, inode: info.st_ino)
+        var parentInfo = stat()
+        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
+        let token = ShelfImageTemporaryCopy(
+            url: temporary, device: info.st_dev, inode: info.st_ino,
+            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
         let copier = NativeShelfImageCopier()
         try FileManager.default.moveItem(at: temporary, to: retained)
         let replacement = Data("replacement file".utf8)
@@ -504,4 +508,55 @@ struct ShelfImageCopyTests {
         #expect(!FileManager.default.fileExists(atPath: temporary.path))
         try copier.removeTemporaryCopy(token)
     }
+
+    @Test(
+        "Cleanup retains a renamed or replaced parent until its original directory returns", arguments: [false, true])
+    func cleanupRetainsUnavailableParent(replaced: Bool) throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let parent = f.url("destination")
+        let moved = f.url("moved-destination")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let temporary = parent.appendingPathComponent(".semper-image-copy-\(UUID()).tmp")
+        let original = Data("owned temporary image".utf8)
+        try original.write(to: temporary)
+        var info = stat()
+        try #require(lstat(temporary.path, &info) == 0)
+        var parentInfo = stat()
+        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
+        let token = ShelfImageTemporaryCopy(
+            url: temporary, device: info.st_dev, inode: info.st_ino,
+            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
+        let copier = NativeShelfImageCopier()
+        try FileManager.default.moveItem(at: parent, to: moved)
+        if replaced { try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false) }
+        #expect(throws: ShelfImageCopyFailure.cleanupFailed(token)) { try copier.removeTemporaryCopy(token) }
+        #expect(try Data(contentsOf: moved.appendingPathComponent(temporary.lastPathComponent)) == original)
+        if replaced {
+            #expect(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty)
+            try FileManager.default.removeItem(at: parent)
+        }
+        try FileManager.default.moveItem(at: moved, to: parent)
+        try copier.removeTemporaryCopy(token)
+        #expect(!FileManager.default.fileExists(atPath: temporary.path))
+    }
+
+    @Test("Cleanup accepts a missing child in its available original parent")
+    func cleanupAcceptsMissingChild() throws {
+        let f = try Fixture()
+        defer { f.remove() }
+        let temporary = f.url(".semper-image-copy-\(UUID()).tmp")
+        try Data("owned temporary image".utf8).write(to: temporary)
+        var info = stat()
+        try #require(lstat(temporary.path, &info) == 0)
+        var parentInfo = stat()
+        try #require(stat(temporary.deletingLastPathComponent().path, &parentInfo) == 0)
+        let token = ShelfImageTemporaryCopy(
+            url: temporary, device: info.st_dev, inode: info.st_ino,
+            parentDevice: parentInfo.st_dev, parentInode: parentInfo.st_ino)
+        try FileManager.default.removeItem(at: temporary)
+        try NativeShelfImageCopier().removeTemporaryCopy(token)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).isEmpty)
+    }
+
 }

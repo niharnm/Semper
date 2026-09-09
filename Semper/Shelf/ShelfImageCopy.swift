@@ -54,6 +54,8 @@ nonisolated struct ShelfImageTemporaryCopy: Equatable, Sendable {
     let url: URL
     let device: Int32
     let inode: UInt64
+    let parentDevice: Int32
+    let parentInode: UInt64
 }
 
 nonisolated enum ShelfImageCopyFailure: Error, Equatable, LocalizedError, Sendable {
@@ -186,6 +188,10 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
         }
         guard directoryFD >= 0 else { throw ShelfImageCopyFailure.invalidDestination }
         defer { close(directoryFD) }
+        var parent = stat()
+        guard fstat(directoryFD, &parent) == 0, parent.st_mode & S_IFMT == S_IFDIR else {
+            throw ShelfImageCopyFailure.invalidDestination
+        }
         var existing = stat()
         let exists = fstatat(directoryFD, destinationName, &existing, AT_SYMLINK_NOFOLLOW)
         guard exists != 0 else { throw ShelfImageCopyFailure.destinationExists }
@@ -197,9 +203,12 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
         defer { close(descriptor) }
         var created = stat()
         guard fstat(descriptor, &created) == 0 else {
-            throw ShelfImageCopyFailure.cleanupFailed(.init(url: temporary, device: 0, inode: 0))
+            throw ShelfImageCopyFailure.cleanupFailed(
+                .init(url: temporary, device: 0, inode: 0, parentDevice: parent.st_dev, parentInode: parent.st_ino))
         }
-        let owned = ShelfImageTemporaryCopy(url: temporary, device: created.st_dev, inode: created.st_ino)
+        let owned = ShelfImageTemporaryCopy(
+            url: temporary, device: created.st_dev, inode: created.st_ino,
+            parentDevice: parent.st_dev, parentInode: parent.st_ino)
         do {
             try autoreleasepool {
                 let source = try Self.imageSource(plan.encoded)
@@ -260,21 +269,14 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
             UUID(uuidString: String(name.dropFirst(Self.temporaryPrefix.count).dropLast(Self.temporarySuffix.count)))
                 != nil
         else { throw ShelfImageCopyFailure.invalidTemporaryCopy }
-        var info = stat()
-        let result = url.withUnsafeFileSystemRepresentation { path in
+        let directoryFD = url.deletingLastPathComponent().withUnsafeFileSystemRepresentation { path in
             guard let path else { return Int32(-1) }
-            return lstat(path, &info)
+            return open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
-        if result != 0 {
-            if errno == ENOENT { return }
-            throw ShelfImageCopyFailure.cleanupFailed(temporary)
-        }
-        guard temporary.inode != 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
-            info.st_dev == temporary.device, info.st_ino == temporary.inode
-        else {
-            throw ShelfImageCopyFailure.cleanupFailed(temporary)
-        }
-        guard url.withUnsafeFileSystemRepresentation({ path in path.map { unlink($0) } ?? -1 }) == 0 else {
+        guard directoryFD >= 0 else { throw ShelfImageCopyFailure.cleanupFailed(temporary) }
+        defer { close(directoryFD) }
+        guard try Self.verifyTemporaryIdentity(temporary, directoryFD: directoryFD, name: name) else { return }
+        guard unlinkat(directoryFD, name, 0) == 0 else {
             throw ShelfImageCopyFailure.cleanupFailed(temporary)
         }
     }
@@ -283,6 +285,10 @@ nonisolated struct NativeShelfImageCopier: ShelfImageCopying {
     private static func verifyTemporaryIdentity(_ temporary: ShelfImageTemporaryCopy, directoryFD: Int32, name: String)
         throws -> Bool
     {
+        var parent = stat()
+        guard fstat(directoryFD, &parent) == 0, parent.st_mode & S_IFMT == S_IFDIR,
+            temporary.parentInode != 0, parent.st_dev == temporary.parentDevice, parent.st_ino == temporary.parentInode
+        else { throw ShelfImageCopyFailure.cleanupFailed(temporary) }
         var current = stat()
         guard fstatat(directoryFD, name, &current, AT_SYMLINK_NOFOLLOW) == 0 else {
             if errno == ENOENT { return false }
