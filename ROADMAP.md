@@ -15,14 +15,20 @@ experimental behavior.
 - Keep the website, README, Homebrew cask, and update feed tied to the same
   release artifact.
 
-### 2. Audio reliability
+### 2. Modules and utility foundation
+
+- Keep Sound and Awake independent while they share the same menu bar shell.
+- Add new utilities only when they have a clear local use case and no hidden account requirement.
+- Keep module actions testable without live audio or power-management side effects.
+
+### 3. Audio reliability
 
 - Add focused tests around tap lifecycle, crossfades, output gating, and device
   reconnect behavior.
 - Collect reproducible reports for apps with custom audio engines.
 - Preserve real-time callback safety and resource teardown order.
 
-### 3. Device compatibility
+### 4. Device compatibility
 
 - Record verified behavior for built-in, Bluetooth, USB, HDMI, DisplayPort,
   DDC, aggregate, and virtual devices.
@@ -31,14 +37,14 @@ experimental behavior.
 - Document where software volume or ignored-app behavior is the correct
   fallback.
 
-### 4. Interface and accessibility
+### 5. Interface and accessibility
 
 - Audit keyboard navigation, focus order, VoiceOver labels, contrast, reduced
   motion, and visible capability states.
 - Keep the menu-bar popup and settings behavior consistent.
 - Add tests for state transitions that do not require live audio hardware.
 
-### 5. Contributor documentation
+### 6. Contributor documentation
 
 - Keep starter issues small, testable, and unclaimed until someone begins.
 - Add architecture notes for high-risk audio paths.
@@ -60,11 +66,11 @@ discussion and include a hardware test plan.
 ## Current boundaries
 
 - Supported platform: macOS 15.4 or later.
-- Available today: source builds, unit tests, the static website, and signed
-  macOS releases through GitHub and Homebrew.
+- Available today: Sound controls, timed or indefinite Awake sessions, source
+  builds, unit tests, the static website, and signed macOS releases through
+  GitHub and Homebrew.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, and permission behavior.
 - Release-dependent: automatic updates require a current signed feed, and broad
   device compatibility claims require verified hardware reports.
-- Out of scope today: Windows, Linux, iOS, cloud accounts, audio recording, and
-  unrelated system utilities.
+- Out of scope today: Windows, Linux, iOS, cloud accounts, and audio recording.

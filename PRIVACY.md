@@ -2,14 +2,15 @@
 
 Effective date: July 31, 2026
 
-Last updated: July 31, 2026
+Last updated: September 8, 2026
 
-Semper is an open-source macOS audio controller. This policy explains what the Semper app, the website at [semper.systems](https://www.semper.systems/), and the project maintainers handle.
+Semper is an open-source macOS menu bar utility. This policy explains what the Semper app, the website at [semper.systems](https://www.semper.systems/), and the project maintainers handle.
 
 ## The short version
 
 - Semper does not require an account.
 - Audio is processed on your Mac. Semper does not record captured audio to a file, upload it, or send it to the project maintainers.
+- Awake sessions use local macOS power assertions. Their active state is kept in memory and is not restored after Semper quits.
 - App, device, routing, volume, EQ, and shortcut settings are stored locally on your Mac.
 - Experiment assignments use random, surface-local identifiers stored on your Mac or in your browser. Semper does not receive them.
 - Semper makes network requests only for features that need them, including fetching AutoEQ data from GitHub and checking for app updates when an update feed is configured and you request or allow a check.
@@ -27,12 +28,13 @@ It does not govern GitHub, Vercel, Apple, the AutoEq project, or other third-par
 
 ## 2. Information handled on your Mac
 
-Semper handles the following information locally to provide its audio controls:
+Semper handles the following information locally to provide its features:
 
 - **Audio content.** Semper uses Core Audio process taps to process app audio in memory for volume, routing, EQ, loudness, and limiting. It does not intentionally save that audio to disk or transmit it to Semper maintainers.
 - **Running app information.** This can include process identifiers, app names, bundle identifiers, icons, current audio activity, and the settings you assign to an app.
 - **Audio and Bluetooth device information.** This can include device names, device identifiers, transport type, capabilities, connection state, volume, mute state, and routing choices. Semper reads paired Bluetooth audio devices so you can connect them from the app.
 - **Preferences.** This includes per-app volume, mute, routing, boost, and EQ settings; device preferences; AutoEQ selections; imported EQ profiles; display choices; and keyboard shortcuts.
+- **Awake session state.** While Awake is active, Semper keeps the selected duration, end time, and display choice in memory. It does not save an active Awake session across app launches.
 - **Experiment assignments.** The app stores a random identifier and its assigned interface variants in local preferences. These values are not based on your Apple identity, hardware identifiers, apps, audio, or device settings.
 - **Diagnostics.** Semper writes operational messages and errors to the macOS unified logging system. These logs remain under macOS control unless you choose to share them.
 
@@ -46,6 +48,8 @@ Semper may ask for:
 - **Microphone.** Used when Semper works with input-capable audio devices and input monitoring. Semper does not intentionally save or transmit microphone audio.
 - **Bluetooth.** Used to list and connect paired Bluetooth audio devices.
 - **Accessibility.** Optional. Used to intercept the system media keys for Semper's volume controls.
+
+Starting an Awake session does not ask for a macOS privacy permission. It uses public system power assertions only while you have an active session.
 
 You can grant, review, or revoke these permissions in macOS System Settings under Privacy & Security. Features that depend on a revoked permission will stop working.
 
