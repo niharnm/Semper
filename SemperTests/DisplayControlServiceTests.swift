@@ -48,6 +48,98 @@ private actor DisplayOperationTestGate {
     }
 }
 
+private nonisolated final class DisplayThreadSignal: @unchecked Sendable {
+    private struct State {
+        var isSignalled = false
+        var continuations: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = Mutex(State())
+
+    func send() {
+        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard !state.isSignalled else { return [] }
+            state.isSignalled = true
+            let continuations = state.continuations
+            state.continuations.removeAll()
+            return continuations
+        }
+        continuations.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = state.withLock { state in
+                guard !state.isSignalled else { return true }
+                state.continuations.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private nonisolated final class DisplayRefreshOverlapTransport: @unchecked Sendable {
+    private struct State {
+        var readCount = 0
+        var brightness: UInt16 = 40
+    }
+
+    let refreshReadStarted = DisplayThreadSignal()
+    let setReadStarted = DisplayThreadSignal()
+    private let allowRefreshRead = DispatchSemaphore(value: 0)
+    private let allowSetRead = DispatchSemaphore(value: 0)
+    private let state = Mutex(State())
+    private let service = DDCService(service: kCFBooleanTrue)
+
+    func discover() -> [DDCExternalDisplayRecord] {
+        [DDCExternalDisplayRecord(
+            registryID: DDCDisplayCandidate.ID(rawValue: 901),
+            name: "Test Display",
+            edid: DDCDisplayEDID(vendorID: 101, productID: 202, serialNumber: 303),
+            service: service
+        )]
+    }
+
+    func read(
+        _ service: DDCService,
+        feature: DisplayFeature
+    ) throws -> (current: UInt16, maximum: UInt16) {
+        let snapshot = state.withLock { state -> (readCount: Int, brightness: UInt16) in
+            state.readCount += 1
+            return (state.readCount, state.brightness)
+        }
+        if snapshot.readCount == 3 {
+            refreshReadStarted.send()
+            allowRefreshRead.wait()
+        } else if snapshot.readCount == 5 {
+            setReadStarted.send()
+            allowSetRead.wait()
+        }
+        switch feature {
+        case .brightness:
+            return (snapshot.brightness, 100)
+        case .contrast:
+            return (20, 100)
+        }
+    }
+
+    func write(_ service: DDCService, feature: DisplayFeature, value: UInt16) throws {
+        guard feature == .brightness else { return }
+        state.withLock { $0.brightness = value }
+    }
+
+    func releaseRefreshRead() {
+        allowRefreshRead.signal()
+    }
+
+    func releaseSetRead() {
+        allowSetRead.signal()
+    }
+}
+
 @Suite("Display controls")
 struct DisplayControlServiceTests {
     private enum TestError: Error {
@@ -552,6 +644,54 @@ struct DisplayControlServiceTests {
         #expect(DisplayEndpointResolver.acceptsResult(captured: first, current: first))
         #expect(!DisplayEndpointResolver.acceptsResult(captured: first, current: reconnected))
         #expect(!DisplayEndpointResolver.acceptsResult(captured: first, current: nil))
+    }
+
+    @Test("Refresh preserves a confirmed write to the same display connection")
+    @MainActor
+    func refreshOverlappingConfirmedWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DisplayRefreshTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let transport = DisplayRefreshOverlapTransport()
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: DispatchQueue(label: "com.semper.tests.display-refresh")
+        )
+        let service = DisplayControlService(
+            ddcController: controller,
+            mutationAdmission: MutationAdmissionGate(),
+            discover: transport.discover,
+            read: transport.read,
+            write: transport.write
+        )
+        let identity = DisplayIdentity(vendorID: 101, productID: 202, serialNumber: 303)!
+        defer {
+            transport.releaseRefreshRead()
+            transport.releaseSetRead()
+        }
+        service.start()
+        await service.probe()
+        #expect(service.displays.first?.features[.brightness]?.current == 40)
+
+        let refresh = Task { @MainActor in
+            await service.probe()
+        }
+        await transport.refreshReadStarted.wait()
+        let setInvoked = DisplayThreadSignal()
+        let write = Task { @MainActor in
+            setInvoked.send()
+            return try await service.set(0.75, feature: .brightness, for: identity)
+        }
+        await setInvoked.wait()
+        transport.releaseRefreshRead()
+        await transport.setReadStarted.wait()
+        await refresh.value
+        transport.releaseSetRead()
+
+        let result = try await write.value
+        #expect(result == .applied(DisplayFeatureReading(current: 75, maximum: 100)!))
+        #expect(service.displays.first?.features[.brightness]?.current == 75)
+        await service.stopAndDrain()
     }
 
     @Test("Brightness and contrast use their standard VCP codes")

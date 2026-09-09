@@ -30,6 +30,17 @@ nonisolated struct DisplayConnectionToken: Equatable, Sendable {
     let generation: UUID
 }
 
+typealias DisplayDiscoverOperation = @Sendable () -> [DDCExternalDisplayRecord]
+typealias DisplayFeatureReadOperation = @Sendable (
+    DDCService,
+    DisplayFeature
+) throws -> (current: UInt16, maximum: UInt16)
+typealias DisplayFeatureWriteOperation = @Sendable (
+    DDCService,
+    DisplayFeature,
+    UInt16
+) throws -> Void
+
 nonisolated enum DisplayEndpointResolver {
     static func isCurrent(
         _ expected: DisplayEndpointIdentity,
@@ -44,6 +55,16 @@ nonisolated enum DisplayEndpointResolver {
         current: DisplayConnectionToken?
     ) -> Bool {
         captured == current
+    }
+
+    static func connectionToken(
+        for endpoint: DisplayEndpointIdentity?,
+        reusing previous: DisplayConnectionToken?
+    ) -> DisplayConnectionToken {
+        if let endpoint, let previous, previous.endpoint == endpoint {
+            return previous
+        }
+        return DisplayConnectionToken(endpoint: endpoint, generation: UUID())
     }
 }
 
@@ -295,12 +316,15 @@ final class DisplayControlService {
 
     private struct ProbeSnapshot: Sendable {
         let service: DDCService
-        let token: DisplayConnectionToken
+        let endpoint: DisplayEndpointIdentity?
         let device: DisplayDevice
     }
 
     private let ddcController: DDCController
     private let mutationAdmission: MutationAdmissionGate
+    private let discoverDisplays: DisplayDiscoverOperation
+    private let readFeature: DisplayFeatureReadOperation
+    private let writeFeature: DisplayFeatureWriteOperation
     private let probeSingleFlight: DisplayProbeSingleFlight<[ProbeSnapshot]>
     private var probePublication = DisplayProbePublicationState<[ProbeSnapshot]>()
     private var connections: [DisplayIdentity: Connection] = [:]
@@ -311,14 +335,27 @@ final class DisplayControlService {
 
     init(
         ddcController: DDCController,
-        mutationAdmission: MutationAdmissionGate
+        mutationAdmission: MutationAdmissionGate,
+        discover: @escaping DisplayDiscoverOperation = {
+            DDCExternalDisplayProbe.discover()
+        },
+        read: @escaping DisplayFeatureReadOperation = { service, feature in
+            let value = try service.readVCP(feature.rawValue)
+            return (value.current, value.max)
+        },
+        write: @escaping DisplayFeatureWriteOperation = { service, feature, value in
+            try service.writeVCP(feature.rawValue, value: value)
+        }
     ) {
         self.ddcController = ddcController
         self.mutationAdmission = mutationAdmission
+        self.discoverDisplays = discover
+        self.readFeature = read
+        self.writeFeature = write
         self.probeSingleFlight = DisplayProbeSingleFlight {
             do {
                 return try await ddcController.performSerialized {
-                    Self.makeProbeSnapshots(from: DDCExternalDisplayProbe.discover())
+                    Self.makeProbeSnapshots(from: discover(), read: read)
                 }
             } catch {
                 return []
@@ -370,8 +407,13 @@ final class DisplayControlService {
             ) else {
                 return
             }
+            let previousConnections = connections
             connections = Dictionary(uniqueKeysWithValues: snapshots.map {
-                ($0.device.id, Connection(service: $0.service, token: $0.token))
+                let token = DisplayEndpointResolver.connectionToken(
+                    for: $0.endpoint,
+                    reusing: previousConnections[$0.device.id]?.token
+                )
+                return ($0.device.id, Connection(service: $0.service, token: token))
             })
             displays = snapshots.map(\.device).sorted { lhs, rhs in
                 if lhs.name != rhs.name {
@@ -392,11 +434,11 @@ final class DisplayControlService {
         let generation = lifecycleGeneration
 
         let ddcController = ddcController
+        let readFeature = readFeature
         return try? await directOperations.run { @MainActor [self] in
             let reading = try? await ddcController.performSerialized {
                 DisplayFeatureIO.read {
-                    let value = try connection.service.readVCP(feature.rawValue)
-                    return (value.current, value.max)
+                    try readFeature(connection.service, feature)
                 }
             }
             guard isRunning,
@@ -432,13 +474,16 @@ final class DisplayControlService {
 
             let result: DisplayWriteResult
             let ddcController = ddcController
+            let discoverDisplays = discoverDisplays
+            let readFeature = readFeature
+            let writeFeature = writeFeature
             do {
                 result = try await ddcController.performSerialized { context in
                     try DisplayFeatureIO.set(
                         normalized: normalized,
                         maximum: maximum,
                         isEndpointCurrent: {
-                            let liveEndpoints = DDCExternalDisplayProbe.discover().compactMap {
+                            let liveEndpoints = discoverDisplays().compactMap {
                                 record -> DisplayEndpointCandidate? in
                                 guard let displayIdentity = DisplayIdentity(edid: record.edid) else {
                                     return nil
@@ -454,10 +499,9 @@ final class DisplayControlService {
                             )
                         },
                         claimMutation: { try context.claimMutation() },
-                        write: { try connection.service.writeVCP(feature.rawValue, value: $0) },
+                        write: { try writeFeature(connection.service, feature, $0) },
                         read: {
-                            let value = try connection.service.readVCP(feature.rawValue)
-                            return (value.current, value.max)
+                            try readFeature(connection.service, feature)
                         }
                     )
                 }
@@ -511,9 +555,9 @@ final class DisplayControlService {
     }
 
     private nonisolated static func makeProbeSnapshots(
-        from records: [DDCExternalDisplayRecord]
+        from records: [DDCExternalDisplayRecord],
+        read: DisplayFeatureReadOperation
     ) -> [ProbeSnapshot] {
-        let generation = UUID()
         let identified = records.compactMap { record -> (DisplayIdentity, DDCExternalDisplayRecord)? in
             guard let identity = DisplayIdentity(edid: record.edid) else { return nil }
             return (identity, record)
@@ -525,8 +569,7 @@ final class DisplayControlService {
 
             let summary = DisplayFeatureIO.probeAll(
                 read: { feature in
-                    let value = try record.service.readVCP(feature.rawValue)
-                    return (value.current, value.max)
+                    try read(record.service, feature)
                 }
             )
 
@@ -536,7 +579,7 @@ final class DisplayControlService {
             }
             return ProbeSnapshot(
                 service: record.service,
-                token: DisplayConnectionToken(endpoint: endpoint, generation: generation),
+                endpoint: endpoint,
                 device: DisplayDevice(
                     id: identity,
                     name: record.name,
