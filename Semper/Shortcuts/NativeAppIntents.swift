@@ -160,6 +160,12 @@ enum SemperAppIntentRuntime {
         SemperAppShortcuts.updateAppShortcutParameters()
     }
 
+    static func uninstall(_ controller: AppShortcutController) {
+        guard self.controller === controller else { return }
+        self.controller = nil
+        SemperAppShortcuts.updateAppShortcutParameters()
+    }
+
     static func applications() -> [SemperApplicationEntity] {
         guard let controller else { return [] }
         return controller.applications().map {

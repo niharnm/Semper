@@ -21,6 +21,8 @@ final class AudioRecordingPermission {
 
     var status: AudioCapturePermissionStatus = .unknown
     private var requestIsInFlight = false
+    private var activationObserver: NSObjectProtocol?
+    private var isStopped = false
 
     #if ENABLE_TCC_SPI
     private let requestAccessHandler: (@escaping (Bool) -> Void) -> Void
@@ -40,6 +42,7 @@ final class AudioRecordingPermission {
 
     /// Check current TCC status without prompting.
     func refreshStatus() {
+        guard !isStopped else { return }
         #if ENABLE_TCC_SPI
         let result = Self.preflight()
         switch result {
@@ -58,12 +61,13 @@ final class AudioRecordingPermission {
 
     /// Trigger the system permission dialog after an explicit user action.
     func request() {
+        guard !isStopped else { return }
         #if ENABLE_TCC_SPI
         guard status != .authorized, !requestIsInFlight else { return }
         requestIsInFlight = true
         requestAccessHandler { [weak self] granted in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 self.requestIsInFlight = false
                 self.status = granted ? .authorized : .denied
                 logger.info("Audio capture permission request result: \(granted)")
@@ -82,7 +86,7 @@ final class AudioRecordingPermission {
     // MARK: - App Activation Observer
 
     private func registerForActivation() {
-        NotificationCenter.default.addObserver(
+        activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
@@ -90,6 +94,15 @@ final class AudioRecordingPermission {
             MainActor.assumeIsolated {
                 self?.refreshStatus()
             }
+        }
+    }
+
+    func shutdown() {
+        isStopped = true
+        requestIsInFlight = false
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
+            self.activationObserver = nil
         }
     }
 

@@ -146,6 +146,44 @@ private func makeRecoveryFixture(
 @Suite("Audio processing bypass and recovery")
 @MainActor
 struct AudioEngineBypassRecoveryTests {
+    @Test("Shutdown before queued startup leaves audio monitors dormant")
+    func shutdownPreventsQueuedStartup() async {
+        let fixture = makeRecoveryFixture(
+            createTap: false,
+            startMonitorsAutomatically: true
+        )
+        defer { fixture.tearDown() }
+        await fixture.engine.shutdownAndDrain()
+        await Task.yield()
+        #expect(fixture.processMonitor.startCount == 0)
+        #expect(fixture.engine.activeProcessingTapCount == 0)
+    }
+
+    @Test("Shutdown waits for tap resource destruction")
+    func shutdownDrainsTaps() async {
+        let fixture = makeRecoveryFixture()
+        defer { fixture.tearDown() }
+        for tap in fixture.tapStore.taps {
+            tap.invalidationDelay = .milliseconds(10)
+        }
+        await fixture.engine.shutdownAndDrain()
+        #expect(fixture.engine.activeProcessingTapCount == 0)
+        #expect(!fixture.tapStore.taps.isEmpty)
+        #expect(fixture.tapStore.taps.allSatisfy { tap in
+            tap.events.filter { $0 == .invalidate }.count == 2
+        })
+    }
+
+    @Test("Shutdown reports unreleased audio resources")
+    func shutdownReportsResourceFailure() async {
+        let fixture = makeRecoveryFixture(
+            resourceCleanupResult: TapResourceCleanupResult(ioProcFailureCount: 1)
+        )
+        defer { fixture.tearDown() }
+        await fixture.engine.shutdownAndDrain()
+        #expect(fixture.engine.shutdownCleanupResult.ioProcFailureCount == 1)
+    }
+
     private struct ExpectedWriteFailure: Error {}
 
     @Test("Failed startup cleanup blocks capture work")

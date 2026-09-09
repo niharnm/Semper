@@ -208,6 +208,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     private let now: () -> Date
     private let undoLifetime: TimeInterval
     private var undoExpirationTask: Task<Void, Never>?
+    private var isStopped = false
     private struct AcceptanceClaim {
         let token: AudioRecoveryToken?
         let requested: AudioControlValue
@@ -235,6 +236,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
 
     @discardableResult
     func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult {
+        guard !isStopped else { return .rejected(.unsupportedRoute("Sound is paused")) }
         guard Self.isValid(command) else { return .rejected(.invalidValue) }
 
         let key = command.controlKey
@@ -382,6 +384,19 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         }
     }
 
+    func shutdown() {
+        guard !isStopped else { return }
+        isStopped = true
+        undoExpirationTask?.cancel()
+        undoExpirationTask = nil
+        for key in Array(pendingAcceptances.keys) {
+            discardPendingAcceptances(for: key)
+        }
+        if let activityID = undoJournal.clear() {
+            activityStore.clearAction(for: activityID)
+        }
+    }
+
     private func relinquishRecoveryAliases(_ keys: Set<AudioControlKey>) {
         for key in keys {
             discardPendingAcceptances(for: key)
@@ -391,6 +406,7 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
 
     @discardableResult
     func undoLastChange(source: AudioCommandSource = .popup) -> AudioUndoResult {
+        guard !isStopped else { return .unavailable }
         let preparation = undoJournal.prepare(at: now()) { backend.read($0) }
         undoExpirationTask?.cancel()
         undoExpirationTask = nil

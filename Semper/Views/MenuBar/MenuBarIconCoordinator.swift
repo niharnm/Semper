@@ -11,8 +11,8 @@ import os
 
 @MainActor
 final class MenuBarIconCoordinator: MediaKeyIconFlashing {
-    private let deviceVolumeMonitor: DeviceVolumeMonitor
-    private let deviceProvider: any AudioDeviceProviding
+    private let deviceVolumeMonitor: DeviceVolumeMonitor?
+    private let deviceProvider: (any AudioDeviceProviding)?
     private let settings: SettingsManager
     private let logger = Logger(subsystem: "systems.semper.Semper", category: "MenuBarIconCoordinator")
 
@@ -21,6 +21,7 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     private var flashActiveSymbol: String?
     private var lastObservedDeviceID: AudioDeviceID?
     private var started = false
+    private var observationGeneration = UUID()
 
     init(
         deviceVolumeMonitor: DeviceVolumeMonitor,
@@ -32,21 +33,32 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
         self.settings = settings
     }
 
+    init(settings: SettingsManager) {
+        deviceVolumeMonitor = nil
+        deviceProvider = nil
+        self.settings = settings
+    }
+
     /// Begin observing volume / mute / style and apply state to the menu bar button.
     /// Idempotent; safe to call from the app-init path even before the status item exists.
     func start() {
         guard !started else { return }
         started = true
-        lastObservedDeviceID = deviceVolumeMonitor.defaultDeviceID
-        attemptInitialApply(retriesLeft: 20)
+        observationGeneration = UUID()
+        lastObservedDeviceID = deviceVolumeMonitor?.defaultDeviceID
+        attemptInitialApply(retriesLeft: 20, generation: observationGeneration)
         scheduleApplyTracking()
         scheduleDeviceChangeTracking()
     }
 
     /// Cancel pending work and drop references. Called on app termination.
     func stop() {
+        started = false
+        observationGeneration = UUID()
         flashWorkItem?.cancel()
         flashWorkItem = nil
+        flashActiveSymbol = nil
+        lastObservedDeviceID = nil
         cachedButton = nil
     }
 
@@ -54,6 +66,7 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     /// If the same symbol is already flashing, extends the timer rather than restarting the fade —
     /// prevents mid-fade pops when device-change and media-key triggers coincide.
     func flashDevice() {
+        guard started else { return }
         let symbol = currentDeviceSymbol()
         let alreadyShowingSame = (flashActiveSymbol == symbol)
         flashActiveSymbol = symbol
@@ -63,8 +76,9 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
 
         flashWorkItem?.cancel()
         let duration = flashDuration()
+        let generation = observationGeneration
         let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
+            guard let self, self.started, self.observationGeneration == generation else { return }
             self.flashActiveSymbol = nil
             self.apply()
         }
@@ -78,6 +92,9 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
         if let symbol = flashActiveSymbol {
             return .deviceFlash(symbol: symbol)
         }
+        guard let deviceVolumeMonitor else {
+            return .staticBaseline(.systemSymbol(settings.appSettings.menuBarIconStyle.iconName))
+        }
         let id = deviceVolumeMonitor.defaultDeviceID
         let volume = deviceVolumeMonitor.volumes[id] ?? 0
         let muted = deviceVolumeMonitor.muteStates[id] ?? false
@@ -90,7 +107,10 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     }
 
     private func currentDeviceSymbol() -> String {
-        MenuBarDeviceIconResolver.resolveSymbol(
+        guard let deviceVolumeMonitor, let deviceProvider else {
+            return settings.appSettings.menuBarIconStyle.iconName
+        }
+        return MenuBarDeviceIconResolver.resolveSymbol(
             priorityOrder: settings.devicePriorityOrder,
             outputDevices: deviceProvider.outputDevices,
             defaultDeviceID: deviceVolumeMonitor.defaultDeviceID,
@@ -106,6 +126,7 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     // MARK: - Apply
 
     private func apply() {
+        guard started else { return }
         guard let button = resolveButton() else { return }
         let state = computeState()
         guard let image = state.image.nsImage() else { return }
@@ -113,7 +134,8 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
         button.image = image
     }
 
-    private func attemptInitialApply(retriesLeft: Int) {
+    private func attemptInitialApply(retriesLeft: Int, generation: UUID) {
+        guard started, observationGeneration == generation else { return }
         if resolveButton() != nil {
             apply()
             return
@@ -123,36 +145,44 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.attemptInitialApply(retriesLeft: retriesLeft - 1)
+            self?.attemptInitialApply(retriesLeft: retriesLeft - 1, generation: generation)
         }
     }
 
     private func scheduleApplyTracking() {
+        guard started else { return }
+        let generation = observationGeneration
         withObservationTracking {
-            let id = deviceVolumeMonitor.defaultDeviceID
-            _ = deviceVolumeMonitor.volumes[id]
-            _ = deviceVolumeMonitor.muteStates[id]
+            if let deviceVolumeMonitor {
+                let id = deviceVolumeMonitor.defaultDeviceID
+                _ = deviceVolumeMonitor.volumes[id]
+                _ = deviceVolumeMonitor.muteStates[id]
+            }
             _ = settings.appSettings.menuBarIconStyle
             _ = settings.appSettings.hudStyle
             _ = settings.devicePriorityOrder
             // Deliberate dependency so the device-style icon refreshes when the user picks a new symbol; explicit because observation granularity is per stored property.
             _ = settings.deviceIconOverrides
-            _ = deviceProvider.outputDevices
+            _ = deviceProvider?.outputDevices
         } onChange: { [weak self] in
             // onChange fires in willSet — the tracked properties are still at their
             // pre-change values inside this closure. Re-register synchronously so the
             // next mutation isn't dropped, then defer apply() to a Task so it reads
             // committed (post-setter) values.
             MainActor.assumeIsolated { [weak self] in
-                self?.scheduleApplyTracking()
+                guard let self, self.started, self.observationGeneration == generation else { return }
+                self.scheduleApplyTracking()
             }
             Task { @MainActor [weak self] in
-                self?.apply()
+                guard let self, self.started, self.observationGeneration == generation else { return }
+                self.apply()
             }
         }
     }
 
     private func scheduleDeviceChangeTracking() {
+        guard started, let deviceVolumeMonitor else { return }
+        let generation = observationGeneration
         withObservationTracking {
             _ = deviceVolumeMonitor.defaultDeviceID
         } onChange: { [weak self] in
@@ -160,11 +190,12 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
             // defaultDeviceID, not the pre-change value. Otherwise the flash shows
             // the old device's icon (e.g. AirPods while we just switched to MacBook).
             MainActor.assumeIsolated { [weak self] in
-                self?.scheduleDeviceChangeTracking()
+                guard let self, self.started, self.observationGeneration == generation else { return }
+                self.scheduleDeviceChangeTracking()
             }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let newID = self.deviceVolumeMonitor.defaultDeviceID
+                guard let self, self.started, self.observationGeneration == generation else { return }
+                let newID = deviceVolumeMonitor.defaultDeviceID
                 if let prev = self.lastObservedDeviceID, prev != newID, newID.isValid {
                     self.flashDevice()
                 }

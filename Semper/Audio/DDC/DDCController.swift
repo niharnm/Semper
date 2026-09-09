@@ -131,6 +131,13 @@ final class DDCController {
         cancelPendingWrites()
     }
 
+    func stopAndDrain() async {
+        stop()
+        await withCheckedContinuation { continuation in
+            ddcQueue.async { continuation.resume() }
+        }
+    }
+
     // MARK: - Public API
 
     /// Whether this CoreAudio device has DDC volume control.

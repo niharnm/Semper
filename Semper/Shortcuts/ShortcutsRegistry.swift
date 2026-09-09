@@ -61,6 +61,7 @@ final class ShortcutsRegistry {
     private let audioCommands: any AudioCommandDispatching
     private let hud: any PerAppHUDPresenting
     private var didStart = false
+    private var isStopped = false
     private(set) var shortcutConflicts: [ShortcutAction: ShortcutAction] = [:]
 
     /// Software-emulated key-repeat timing. Carbon hot keys don't auto-repeat,
@@ -126,6 +127,7 @@ final class ShortcutsRegistry {
     /// Routes a fired action to its handler. Exposed `internal` so tests can
     /// drive it directly without faking a global key event.
     func dispatch(_ action: ShortcutAction) {
+        guard !isStopped else { return }
         switch action {
         case .togglePopup:
             popupController.toggle()
@@ -195,7 +197,7 @@ final class ShortcutsRegistry {
     }
 
     private func startRepeating(action: ShortcutAction) {
-        guard action.supportsRepeat else { return }
+        guard !isStopped, action.supportsRepeat else { return }
         repeatTasks[action]?.cancel()
         repeatTasks[action] = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.repeatInitialDelay)
@@ -236,7 +238,7 @@ final class ShortcutsRegistry {
     /// Idempotent. Subsequent calls are no-ops. Safe to call from a SwiftUI
     /// `.task` modifier on the popup content.
     func start() {
-        guard !didStart else { return }
+        guard !didStart, !isStopped else { return }
         didStart = true
 
         for action in ShortcutAction.allCases {
@@ -256,6 +258,17 @@ final class ShortcutsRegistry {
         }
 
         Self.logger.debug("ShortcutsRegistry started; \(ShortcutAction.allCases.count) action(s) registered")
+    }
+
+    func stop() {
+        isStopped = true
+        for task in repeatTasks.values { task.cancel() }
+        repeatTasks.removeAll()
+        guard didStart else { return }
+        didStart = false
+        for action in ShortcutAction.allCases {
+            KeyboardShortcuts.removeHandler(for: name(for: action))
+        }
     }
 
     /// Returns a closure suitable for `KeyboardShortcuts.Recorder(for:onChange:)`.

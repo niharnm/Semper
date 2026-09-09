@@ -38,6 +38,8 @@ final class VolumeFeedbackPlayer {
     private nonisolated let logger = Logger(subsystem: "systems.semper.Semper", category: "VolumeFeedbackPlayer")
 
     private var lastPlay: TimeInterval = -.infinity
+    private var pendingPlayback: DispatchWorkItem?
+    private var isStopped = false
 
     /// `play()` blocks ~10–40 ms — too long for the main thread at key-repeat and
     /// HUD-drag rates, so playback happens on a dedicated serial queue.
@@ -47,18 +49,37 @@ final class VolumeFeedbackPlayer {
     private nonisolated(unsafe) var loadAttempted = false
 
     func requestFeedback(gain: Float, shiftHeld: Bool = false, optionHeld: Bool = false) {
+        guard !isStopped else { return }
         guard VolumeFeedback.shouldPlay(
             prefOn: Self.systemPreferenceEnabled(),
             shiftHeld: shiftHeld,
             optionHeld: optionHeld
         ) else { return }
         guard passesCooldown(at: ProcessInfo.processInfo.systemUptime) else { return }
-        queue.async { [self] in playOnQueue(gain: gain) }
+        pendingPlayback?.cancel()
+        let work = DispatchWorkItem { @Sendable [self] in playOnQueue(gain: gain) }
+        pendingPlayback = work
+        queue.async(execute: work)
     }
 
     func playTestSound(gain: Float = 0.45) {
-        queue.async { [self] in
+        guard !isStopped else { return }
+        pendingPlayback?.cancel()
+        let work = DispatchWorkItem { @Sendable [self] in
             playOnQueue(gain: max(0, min(1, gain)))
+        }
+        pendingPlayback = work
+        queue.async(execute: work)
+    }
+
+    func shutdown() {
+        guard !isStopped else { return }
+        isStopped = true
+        pendingPlayback?.cancel()
+        pendingPlayback = nil
+        queue.sync { [self] in
+            sound?.stop()
+            sound = nil
         }
     }
 

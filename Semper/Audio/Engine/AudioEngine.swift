@@ -25,6 +25,12 @@ enum AudioProcessingModeRequestResult: Equatable {
 @Observable
 @MainActor
 final class AudioEngine {
+    #if APP_STORE
+    typealias SharedDDCController = Never
+    #else
+    typealias SharedDDCController = DDCController
+    #endif
+
     let processMonitor: any AudioProcessMonitoring
     let deviceMonitor: any AudioDeviceProviding
     let bluetoothDeviceMonitor: BluetoothDeviceMonitor
@@ -46,6 +52,7 @@ final class AudioEngine {
 
     #if !APP_STORE
     let ddcController: DDCController
+    private let ownsDDCController: Bool
     #endif
 
     private var taps: [pid_t: any ProcessTapControlling] = [:]
@@ -128,6 +135,8 @@ final class AudioEngine {
     private var audioProcessingTransitionGeneration: UInt64 = 0
     private var permissionPersistenceFailurePending = false
     private var isEngineStopped = false
+    private var shutdownTask: Task<Void, Never>?
+    private(set) var shutdownCleanupResult = TapResourceCleanupResult.empty
     private let orphanedTapCleanup: @MainActor () -> OrphanedTapCleanupResult
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "AudioEngine")
 
@@ -562,7 +571,8 @@ final class AudioEngine {
         orphanedTapCleanup: @escaping @MainActor () -> OrphanedTapCleanupResult = {
             OrphanedTapCleanup.destroyOrphanedDevices()
         },
-        startMonitorsAutomatically: Bool = true
+        startMonitorsAutomatically: Bool = true,
+        sharedDDCController: SharedDDCController? = nil
     ) {
         self.permission = permission
         let manager = settingsManager
@@ -597,8 +607,9 @@ final class AudioEngine {
         self.bluetoothDeviceMonitor = BluetoothDeviceMonitor()
 
         #if !APP_STORE
-        let ddc = DDCController(settingsManager: manager)
+        let ddc = sharedDDCController ?? DDCController(settingsManager: manager)
         self.ddcController = ddc
+        self.ownsDDCController = sharedDDCController == nil
         if let dvMonitor = deviceVolumeMonitor {
             self.deviceVolumeMonitor = dvMonitor
         } else {
@@ -642,10 +653,12 @@ final class AudioEngine {
         }
 
         outputEchoTracker.onTimeout = { [weak self] _ in
-            self?.restoreConfirmedDefault()
+            guard let self, !self.isEngineStopped else { return }
+            self.restoreConfirmedDefault()
         }
         inputEchoTracker.onTimeout = { [weak self] _ in
-            self?.applyResolvedInputPolicy()
+            guard let self, !self.isEngineStopped else { return }
+            self.applyResolvedInputPolicy()
         }
 
         // Wire callbacks — needed for both test and production mode
@@ -656,6 +669,7 @@ final class AudioEngine {
 
         if startMonitorsAutomatically {
             Task { @MainActor [self] in
+                guard !self.isEngineStopped else { return }
                 if self.permission.status == .authorized,
                    manager.audioProcessingMode == .active,
                    self.audioProcessingState == .active {
@@ -666,10 +680,11 @@ final class AudioEngine {
 
                 #if !APP_STORE
                 ddc.onProbeCompleted = { [weak self] in
-                    self?.deviceVolumeMonitor.refreshAfterDDCProbe()
-                    self?.refreshAllTapOutputStates()
+                    guard let self, !self.isEngineStopped else { return }
+                    self.deviceVolumeMonitor.refreshAfterDDCProbe()
+                    self.refreshAllTapOutputStates()
                 }
-                ddc.start()
+                if self.ownsDDCController { ddc.start() }
                 #endif
 
                 // Start device volume monitor AFTER deviceMonitor.start() populates devices
@@ -701,11 +716,12 @@ final class AudioEngine {
     }
 
     private func observePermissionChanges() {
+        guard !isEngineStopped else { return }
         withObservationTracking {
             _ = self.permission.status
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, !self.isEngineStopped else { return }
                 self.handleAudioPermissionChange()
                 self.observePermissionChanges()
             }
@@ -713,6 +729,7 @@ final class AudioEngine {
     }
 
     func handleAudioPermissionChange() {
+        guard !isEngineStopped else { return }
         if permission.status == .authorized {
             if settingsManager.audioProcessingMode == .resumeRequested {
                 startAudioProcessingTransitionIfNeeded()
@@ -1230,6 +1247,7 @@ final class AudioEngine {
     }
 
     func start() {
+        guard shutdownTask == nil else { return }
         isEngineStopped = false
         // Monitors have internal guards against double-starting
         if permission.status == .authorized,
@@ -1265,6 +1283,19 @@ final class AudioEngine {
         audioProcessingTransitionTask?.cancel()
         audioProcessingTransitionTask = nil
         stopHealthMonitor()
+        staleCleanupTask?.cancel()
+        staleCleanupTask = nil
+        for task in pendingCleanup.values { task.cancel() }
+        pendingCleanup.removeAll()
+        for task in tapMembershipRefreshTasks.values { task.cancel() }
+        tapMembershipRefreshTasks.removeAll()
+        for task in tapMaintenanceTasks.values { task.cancel() }
+        tapMaintenanceTasks.removeAll()
+        for deviceID in Array(aliveWatchers.keys) { removeAliveWatcher(deviceID) }
+        if case .pendingAutoSwitch(_, let task) = outputPriorityState { task.cancel() }
+        outputPriorityState = .stable
+        if case .pendingAutoSwitch(_, let task) = inputPriorityState { task.cancel() }
+        inputPriorityState = .stable
         cancelPendingSafeOutputSwitch(reportFailure: true)
         cancelPendingDefaultOutputConfirmation(reportFailure: true)
         for deviceUID in Array(pendingOutputVolumeLimitChanges.keys) {
@@ -1279,7 +1310,9 @@ final class AudioEngine {
         processMonitor.stop()
         deviceMonitor.stop()
         #if !APP_STORE
-        ddcController.stop()
+        ddcController.onProbeCompleted = nil
+        ddcController.onWriteResult = nil
+        if ownsDDCController { ddcController.stop() }
         #endif
         for tap in taps.values {
             tap.invalidate()
@@ -1293,9 +1326,42 @@ final class AudioEngine {
     /// Call from applicationWillTerminate or equivalent lifecycle hook.
     /// Note: For menu bar apps, process exit cleans up resources anyway, so this is optional.
     func shutdown() {
+        guard shutdownTask == nil else { return }
+        let tasks = Array(pendingCleanup.values) + Array(tapMembershipRefreshTasks.values)
+            + Array(tapMaintenanceTasks.values) + pendingAppRouteOperations.values.map(\.task)
+            + [healthMonitorTask, staleCleanupTask, audioProcessingTransitionTask,
+               safeOutputSwitchTimeoutTask, defaultOutputConfirmationTimeoutTask].compactMap { $0 }
+        let ownedTaps = Array(taps.values)
         stop()
+        bluetoothDeviceMonitor.stop()
         deviceVolumeMonitor.stop()
-        logger.info("AudioEngine shutdown complete")
+        onCommandValueObserved = nil
+        onCommandWriteRejected = nil
+        onCallModeActivitiesChanged = nil
+        onBluetoothHDGuardSnapshotChanged = nil
+        onExplicitInputDeviceSelected = nil
+        onAudioProcessingWillStop = nil
+        outputEchoTracker.onTimeout = nil
+        inputEchoTracker.onTimeout = nil
+        let bluetoothDeviceMonitor = bluetoothDeviceMonitor
+        let logger = logger
+        shutdownTask = Task {
+            for task in tasks { await task.value }
+            for tap in ownedTaps {
+                let cleanup = await tap.invalidateAsync()
+                self.shutdownCleanupResult.merge(cleanup)
+                if cleanup.failureCount > 0 {
+                    logger.error("Audio resource cleanup failed during Sound shutdown")
+                }
+            }
+            await bluetoothDeviceMonitor.stopAndDrain()
+            logger.info("AudioEngine shutdown complete")
+        }
+    }
+
+    func shutdownAndDrain() async {
+        shutdown()
+        await shutdownTask?.value
     }
 
     // MARK: - Audio Processing Recovery

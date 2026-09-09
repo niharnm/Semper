@@ -396,6 +396,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
         cancelAllBluetoothConfirmationTasks()
         cancelAllVolumeLogTasks()
+        alertVolumeDebounceTask?.cancel()
+        alertVolumeDebounceTask = nil
 
         volumes.removeAll()
         muteStates.removeAll()

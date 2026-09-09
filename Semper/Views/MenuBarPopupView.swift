@@ -35,7 +35,8 @@ struct MenuBarPopupView: View {
     let mediaKeyMonitor: MediaKeyMonitor
     let experimentManager: ExperimentManager
 
-    let awakeService: AwakeService
+    var awakeService: AwakeService? = nil
+    var showsModuleSwitcher = true
 
     @State private var selectedModule: SemperModule = SemperModule.initial
 
@@ -116,7 +117,7 @@ struct MenuBarPopupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            moduleSwitcherBar
+            if showsModuleSwitcher { moduleSwitcherBar }
             if selectedModule == .sound {
                 popupHeader
                 if audioEngine.audioProcessingState != .active {
@@ -145,7 +146,7 @@ struct MenuBarPopupView: View {
                     }
                 }
             } else {
-                AwakeModuleView(awake: awakeService)
+                if let awakeService { AwakeModuleView(awake: awakeService) }
                 popupFooter
             }
         }
@@ -283,11 +284,11 @@ struct MenuBarPopupView: View {
 
     private var moduleSwitcherBar: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            ModuleSwitcher(selection: $selectedModule, isAwakeActive: awakeService.isActive)
+            ModuleSwitcher(selection: $selectedModule, isAwakeActive: awakeService?.isActive == true)
 
             Spacer(minLength: 0)
 
-            if selectedModule == .sound, awakeService.isActive {
+            if selectedModule == .sound, awakeService?.isActive == true {
                 // The compact popup cannot fit the full hint next to the
                 // switcher and gear, so fall back to the bare end time
                 // rather than truncating it mid-string.
@@ -310,7 +311,7 @@ struct MenuBarPopupView: View {
     }
 
     private var awakeStatusHint: String {
-        guard let session = awakeService.session else { return "" }
+        guard let session = awakeService?.session else { return "" }
         if let endsAt = session.endsAt {
             return "Awake until \(endsAt.formatted(date: .omitted, time: .shortened))"
         }
@@ -318,7 +319,7 @@ struct MenuBarPopupView: View {
     }
 
     private var awakeStatusHintShort: String {
-        guard let session = awakeService.session else { return "" }
+        guard let session = awakeService?.session else { return "" }
         if let endsAt = session.endsAt {
             return endsAt.formatted(date: .omitted, time: .shortened)
         }

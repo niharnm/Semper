@@ -8,6 +8,17 @@ import KeyboardShortcuts
 @Suite("ShortcutsRegistry")
 @MainActor
 struct ShortcutsRegistryTests {
+    @Test("Stopped registry ignores already queued shortcut dispatch")
+    func stoppedRegistryIgnoresDispatch() {
+        let recorder = RecordingPopupController()
+        let registry = makeRegistry(popupController: recorder)
+        registry.stop()
+        registry.stop()
+        registry.start()
+        registry.dispatch(.togglePopup)
+        #expect(recorder.toggleCount == 0)
+    }
+
     // MARK: - dispatch
 
     @Test("dispatch(.togglePopup) calls popupController.toggle() exactly once")

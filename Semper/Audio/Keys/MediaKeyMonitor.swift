@@ -47,6 +47,7 @@ final class MediaKeyMonitor {
     var lastDDCRepeatTime: DispatchTime?
 
     private var ghostTapProbeTask: Task<Void, Never>?
+    private var isShutDown = false
 
     /// CGEventTaps are per-session; wake leaves them enabled-but-inert.
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -97,6 +98,7 @@ final class MediaKeyMonitor {
 
     /// Idempotent. No-op unless media keys are enabled and Accessibility is trusted.
     func start() {
+        guard !isShutDown else { return }
         guard tap == nil else { return }
         guard settingsManager.appSettings.mediaKeyControlEnabled else {
             logger.debug("Media key control disabled in settings; tap not installed")
@@ -136,6 +138,7 @@ final class MediaKeyMonitor {
 
     /// Reconciles tap state against settings + Accessibility trust. Idempotent.
     func reconcile() {
+        guard !isShutDown else { return }
         if settingsManager.appSettings.mediaKeyControlEnabled && accessibility.isTrusted {
             // Post-regrant taps can come up inert; arm a probe to surface that to the user.
             let wasOffline = (tap == nil)
@@ -222,10 +225,22 @@ final class MediaKeyMonitor {
         logger.info("Media key tap removed")
     }
 
+    func shutdown() {
+        guard !isShutDown else { return }
+        isShutDown = true
+        stop()
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in workspaceObservers { center.removeObserver(observer) }
+        workspaceObservers.removeAll()
+        iconCoordinator = nil
+        feedbackPlayer = nil
+    }
+
     // MARK: - Event handling
 
     /// Applies a decoded `MediaKeyEvent` to the default output device.
     func handle(_ event: MediaKeyEvent, shiftHeld: Bool = false, optionHeld: Bool = false) {
+        guard !isShutDown else { return }
         let volumeMonitor = audioEngine.deviceVolumeMonitor
         let deviceID = volumeMonitor.defaultDeviceID
         guard deviceID.isValid else {
