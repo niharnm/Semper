@@ -1,6 +1,6 @@
 # Semper for Mac
 
-> Semper is a native Mac utility. The v1.0.0 download provides per-app sound controls. Additional modules are in development.
+> Semper brings Mac utilities together in one native app. The v1.0.0 download provides per-app sound controls. Additional modules are in development.
 
 Official website: https://www.semper.systems/
 Source repository: https://github.com/niharnm/Semper
@@ -12,7 +12,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 
 - Published version: v1.0.0
 - Source code, tests, and build instructions are public.
-- The published download checked September 8, 2026 is v1.0.0, with Sound capabilities.
+- The published download checked September 9, 2026 is v1.0.0, with Sound capabilities.
 - Release artifact: https://github.com/niharnm/Semper/releases/tag/v1.0.0
 - Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation are in development. None of these additional modules is included in v1.0.0.
 - Source integration of the expanded modules is complete. Checks for a public release are still in progress.
@@ -20,7 +20,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Semper is available to macOS users and to developers who want to build from source.
 - Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
 
-## Core capabilities
+## Sound capabilities in v1.0.0
 
 - Independent per-app volume, mute, and boost controls
 - Balance controls for supported output devices
@@ -38,7 +38,9 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Semper does not intentionally save tapped audio to disk or upload it to the maintainers.
 - Screen & System Audio Recording permission is required for Core Audio process taps.
 - Microphone permission is used only for input-device monitoring.
-- Accessibility permission is optional and supports media-key control.
+- Accessibility permission is optional for Sound's media-key control.
+- In source builds, Workspace Restore requires Accessibility permission to read and move selected windows.
+- Source builds open on Home. Choose Sound, then Open Sound to start its audio controls. Browsing Home or adding a module does not start Sound.
 
 ## Important limits
 
@@ -63,6 +65,8 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 ## Official pages
 
 - Product: https://www.semper.systems/
+- Module overview and availability: https://www.semper.systems/#modules
+- Source-build module guide: https://github.com/niharnm/Semper/blob/main/guide/module-shell.md
 - Mac per-app volume guide: https://www.semper.systems/mac-volume-mixer.html
 - Project fact sheet: https://www.semper.systems/about.html
 - Privacy: https://www.semper.systems/privacy.html

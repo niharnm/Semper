@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Learn how per-app volume control and audio routing work on Mac, what macOS provides, and how Semper adds a menu-bar mixer."
+      content="Use Sound, Semper's per-app volume mixer for Mac. Install v1.0.0, understand audio permissions, or open Sound in a development source build."
     />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#f2eee5" />
@@ -55,7 +55,7 @@
         "headline": "How to Control Volume Per App on Mac",
         "description": "A factual guide to per-app volume control and audio routing on macOS.",
         "datePublished": "2026-07-31",
-        "dateModified": "2026-09-08",
+        "dateModified": "2026-09-09",
         "author": {
           "@type": "Person",
           "name": "Nihar Manchikakapudi",
@@ -110,12 +110,14 @@
         <div class="legal-intro">
           <p>
             macOS controls the selected output device and overall volume.
-            Semper adds one menu-bar mixer with separate controls for each app.
+            Sound is Semper's menu-bar mixer with separate controls for each app.
+            This guide covers the v1.0.0 Sound download and the separate
+            source-build setup.
           </p>
           <div class="legal-meta">
             <p>
               <span>Updated</span>
-              <time datetime="2026-09-08">September 8, 2026</time>
+              <time datetime="2026-09-09">September 9, 2026</time>
             </p>
             <p>
               <span>Requires</span>
@@ -184,7 +186,7 @@
         <section class="legal-section" id="semper">
           <div class="legal-section-heading">
             <span>02</span>
-            <h2>How Semper adds per-app volume</h2>
+            <h2>Get Sound in v1.0.0</h2>
           </div>
           <div class="legal-copy">
             <p>
@@ -195,24 +197,23 @@
             </p>
             <ol>
               <li>
-                Clone the public repository and open the Xcode project.
+                <a href="https://github.com/niharnm/Semper/releases/download/v1.0.0/Semper.dmg">Download Semper v1.0.0</a>
+                for macOS 15.4 or later.
               </li>
-              <li>Build and run the Semper scheme on macOS 15.4 or later.</li>
+              <li>Open the disk image and drag Semper into Applications.</li>
               <li>
-                Grant Screen &amp; System Audio Recording permission when
-                macOS asks for it, then relaunch Semper.
+                Launch Semper and grant Screen &amp; System Audio Recording
+                permission when macOS asks for it, then relaunch Semper.
               </li>
               <li>Start audio in an app so it appears in the mixer.</li>
               <li>Adjust that app without changing the other app sliders.</li>
             </ol>
-            <pre><code>git clone https://github.com/niharnm/Semper.git
-cd Semper
-open Semper.xcodeproj</code></pre>
             <p class="legal-note">
-              Prefer a packaged build? Download the packaged Sound release from
-              <a href="https://github.com/niharnm/Semper/releases/latest/download/Semper.dmg">GitHub Releases</a>
-              or install it with Homebrew:
+              You can also install the published release with Homebrew:
               <code>brew install --cask niharnm/tap/semper</code>.
+              The v1.0.0 download includes Sound only. See the
+              <a href="/#modules">module overview</a> for the other utilities
+              in development, or <a href="#source">build the current source</a>.
             </p>
           </div>
         </section>
@@ -294,14 +295,31 @@ open Semper.xcodeproj</code></pre>
           </div>
         </section>
 
-        <section class="legal-section legal-source" id="source">
+        <section class="legal-section" id="source">
           <div class="legal-section-heading">
             <span>06</span>
-            <h2>Read or build the source</h2>
+            <h2>Open Sound in a source build</h2>
           </div>
           <div class="legal-copy">
             <p>
-              Semper's public repository contains
+              Source builds include the integrated module interface and
+              development utilities. They differ from the v1.0.0 download.
+              Follow the repository's
+              <a href="https://github.com/niharnm/Semper#building-from-source">build instructions</a>
+              to build and run the Semper scheme in Xcode.
+            </p>
+            <pre><code>git clone https://github.com/niharnm/Semper.git
+cd Semper
+open Semper.xcodeproj</code></pre>
+            <p>
+              The app starts on Home. Choose Sound, then <strong>Open Sound</strong>
+              to start its audio controls and grant the requested audio access.
+              Browsing Home does not start audio capture. The
+              <a href="https://github.com/niharnm/Semper/blob/main/guide/module-shell.md">source-build module guide</a>
+              explains adding modules, their controls, and action search.
+            </p>
+            <p>
+              The public repository contains
               the app, Core Audio engine, tests, setup guides, issue tracker,
               and contribution rules. See its
               <a href="https://github.com/niharnm/Semper/blob/main/LICENSE">licensing information</a>
@@ -329,7 +347,7 @@ open Semper.xcodeproj</code></pre>
         <span>Semper</span>
       </a>
       <div class="footer-middle">
-        <p class="footer-tagline">Audio control for macOS.</p>
+        <p class="footer-tagline">Everyday Mac utilities.</p>
         <div class="footer-links" aria-label="Resources and legal">
           <a href="about.html">About</a>
           <a href="privacy.html">Privacy</a>

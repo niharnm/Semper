@@ -2554,6 +2554,7 @@ h2 {
 }
 
 .legal-copy {
+  min-width: 0;
   max-width: 720px;
 }
 
@@ -2598,7 +2599,7 @@ h2 {
 }
 
 .legal-copy a {
-  color: var(--blue);
+  color: #1454db;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.18em;
@@ -3588,6 +3589,26 @@ footer p a {
   scroll-margin-top: 5.5rem;
 }
 
+.module-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.4rem;
+  margin-bottom: 2rem;
+}
+
+.module-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 0.22em;
+}
+
+.module-nav a:hover {
+  color: var(--blue);
+}
+
 .module-number {
   padding-top: 0.3rem;
   color: var(--ink-soft);
@@ -3791,6 +3812,7 @@ summary:focus-visible,
 .module-jump:focus-visible,
 .modules a:focus-visible,
 .comparison a:focus-visible,
+.legal-copy a:focus-visible,
 a[href$="/LICENSE"]:focus-visible,
 a[href$="/NOTICE.md"]:focus-visible {
   outline-color: var(--ink);
