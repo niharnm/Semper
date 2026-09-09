@@ -63,7 +63,9 @@ struct UtilityRuntimeTests {
             let openSound = UtilityActionID(rawValue: "sound.open")
             try runtime.registry.setFavorite(true, for: openSound)
             #expect(runtime.registry.favoriteActions.map(\.id) == [openSound])
-            #expect(runtime.registry.search("sound").map(\.id) == [openSound])
+            #expect(
+                Set(runtime.registry.search("sound").map(\.id))
+                    == Set([openSound, SoundUtilityActions.muteID, SoundUtilityActions.unmuteID]))
             #expect(runtime.commands.disabledReason(for: openSound) == nil)
             #expect(
                 runtime.commands.disabledReason(for: .init(rawValue: "awake.stop"))

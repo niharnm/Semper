@@ -315,7 +315,7 @@ final class AppShortcutController {
         return output
     }
 
-    private static func error(for rejection: AudioCommandRejection) -> AppShortcutExecutionError {
+    static func error(for rejection: AudioCommandRejection) -> AppShortcutExecutionError {
         switch rejection {
         case .invalidValue:
             .invalidValue("The shortcut contains an invalid value.")

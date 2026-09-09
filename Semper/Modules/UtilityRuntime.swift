@@ -604,6 +604,27 @@ final class UtilityRuntime {
 
     private func installActions() throws {
         var actions: [UtilityActionHandler] = []
+        actions += SoundUtilityActions.handlers(
+            start: { [weak self] in
+                guard let self else { throw CancellationError() }
+                try await self.start(.sound)
+            },
+            currentOutput: { [weak self] in
+                guard let sound = self?.usableSound else { return .stopped }
+                let monitor = sound.deviceVolumeMonitor
+                guard let output = sound.audioEngine.outputDevices.first(where: { $0.id == monitor.defaultDeviceID })
+                else { return .unavailable("No current output is available.") }
+                guard let muted = monitor.muteStates[output.id] else {
+                    return .unavailable("Mute state is unavailable for the current output.")
+                }
+                return .available(deviceUID: output.uid, muted: muted)
+            },
+            dispatch: { [weak self] command, context in
+                guard let sound = self?.usableSound else {
+                    return .rejected(.unsupportedRoute("Open Sound before changing its output."))
+                }
+                return sound.audioCommands.dispatch(command, context: context)
+            })
         for module in registry.modules
         where [.sound, .awake, .workspace, .scenes, .displays, .presentation].contains(module.id) {
             actions.append(

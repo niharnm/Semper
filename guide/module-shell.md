@@ -34,6 +34,8 @@ Away holds exclusive mutation admission through authentication and cleanup. Scen
 
 `ModuleRegistry` stores pure module and action descriptors. `UtilityCommandCenter` owns typed action handlers, current disabled reasons, confirmation, and cancellation. It rechecks admission immediately before execution. A pause or removal drains the module's command tasks before disposing its service.
 
+Sound exposes **Mute current output** and **Unmute current output** in search and favorites. Executing either action starts Sound if needed, resolves the current output again after startup, and sends the existing typed audio command. A missing output or unavailable mute state blocks the action with a reason. Browsing these actions does not start Sound.
+
 Action identifiers are stable strings in the form `module.verb`; they identify compiled handlers and never contain executable text. Actions belonging to added modules appear in search, including disabled paused actions. Pending lifecycle transitions temporarily hide their actions. Search compares every entered word against the action title, module name, and keywords, with a deterministic title-and-identifier order.
 
 Up to four favorites are stored by action identifier. Pausing preserves favorites for resume; removing a module removes its favorites. Unknown action identifiers are pruned after registration finishes.
