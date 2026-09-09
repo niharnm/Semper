@@ -47,6 +47,15 @@ A retry touches only the specified owner's pending IDs. It does not stop live
 requests. Other unresolved cleanup failures keep the service faulted. Retrying
 is an explicit caller action; there is no automatic retry loop.
 
+For module lifecycle cleanup, `hasPendingAssertionCleanup` reports unresolved
+manual or lease assertion IDs. `retryPendingAssertionCleanup()` retries only
+those IDs, bypassing manual admission and leaving all live requests untouched.
+It returns whether all pending IDs were released, not whether live requests have
+ended. Retain the service after a failed stop and call this API only for a
+deliberate retry. It also works after terminal shutdown, but never reopens the
+service or permits new sessions or leases. Shutdown retains its existing single
+bounded retry; repeated shutdown calls still do nothing.
+
 ## Verification limits
 
 Injected process, battery, observer, assertion, and view fixtures run without
