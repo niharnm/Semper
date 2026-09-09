@@ -163,9 +163,11 @@ final class DDCController {
     private var serviceWritesCancellation = DDCWriteCancellation()
     private var probeWorkItem: DispatchWorkItem?
     private var probeRequests = DDCProbeRequestState()
+    private var pendingProbeIDs: Set<UInt64> = []
     private var displayChangeObserver: NSObjectProtocol?
     private var mutationAdmission: MutationAdmissionGate?
     private var acceptsWrites = true
+    private var acceptsProbes = true
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     private let ddcQueue: DispatchQueue
@@ -192,15 +194,19 @@ final class DDCController {
 
     // MARK: - Lifecycle
 
-    func start() {
+    func start(
+        probeOperation: @escaping DDCProbeRunner.Operation = DDCProbeWorker.run
+    ) {
         guard drainWaiters.isEmpty else { return }
         acceptsWrites = true
-        probe()
+        acceptsProbes = true
+        probe(operation: probeOperation)
         setupDisplayChangeObserver()
     }
 
     func stop() {
         acceptsWrites = false
+        acceptsProbes = false
         if let obs = displayChangeObserver {
             NotificationCenter.default.removeObserver(obs)
             displayChangeObserver = nil
@@ -214,13 +220,13 @@ final class DDCController {
 
     func stopAndDrain() async {
         stop()
-        guard !pendingWrites.isEmpty else { return }
+        guard hasPendingWork else { return }
 
         await withCheckedContinuation { continuation in
-            if pendingWrites.isEmpty {
-                continuation.resume()
-            } else {
+            if hasPendingWork {
                 drainWaiters.append(continuation)
+            } else {
+                continuation.resume()
             }
         }
     }
@@ -435,12 +441,16 @@ final class DDCController {
     }
 
     private func resumeDrainWaitersIfNeeded() {
-        guard pendingWrites.isEmpty, !drainWaiters.isEmpty else { return }
+        guard !hasPendingWork, !drainWaiters.isEmpty else { return }
         let waiters = drainWaiters
         drainWaiters.removeAll()
         for waiter in waiters {
             waiter.resume()
         }
+    }
+
+    private var hasPendingWork: Bool {
+        !pendingWrites.isEmpty || !pendingProbeIDs.isEmpty
     }
 
     private func publishFailedWrite(for deviceID: AudioDeviceID, restoredVolume: Int?) {
@@ -512,15 +522,19 @@ final class DDCController {
     // MARK: - Display Probing
 
     /// Probes for DDC-capable displays on a background queue, then matches to CoreAudio devices.
+    @discardableResult
     func probe(
         operation: @escaping DDCProbeRunner.Operation = DDCProbeWorker.run
-    ) {
+    ) -> Bool {
+        guard acceptsProbes else { return false }
+
         serviceWritesCancellation.cancel()
         cancelPendingWrites()
 
         let input = probeRequests.begin()
-        let completion: @MainActor @Sendable (DDCProbeResult) -> Void = { [weak self] result in
-            self?.receiveProbeResult(result)
+        pendingProbeIDs.insert(input.id)
+        let completion: @MainActor @Sendable (DDCProbeResult?) -> Void = { [weak self] result in
+            self?.receiveProbeCompletion(inputID: input.id, result: result)
         }
         DDCProbeRunner.submit(
             on: ddcQueue,
@@ -528,6 +542,15 @@ final class DDCController {
             operation: operation,
             completion: completion
         )
+        return true
+    }
+
+    private func receiveProbeCompletion(inputID: UInt64, result: DDCProbeResult?) {
+        if let result {
+            receiveProbeResult(result)
+        }
+        pendingProbeIDs.remove(inputID)
+        resumeDrainWaitersIfNeeded()
     }
 
     private func receiveProbeResult(_ result: DDCProbeResult) {

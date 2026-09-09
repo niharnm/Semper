@@ -26,12 +26,21 @@ private actor DisplayOperationTestSignal {
 
 private actor DisplayOperationTestGate {
     private let entered = DisplayOperationTestSignal()
+    private let beforeContinuationRegistration: (@Sendable () async -> Void)?
     private var continuation: CheckedContinuation<Void, Never>?
     private var isOpen = false
+
+    init(beforeContinuationRegistration: (@Sendable () async -> Void)? = nil) {
+        self.beforeContinuationRegistration = beforeContinuationRegistration
+    }
 
     func wait() async {
         guard !isOpen else { return }
         await entered.send()
+        if let beforeContinuationRegistration {
+            await beforeContinuationRegistration()
+        }
+        guard !isOpen else { return }
         await withCheckedContinuation { continuation in
             self.continuation = continuation
         }
@@ -228,6 +237,36 @@ struct DisplayControlServiceTests {
             Issue.record("Cancelled probe returned \(error)")
         }
         #expect(operationCalls.withLock { $0 } == 0)
+    }
+
+    @Test("Opening an operation gate during registration does not lose the wakeup")
+    func openingGateDuringRegistrationDoesNotLoseWakeup() async {
+        let windowEntered = DisplayThreadSignal()
+        let releaseWindow = DisplayThreadSignal()
+        let waiterFinished = DisplayThreadSignal()
+        let gate = DisplayOperationTestGate(beforeContinuationRegistration: {
+            windowEntered.send()
+            _ = await releaseWindow.wait()
+        })
+        let waiter = Task {
+            await gate.wait()
+            waiterFinished.send()
+        }
+
+        let entered = await windowEntered.wait()
+        if entered {
+            await gate.open()
+        }
+        releaseWindow.send()
+        let finished = await waiterFinished.wait()
+
+        releaseWindow.send()
+        await gate.open()
+        waiter.cancel()
+        _ = await waiter.result
+
+        #expect(entered)
+        #expect(finished)
     }
 
     @Test("Newer probe publication rejects a delayed older flight")
