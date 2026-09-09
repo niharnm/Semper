@@ -6,54 +6,241 @@ import Testing
 import Foundation
 @testable import Semper
 
-@Suite("Settings persistence writer")
+@Suite("Settings persistence writer", .timeLimit(.minutes(1)))
 struct SettingsPersistenceWriterTests {
     @Test("Synchronous write waits for queued writes and completes last")
-    func synchronousWriteCompletesLast() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SemperTests-\(UUID().uuidString)", isDirectory: true)
-        let url = directory.appendingPathComponent("settings.json")
-        let olderData = Data("older".utf8)
-        let currentData = Data("current".utf8)
-        let olderWriteStarted = DispatchSemaphore(value: 0)
-        let releaseOlderWrite = DispatchSemaphore(value: 0)
-        let asyncWriteFailed = DispatchSemaphore(value: 0)
-        let flushFinished = DispatchSemaphore(value: 0)
-        let flushFailed = DispatchSemaphore(value: 0)
-        defer { try? FileManager.default.removeItem(at: directory) }
+    func synchronousWriteCompletesLast() async throws {
+        let fixture = SettingsWriterTestFixture()
+        try await withFixtureCleanup(fixture) {
+            try await exerciseWrites(fixture)
+        }
+        #expect(fixture.isDrained)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+    }
 
-        let writer = SettingsPersistenceWriter { data, destination in
-            if data == olderData {
-                olderWriteStarted.signal()
-                releaseOlderWrite.wait()
+    @Test(
+        "Cancellation releases held writes and joins workers before deleting files",
+        arguments: [
+            SettingsWriterTestFixture.Event.olderStarted, .currentStarted,
+        ])
+    private func cancellationDrainsBeforeRemoval(heldEvent: SettingsWriterTestFixture.Event) async {
+        let fixture = SettingsWriterTestFixture()
+        let reached = AsyncStream<Void>.makeStream()
+        let operation = Task {
+            defer { reached.continuation.finish() }
+            try await withFixtureCleanup(fixture) {
+                fixture.startOlderWrite()
+                for await event in fixture.events {
+                    switch event {
+                    case .olderFailed(let message), .flushFailed(let message):
+                        throw SettingsWriterTestFixture.Failure.writeFailed(message)
+                    default:
+                        break
+                    }
+                    if event == heldEvent {
+                        reached.continuation.yield(())
+                    } else if event == .olderStarted {
+                        fixture.startFlush()
+                    } else if event == .flushRequested {
+                        fixture.releaseOlderWrite.signal()
+                    }
+                }
+                try Task.checkCancellation()
             }
+        }
+        await withTaskCancellationHandler {
+            var iterator = reached.stream.makeAsyncIterator()
+            let didReachHeldWrite = await iterator.next() != nil
+            operation.cancel()
+            let result = await operation.result
+            reached.continuation.finish()
+            #expect(didReachHeldWrite)
+            switch result {
+            case .success:
+                Issue.record("Cancelled fixture operation unexpectedly succeeded")
+            case .failure(let error):
+                #expect(error is CancellationError)
+            }
+            #expect(fixture.isDrained)
+            #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+        } onCancel: {
+            operation.cancel()
+        }
+    }
+
+    @Test("Cancellation before entry releases a subsequently queued writer")
+    @MainActor
+    func cancellationBeforeEntryDrainsBeforeRemoval() async {
+        let fixture = SettingsWriterTestFixture()
+        let operation = Task {
+            try await withFixtureCleanup(fixture) {
+                fixture.startOlderWrite()
+                try Task.checkCancellation()
+            }
+        }
+        operation.cancel()
+        switch await operation.result {
+        case .success:
+            Issue.record("Cancelled fixture operation unexpectedly succeeded")
+        case .failure(let error):
+            #expect(error is CancellationError)
+        }
+        #expect(fixture.isDrained)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+    }
+
+    @Test(
+        "Asynchronous and synchronous write errors surface after cleanup",
+        arguments: [
+            SettingsWriterTestFixture.olderData, SettingsWriterTestFixture.currentData,
+        ])
+    func writeFailureDrainsBeforeRemoval(failingData: Data) async {
+        let fixture = SettingsWriterTestFixture(failingData: failingData)
+        do {
+            try await withFixtureCleanup(fixture) {
+                try await exerciseWrites(fixture)
+            }
+            Issue.record("Injected write failure unexpectedly succeeded")
+        } catch {
+            #expect(error as? SettingsWriterTestFixture.Failure == .writeFailed("injectedWrite"))
+        }
+        #expect(fixture.isDrained)
+        #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+    }
+
+    private func exerciseWrites(_ fixture: SettingsWriterTestFixture) async throws {
+        var observed: [SettingsWriterTestFixture.Event] = []
+        fixture.startOlderWrite()
+        events: for await event in fixture.events {
+            observed.append(event)
+            switch event {
+            case .olderStarted:
+                fixture.startFlush()
+            case .flushRequested:
+                fixture.releaseOlderWrite.signal()
+            case .currentStarted:
+                #expect(try Data(contentsOf: fixture.url) == SettingsWriterTestFixture.olderData)
+                fixture.releaseCurrentWrite.signal()
+            case .flushReturned:
+                break events
+            case .olderFailed(let message), .flushFailed(let message):
+                throw SettingsWriterTestFixture.Failure.writeFailed(message)
+            case .olderFinished, .currentFinished:
+                break
+            }
+        }
+        try Task.checkCancellation()
+        #expect(
+            observed == [
+                .olderStarted, .flushRequested, .olderFinished,
+                .currentStarted, .currentFinished, .flushReturned,
+            ])
+        #expect(try Data(contentsOf: fixture.url) == SettingsWriterTestFixture.currentData)
+    }
+
+    private func withFixtureCleanup(
+        _ fixture: SettingsWriterTestFixture,
+        operation: () async throws -> Void
+    ) async throws {
+        let result: Result<Void, Error>
+        do {
+            try await withTaskCancellationHandler(operation: operation) {
+                fixture.releaseWrites()
+            }
+            result = .success(())
+        } catch {
+            result = .failure(error)
+        }
+        try await fixture.cleanup()
+        try result.get()
+    }
+}
+
+private nonisolated final class SettingsWriterTestFixture: Sendable {
+    enum Event: Equatable, Sendable {
+        case olderStarted, olderFinished, flushRequested, currentStarted, currentFinished, flushReturned
+        case olderFailed(String)
+        case flushFailed(String)
+    }
+
+    enum Failure: Error, Equatable {
+        case injectedWrite
+        case writeFailed(String)
+    }
+
+    static let olderData = Data("older".utf8)
+    static let currentData = Data("current".utf8)
+    let directory: URL
+    let url: URL
+    let events: AsyncStream<Event>
+    let releaseOlderWrite = DispatchSemaphore(value: 0)
+    let releaseCurrentWrite = DispatchSemaphore(value: 0)
+    private let continuation: AsyncStream<Event>.Continuation
+    private let workers = DispatchGroup()
+    private let writer: SettingsPersistenceWriter
+
+    var isDrained: Bool { workers.wait(timeout: .now()) == .success }
+
+    init(failingData: Data? = nil) {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperTests-\(UUID().uuidString)", isDirectory: true)
+        url = directory.appendingPathComponent("settings.json")
+        (events, continuation) = AsyncStream<Event>.makeStream()
+        let continuation = continuation
+        let releaseOlderWrite = releaseOlderWrite
+        let releaseCurrentWrite = releaseCurrentWrite
+        let workers = workers
+        writer = SettingsPersistenceWriter { data, destination in
+            let isOlder = data == Self.olderData
+            continuation.yield(isOlder ? .olderStarted : .currentStarted)
+            (isOlder ? releaseOlderWrite : releaseCurrentWrite).wait()
+            if data == failingData { throw Failure.injectedWrite }
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
             try data.write(to: destination, options: .atomic)
+            continuation.yield(isOlder ? .olderFinished : .currentFinished)
+            if isOlder { workers.leave() }
         }
+    }
 
-        writer.enqueue(olderData, to: url) { _ in
-            asyncWriteFailed.signal()
+    func startOlderWrite() {
+        workers.enter()
+        writer.enqueue(Self.olderData, to: url) { [continuation, workers] error in
+            continuation.yield(.olderFailed(String(describing: error)))
+            workers.leave()
         }
-        #expect(olderWriteStarted.wait(timeout: .now() + 2) == .success)
+    }
 
-        DispatchQueue.global().async {
+    func startFlush() {
+        workers.enter()
+        DispatchQueue.global().async { [writer, url, continuation, workers] in
+            defer { workers.leave() }
+            continuation.yield(.flushRequested)
             do {
-                try writer.writeSynchronously(currentData, to: url)
+                try writer.writeSynchronously(Self.currentData, to: url)
+                continuation.yield(.flushReturned)
             } catch {
-                flushFailed.signal()
+                continuation.yield(.flushFailed(String(describing: error)))
             }
-            flushFinished.signal()
         }
+    }
 
-        #expect(flushFinished.wait(timeout: .now() + 0.1) == .timedOut)
+    func releaseWrites() {
         releaseOlderWrite.signal()
-        #expect(flushFinished.wait(timeout: .now() + 2) == .success)
-        #expect(asyncWriteFailed.wait(timeout: .now()) == .timedOut)
-        #expect(flushFailed.wait(timeout: .now()) == .timedOut)
-        #expect(try Data(contentsOf: url) == currentData)
+        releaseCurrentWrite.signal()
+    }
+
+    func cleanup() async throws {
+        releaseWrites()
+        await withCheckedContinuation { continuation in
+            workers.notify(queue: .global()) { continuation.resume() }
+        }
+        continuation.finish()
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
     }
 }
 
