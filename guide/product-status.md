@@ -50,11 +50,14 @@ or notarization readiness. See the
 Before an integrated module is called released, one signed build must pass on
 hardware: clean-Mac install, real permission prompts including denial and
 revocation recovery, module add, pause, remove, and quit with active work,
-keyboard and VoiceOver access, and updater behavior.
+keyboard and VoiceOver access, updater behavior, and uninstall cleanup.
 
 Binary publication also requires completed signing and notarization checks,
 source-rights and third-party-notice review, and verified install, update and
 rollback behavior. These are release gates, not claims that they have passed.
+
+Before publication, the website, README, release notes, Homebrew cask, and
+update feed must refer to the same verified release artifact.
 
 ## Update contract
 
