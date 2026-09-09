@@ -79,10 +79,13 @@ struct UtilityRuntimeTests {
 
     @Test("Home and Modules render without constructing services or attaching shell actions")
     func dormantViewsRender() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SemperShellVisualTests.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try await withRuntime { runtime, probe, _ in
-            for (destination, path) in [
-                (UtilityDestination.home, "/tmp/semper-shell-home.png"),
-                (UtilityDestination.modules, "/tmp/semper-shell-modules.png"),
+            for (destination, filename) in [
+                (UtilityDestination.home, "home.png"),
+                (UtilityDestination.modules, "modules.png"),
             ] {
                 runtime.destination = destination
                 let view = NSHostingView(
@@ -101,7 +104,7 @@ struct UtilityRuntimeTests {
                 #expect(bitmap.pixelsHigh >= 760)
                 #expect(bitmap.pixelsWide * 760 == bitmap.pixelsHigh * 960)
                 let png = try #require(bitmap.representation(using: .png, properties: [:]))
-                try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+                try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
                 #expect(runtime.onOpenDetail == nil)
                 #expect(runtime.sound == nil)
                 #expect(runtime.awake == nil)

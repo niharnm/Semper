@@ -52,7 +52,7 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
-- **Independent Utilities**: Home provides module summaries, up to four pinned actions, and search. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
+- **Independent Utilities**: Home provides module summaries, attention items, up to four pinned actions, search, and recent action outcomes for the current session. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
 - **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
 - **ISO 226 Equal-Loudness Compensation**: Dynamic frequency contour adjustment matching human psychoacoustics at varying volume levels.

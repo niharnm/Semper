@@ -161,10 +161,52 @@ struct UtilityShellView: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    if let message = runtime.message { Text(message).foregroundStyle(.orange) }
-                    ForEach(runtime.lifecycle.failures.keys.sorted(by: { $0.rawValue < $1.rawValue }), id: \.self) {
-                        id in
-                        Text(runtime.lifecycle.failures[id] ?? "").foregroundStyle(.orange)
+                    if let message = runtime.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        !attentionItems.contains(where: { item in
+                            item.reasons.contains { $0.caseInsensitiveCompare(message) == .orderedSame }
+                        })
+                    {
+                        Text(message).foregroundStyle(.orange)
+                    }
+                    if !attentionItems.isEmpty {
+                        Text("Needs attention").font(.headline)
+                        ForEach(attentionItems) { item in
+                            if let module = runtime.registry.descriptor(for: item.id) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(module.title, systemImage: "exclamationmark.triangle")
+                                        .font(.subheadline.weight(.medium))
+                                    ForEach(item.reasons, id: \.self) { reason in
+                                        Text(reason).font(.caption)
+                                    }
+                                }
+                                .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+                    if !runtime.commands.recentActions.isEmpty {
+                        HStack {
+                            Text("Recent actions").font(.headline)
+                            Spacer()
+                            Text("This session").font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(
+                            runtime.commands.recentActions.prefix(
+                                compact ? 3 : UtilityCommandCenter.maximumRecentActions)
+                        ) { entry in
+                            if let action = runtime.registry.actionMetadata(for: entry.actionID) {
+                                HStack(spacing: 10) {
+                                    Label(action.title, systemImage: action.symbolName)
+                                        .font(.caption)
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text(entry.result.displayText)
+                                        Text(entry.timestamp, style: .time)
+                                    }
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
                     }
                     Text("Actions").font(.headline)
                 }
@@ -177,6 +219,10 @@ struct UtilityShellView: View {
             }
         }
         .frame(maxHeight: compact ? 560 : nil)
+    }
+
+    private var attentionItems: [UtilityModuleAttention] {
+        runtime.commands.attentionItems(lifecycleFailures: runtime.lifecycle.failures)
     }
 
     var sceneRecoveryDestination: UtilityDestination? {

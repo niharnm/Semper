@@ -315,8 +315,13 @@ final class UtilityRuntime {
     func summary(for module: UtilityModuleID) -> String {
         switch module {
         case .sound:
-            guard let sound else { return "Open Sound to start audio controls." }
-            return "\(sound.audioEngine.apps.count) apps available"
+            guard let sound = usableSound else { return "Open Sound to start audio controls." }
+            let output =
+                sound.audioEngine.outputDevices.first {
+                    $0.id == sound.deviceVolumeMonitor.defaultDeviceID
+                }?.name ?? "No current output"
+            let activeCount = sound.audioEngine.apps.filter { !$0.runningProcessObjectIDs.isEmpty }.count
+            return "\(output), \(activeCount) \(activeCount == 1 ? "app" : "apps") with active audio"
         case .awake:
             guard let session = awake?.session else {
                 if let awake, awake.effectiveLeaseCount > 0 { return "Awake for another utility" }

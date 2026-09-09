@@ -25,6 +25,9 @@ struct UtilityCommandCenterTests {
             #expect(availabilityChecks == 0)
             #expect(permissionRequests == 0)
             #expect(center.running.isEmpty)
+            #expect(center.recentActions.isEmpty)
+            #expect(center.attentionItems(lifecycleFailures: [:]).isEmpty)
+            #expect(availabilityChecks == 0)
         }
     }
 
@@ -351,6 +354,188 @@ struct UtilityCommandCenterTests {
         }
     }
 
+    @Test("Recent actions are bounded, newest first, and identify repeated actions separately")
+    func recentActionsAreBounded() async throws {
+        var timestamp = Date(timeIntervalSince1970: 100)
+        try await withCenter(
+            now: { timestamp },
+            body: { center in
+                let action = handler {}
+                try center.register([action])
+                for offset in 0..<12 {
+                    timestamp = Date(timeIntervalSince1970: Double(100 + offset))
+                    #expect(await center.execute(action.descriptor.id) == .completed)
+                }
+
+                #expect(center.recentActions.count == UtilityCommandCenter.maximumRecentActions)
+                #expect(Set(center.recentActions.map(\.id)).count == UtilityCommandCenter.maximumRecentActions)
+                #expect(
+                    center.recentActions.allSatisfy { $0.actionID == action.descriptor.id && $0.result == .completed })
+                #expect(
+                    center.recentActions.map(\.timestamp)
+                        == (104...111).reversed().map { Date(timeIntervalSince1970: Double($0)) })
+            })
+    }
+
+    @Test("History stores result classes without errors, confirmation text, or unknown identifiers")
+    func recentActionsKeepOnlyRegisteredIdentityAndResultClass() async throws {
+        try await withCenter { center in
+            let completed = handler(id: "awake.completed") {}
+            let accepted = UtilityActionHandler(
+                descriptor: handler(id: "awake.accepted") {}.descriptor, disabledReason: { nil },
+                performOutcome: { .accepted })
+            let failed = handler(id: "awake.failed") { throw CommandTestError.sensitive }
+            let cancelled = handler(id: "awake.cancelled") { throw CancellationError() }
+            let unavailable = handler(id: "awake.unavailable", disabledReason: { "/private/secret-file.txt" }) {}
+            let confirmation = handler(id: "awake.confirmation", confirmation: "Private window title") {}
+            try center.register([completed, accepted, failed, cancelled, unavailable, confirmation])
+            for action in [completed, accepted, failed, cancelled, unavailable, confirmation] {
+                await center.execute(action.descriptor.id)
+            }
+
+            #expect(
+                center.recentActions.map(\.result) == [
+                    .confirmationRequired, .unavailable, .cancelled, .failed, .accepted, .completed,
+                ])
+            for entry in center.recentActions {
+                #expect(
+                    Mirror(reflecting: entry).children.compactMap(\.label) == ["id", "actionID", "timestamp", "result"])
+                #expect(center.registry.actionMetadata(for: entry.actionID)?.title == "Test action")
+                #expect(!String(reflecting: entry).contains("secret-file"))
+                #expect(!String(reflecting: entry).contains("Private window title"))
+            }
+            let before = center.recentActions
+            await center.execute(UtilityActionID(rawValue: "/private/unknown-action.txt"))
+            let missingHandler = handler(id: "awake.no-handler") {}
+            try center.registry.register(actions: [missingHandler.descriptor])
+            await center.execute(missingHandler.descriptor.id)
+            #expect(center.recentActions == before)
+        }
+    }
+
+    @Test("Accepted asynchronous work is not reported as completed or cancelled", arguments: [false, true])
+    func acceptedOutcomeIsHonest(cancelCaller: Bool) async throws {
+        try await withCenter { center in
+            let entered = CommandTestSignal()
+            let release = CommandTestSignal()
+            let action = UtilityActionHandler(
+                descriptor: handler {}.descriptor, disabledReason: { nil },
+                performOutcome: {
+                    entered.signal()
+                    await release.wait()
+                    return .accepted
+                })
+            try center.register([action])
+            let execution = Task { await center.execute(action.descriptor.id) }
+            await entered.wait()
+            #expect(center.recentActions.isEmpty)
+            #expect(center.running == [action.descriptor.id])
+            if cancelCaller { execution.cancel() }
+            release.signal()
+            #expect(await execution.value == .accepted)
+            #expect(center.lastResult == .accepted)
+            #expect(center.recentActions.map(\.result) == [.accepted])
+            #expect(center.running.isEmpty)
+        }
+    }
+
+    @Test(
+        "Typed outcomes remain authoritative when completion cancels the current task",
+        arguments: [UtilityActionOutcome.completed, .accepted])
+    func typedOutcomeSurvivesCompletionCancellation(outcome: UtilityActionOutcome) async throws {
+        try await withCenter { center in
+            var completions = 0
+            var observedCancellation = false
+            let action = UtilityActionHandler(
+                descriptor: handler {}.descriptor, disabledReason: { nil },
+                performOutcome: {
+                    completions += 1
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    observedCancellation = Task.isCancelled
+                    return outcome
+                })
+            try center.register([action])
+
+            let expected: UtilityCommandResult = outcome == .completed ? .completed : .accepted
+            #expect(await center.execute(action.descriptor.id) == expected)
+            #expect(completions == 1)
+            #expect(observedCancellation)
+            #expect(center.lastResult == expected)
+            #expect(center.recentActions.map(\.result) == [outcome == .completed ? .completed : .accepted])
+            #expect(center.running.isEmpty)
+        }
+    }
+
+    @Test("Legacy Void handlers retain post-perform cancellation checking")
+    func legacyCompletionCancellation() async throws {
+        try await withCenter { center in
+            var calls = 0
+            let action = handler {
+                calls += 1
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            try center.register([action])
+
+            #expect(await center.execute(action.descriptor.id) == .cancelled)
+            #expect(calls == 1)
+            #expect(center.lastResult == .cancelled)
+            #expect(center.recentActions.map(\.result) == [.cancelled])
+            #expect(center.running.isEmpty)
+        }
+    }
+
+    @Test("Action history is session-only and never changes persisted registry data")
+    func recentActionsAreNotPersisted() async throws {
+        let suite = "UtilityHistoryTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let registry = try ModuleRegistry(defaults: defaults)
+        let center = UtilityCommandCenter(registry: registry)
+        let action = handler {}
+        try center.register([action])
+        let before = defaults.persistentDomain(forName: suite) ?? [:]
+        await center.execute(action.descriptor.id)
+        #expect(center.recentActions.count == 1)
+        #expect(NSDictionary(dictionary: defaults.persistentDomain(forName: suite) ?? [:]).isEqual(to: before))
+        let replacement = UtilityCommandCenter(registry: try ModuleRegistry(defaults: defaults))
+        #expect(replacement.recentActions.isEmpty)
+    }
+
+    @Test("Home attention includes registry failures and permission reasons without duplicate module items")
+    func attentionIncludesRegistryReasons() async throws {
+        try await withCenter { center in
+            try center.registry.setRuntime(.limited(reason: "Allow audio access."), for: .sound)
+            try center.registry.setPermission(.denied, for: .sound)
+            try center.registry.setRuntime(.failed(reason: "Cleanup failed."), for: .awake)
+            try center.registry.setPermission(.revoked, for: .awake)
+            try center.registry.add(.shelf)
+            try center.registry.setPermission(.restricted, for: .shelf)
+            let items = center.attentionItems(lifecycleFailures: [
+                .sound: "  Allow audio access.\n", .awake: "Cleanup failed.",
+            ])
+
+            #expect(items.count == 3)
+            #expect(items.first(where: { $0.id == .sound })?.reasons == ["Allow audio access.", "Permission denied."])
+            #expect(items.first(where: { $0.id == .awake })?.reasons == ["Cleanup failed.", "Permission revoked."])
+            #expect(items.first(where: { $0.id == .shelf })?.reasons == ["Permission restricted."])
+        }
+    }
+
+    @Test("Home attention ignores healthy and unadded modules but retains cleanup failures")
+    func attentionPresenceAndRecovery() async throws {
+        try await withCenter { center in
+            try center.registry.setRuntime(.ready, for: .sound)
+            try center.registry.setPermission(.granted, for: .sound)
+            try center.registry.setPermission(.denied, for: .workspace)
+            #expect(center.attentionItems(lifecycleFailures: [:]).isEmpty)
+            let items = center.attentionItems(lifecycleFailures: [.workspace: "Restore remains pending."])
+            #expect(
+                items == [
+                    UtilityModuleAttention(id: .workspace, reasons: ["Restore remains pending.", "Permission denied."])
+                ])
+        }
+    }
+
     private func handler(
         id: String = "awake.start",
         module: UtilityModuleID = .awake,
@@ -371,13 +556,14 @@ struct UtilityCommandCenterTests {
     private func withCenter(
         modules: [UtilityModuleDescriptor] = UtilityModuleDescriptor.catalog,
         admissionReason: @escaping () -> String? = { nil },
+        now: @escaping () -> Date = Date.init,
         body: @MainActor (UtilityCommandCenter) async throws -> Void
     ) async throws {
         let suite = "UtilityCommandCenterTests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let registry = try ModuleRegistry(defaults: defaults, modules: modules)
-        try await body(UtilityCommandCenter(registry: registry, admissionReason: admissionReason))
+        try await body(UtilityCommandCenter(registry: registry, admissionReason: admissionReason, now: now))
     }
 }
 
@@ -401,6 +587,12 @@ private final class CommandTestSignal {
 
 private enum CommandTestError: LocalizedError {
     case expected
+    case sensitive
 
-    var errorDescription: String? { "Test command failed." }
+    var errorDescription: String? {
+        switch self {
+        case .expected: "Test command failed."
+        case .sensitive: "/private/secret-file.txt: Private window title"
+        }
+    }
 }

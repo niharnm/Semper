@@ -78,6 +78,9 @@ struct UtilityActionList: View {
             case .completed:
                 message = nil
                 pendingConfirmation = nil
+            case .accepted:
+                message = "Action accepted."
+                pendingConfirmation = nil
             case .cancelled:
                 message = "Action cancelled."
                 pendingConfirmation = nil
