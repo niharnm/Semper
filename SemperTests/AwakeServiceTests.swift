@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import IOKit.pwr_mgt
+import Observation
 import SwiftUI
 import Testing
 @testable import Semper
@@ -16,6 +17,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
     var failingKinds: Set<PowerAssertionKind> = []
     var failingReleaseIDs: Set<PowerAssertionID> = []
     private(set) var events: [Event] = []
+    private(set) var requestedReasons: [String] = []
     private(set) var requestedTimeouts: [TimeInterval?] = []
     private var nextID: PowerAssertionID = 1
 
@@ -30,6 +32,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
         let id = nextID
         nextID += 1
         events.append(.created(id, kind))
+        requestedReasons.append(reason)
         requestedTimeouts.append(timeout)
         return id
     }
@@ -125,6 +128,9 @@ struct AwakeServiceTests {
         #expect(!service.isActive)
         #expect(!service.keepDisplayAwake)
         #expect(!service.lastActionFailed)
+        #expect(service.leaseStates.isEmpty)
+        #expect(service.effectiveLeaseCount == 0)
+        #expect(!service.hasEffectiveAwakeRequest)
         #expect(backend.events.isEmpty)
         #expect(scheduler.scheduledDate == nil)
     }
@@ -496,6 +502,269 @@ struct AwakeServiceTests {
         #expect(fresh.session == nil)
         #expect(!fresh.isActive)
         #expect(backend.events == eventsBefore, "Creating a service must not touch assertions")
+    }
+
+    @Test("User, Away, and Scene requests own independent assertions")
+    func leaseOwnerIsolation() throws {
+        let (service, backend, _, _) = makeService()
+
+        service.start(.oneHour)
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+
+        #expect(service.isActive)
+        #expect(service.effectiveLeaseCount == 2)
+        #expect(service.hasEffectiveAwakeRequest)
+        #expect(service.leaseState(for: .awayMode) == AwakeLeaseState(
+            owner: .awayMode,
+            keepsDisplayAwake: false
+        ))
+        #expect(service.leaseState(for: .scene) == AwakeLeaseState(
+            owner: .scene,
+            keepsDisplayAwake: true
+        ))
+        #expect(backend.activeAssertionIDs == [1, 2, 3, 4])
+
+        #expect(service.releaseLease(scene))
+        #expect(service.leaseState(for: .scene) == nil)
+        #expect(service.hasLease(for: .awayMode))
+        #expect(service.isActive)
+        #expect(backend.activeAssertionIDs == [1, 2])
+
+        service.stop()
+        #expect(!service.isActive)
+        #expect(service.hasLease(for: .awayMode))
+        #expect(service.hasEffectiveAwakeRequest)
+        #expect(backend.activeAssertionIDs == [2])
+
+        #expect(service.releaseLease(away))
+        #expect(!service.hasEffectiveAwakeRequest)
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Lease assertions use owner-specific reasons")
+    func ownerSpecificReasons() throws {
+        let (service, backend, _, _) = makeService()
+
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
+        _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+
+        #expect(backend.requestedReasons == [
+            "Semper Away Mode requested idle sleep prevention",
+            "Semper Away Mode requested idle display sleep prevention",
+            "Semper Scene requested idle sleep prevention",
+            "Semper Scene requested idle display sleep prevention",
+        ])
+    }
+
+    @Test("A lease update acquires its replacement before releasing prior assertions")
+    func leaseUpdateOrder() throws {
+        let (service, backend, _, _) = makeService()
+        let lease = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+
+        try service.updateLease(lease, keepsDisplayAwake: true)
+
+        #expect(backend.events == [
+            .created(1, .preventIdleSystemSleep),
+            .created(2, .preventIdleSystemSleep),
+            .created(3, .preventIdleDisplaySleep),
+            .released(1),
+        ])
+        #expect(service.leaseState(for: .scene)?.keepsDisplayAwake == true)
+        #expect(backend.activeAssertionIDs == [2, 3])
+    }
+
+    @Test("Repeated acquire returns one owner token and updates it in place")
+    func idempotentLeaseAcquire() throws {
+        let (service, backend, _, _) = makeService()
+        let first = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        let eventsAfterFirstAcquire = backend.events
+
+        let unchanged = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        #expect(unchanged == first)
+        #expect(backend.events == eventsAfterFirstAcquire)
+
+        let updated = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+        #expect(updated == first)
+        #expect(service.effectiveLeaseCount == 1)
+        #expect(service.leaseState(for: .scene)?.keepsDisplayAwake == true)
+        #expect(backend.events == [
+            .created(1, .preventIdleSystemSleep),
+            .created(2, .preventIdleSystemSleep),
+            .created(3, .preventIdleDisplaySleep),
+            .released(1),
+        ])
+    }
+
+    @Test("A failed lease acquisition preserves that owner's prior state")
+    func failedLeaseUpdateAcquisition() throws {
+        let (service, backend, _, _) = makeService()
+        let lease = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        backend.failingKinds = [.preventIdleDisplaySleep]
+
+        #expect(throws: AwakeLeaseError.couldNotAcquire) {
+            try service.updateLease(lease, keepsDisplayAwake: true)
+        }
+
+        #expect(service.leaseState(for: .scene)?.keepsDisplayAwake == false)
+        #expect(service.failure == .couldNotStart)
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(backend.releaseCount(for: 2) == 1)
+    }
+
+    @Test("Lease release reports a backend failure and retains cleanup state")
+    func leaseReleaseFailure() throws {
+        let (service, backend, _, _) = makeService()
+        let lease = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        backend.failingReleaseIDs = [1]
+
+        #expect(!service.releaseLease(lease))
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.leaseState(for: .awayMode) == nil)
+        #expect(service.effectiveLeaseCount == 0)
+        #expect(backend.activeAssertionIDs == [1])
+
+        #expect(!service.releaseLease(lease))
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(throws: AwakeLeaseError.serviceUnavailable) {
+            try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        }
+    }
+
+    @Test("Shutdown retries only the unresolved IDs from a partial lease release")
+    func shutdownRetriesPartialLeaseRelease() throws {
+        let (service, backend, _, _) = makeService()
+        let lease = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+        backend.failingReleaseIDs = [2]
+
+        #expect(!service.releaseLease(lease))
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 2) == 1)
+        let eventsAfterRelease = backend.events
+        #expect(!service.releaseLease(lease))
+        #expect(backend.events == eventsAfterRelease)
+
+        backend.failingReleaseIDs = []
+        service.shutdown()
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(service.releaseLease(lease))
+
+        let eventsAfterShutdown = backend.events
+        service.shutdown()
+        #expect(backend.events == eventsAfterShutdown)
+    }
+
+    @Test("Shutdown retries a failed user-session release once")
+    func shutdownRetriesUserSessionRelease() {
+        let (service, backend, _, _) = makeService()
+        service.start(.untilTurnedOff)
+        backend.failingReleaseIDs = [1]
+
+        service.stop()
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.releaseCount(for: 1) == 1)
+
+        backend.failingReleaseIDs = []
+        service.shutdown()
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 2)
+
+        let eventsAfterShutdown = backend.events
+        service.shutdown()
+        #expect(backend.events == eventsAfterShutdown)
+    }
+
+    @Test("Repeated shutdown does not retry a failed cleanup again")
+    func failedShutdownLeaseRetry() throws {
+        let (service, backend, _, _) = makeService()
+        service.start(.untilTurnedOff)
+        let lease = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        backend.failingReleaseIDs = [1, 2]
+
+        service.stop()
+        #expect(!service.releaseLease(lease))
+        backend.failingReleaseIDs = [2]
+        service.shutdown()
+
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(backend.releaseCount(for: 1) == 2)
+        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(!service.releaseLease(lease))
+
+        let eventsAfterShutdown = backend.events
+        service.shutdown()
+        #expect(backend.events == eventsAfterShutdown)
+    }
+
+    @Test("Duplicate and stale lease releases are idempotent")
+    func duplicateLeaseRelease() throws {
+        let (service, backend, _, _) = makeService()
+        let first = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        #expect(service.releaseLease(first))
+        let second = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+
+        #expect(service.releaseLease(first))
+        #expect(service.hasLease(for: .scene))
+        #expect(backend.activeAssertionIDs == [2])
+
+        #expect(service.releaseLease(second))
+        #expect(service.releaseLease(second))
+        #expect(backend.releaseCount(for: 2) == 1)
+    }
+
+    @Test("Shutdown releases user, Away, and Scene assertions exactly once")
+    func shutdownReleasesEveryOwner() throws {
+        let (service, backend, _, _) = makeService()
+        service.setKeepDisplayAwake(true)
+        service.start(.untilTurnedOff)
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+
+        service.shutdown()
+        service.shutdown()
+
+        #expect(service.session == nil)
+        #expect(service.leaseStates.isEmpty)
+        #expect(!service.hasEffectiveAwakeRequest)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        for id in PowerAssertionID(1)...PowerAssertionID(5) {
+            #expect(backend.releaseCount(for: id) == 1)
+        }
+    }
+
+    @Test("Per-owner lease state invalidates observation")
+    func leaseStateObservation() async throws {
+        let (service, _, _, _) = makeService()
+
+        try await confirmation("Scene lease state changed", expectedCount: 3) { changed in
+            withObservationTracking {
+                _ = service.leaseState(for: .scene)
+            } onChange: {
+                changed()
+            }
+
+            let lease = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+
+            withObservationTracking {
+                _ = service.leaseState(for: .scene)
+            } onChange: {
+                changed()
+            }
+
+            try service.updateLease(lease, keepsDisplayAwake: true)
+
+            withObservationTracking {
+                _ = service.leaseState(for: .scene)
+            } onChange: {
+                changed()
+            }
+
+            #expect(service.releaseLease(lease))
+        }
     }
 
     @Test("Assertion kinds map to the public idle sleep constants")
