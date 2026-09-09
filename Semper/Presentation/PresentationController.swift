@@ -102,6 +102,10 @@ final class PresentationController {
         phase == .preview && !isBusy && (scenePreview?.canApply ?? true)
     }
 
+    var canCancelOperation: Bool {
+        isBusy && (phase == .preparing || phase == .starting)
+    }
+
     var retainedModules: Set<UtilityModuleID> {
         guard reservation != nil else { return [] }
         var result: Set<UtilityModuleID> = [.scenes]
@@ -143,7 +147,7 @@ final class PresentationController {
                 try Task.checkCancellation()
                 self.phase = .preview
             } catch {
-                self.message = error.localizedDescription
+                self.message = error is CancellationError ? "Presentation cancelled." : error.localizedDescription
                 await self.recoverAfterFailure()
                 throw error
             }
@@ -177,6 +181,7 @@ final class PresentationController {
                 if let plan = draft.workspacePlan, let workspace = self.workspace {
                     let result = await workspace.apply(plan, ownerToken: token)
                     self.workspaceReceipt = result
+                    try Task.checkCancellation()
                     guard result.outcome == .completed else { throw PresentationError.workspacePartial }
                 }
                 try Task.checkCancellation()
@@ -184,7 +189,7 @@ final class PresentationController {
                 self.phase = .active
                 self.message = "Presentation is active. Later manual changes will be preserved during restore."
             } catch {
-                self.message = error.localizedDescription
+                self.message = error is CancellationError ? "Presentation cancelled." : error.localizedDescription
                 await self.recoverAfterFailure()
                 throw error
             }
