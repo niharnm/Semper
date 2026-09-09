@@ -114,6 +114,58 @@ struct SceneManagerLifecycleTests {
         }
     }
 
+    @Test("Presentation apply and restore hold Scene admission only during each transaction")
+    func presentationMutationAdmission() async throws {
+        try await withManager { manager, probe, scene, gate in
+            let token = try await manager.reservePresentation()
+            #expect(gate.activeSharedPermitCount == 1)
+
+            let applyEntered = ManagerLatch()
+            let releaseApply = ManagerLatch()
+            probe.prepareHook = {
+                applyEntered.open()
+                await releaseApply.wait()
+            }
+            let apply = Task { try await manager.applyPresentation(scene, token: token) }
+            await applyEntered.wait()
+
+            #expect(gate.activeSharedPermitCount == 2)
+            #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.scene])) {
+                try gate.acquire(owner: .manualDisplay, mode: .shared)
+            }
+
+            releaseApply.open()
+            let report = try await apply.value
+            let transactionID = try #require(report.transactionID)
+            #expect(gate.activeSharedPermitCount == 1)
+            let betweenOperations = try gate.acquire(owner: .manualDisplay, mode: .shared)
+            #expect(gate.release(betweenOperations))
+
+            let restoreEntered = ManagerLatch()
+            let releaseRestore = ManagerLatch()
+            probe.prepareHook = {
+                restoreEntered.open()
+                await releaseRestore.wait()
+            }
+            let restore = Task {
+                try await manager.restorePresentation(transactionID: transactionID, token: token)
+            }
+            await restoreEntered.wait()
+
+            #expect(gate.activeSharedPermitCount == 2)
+            #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.scene])) {
+                try gate.acquire(owner: .manualDisplay, mode: .shared)
+            }
+
+            releaseRestore.open()
+            let restoreReport = try await restore.value
+            #expect(restoreReport?.journalCleared == true)
+            #expect(gate.activeSharedPermitCount == 1)
+            try await manager.releasePresentation(token)
+            #expect(gate.activeSharedPermitCount == 0)
+        }
+    }
+
     @Test("Presentation keep-current is scoped and preserves reservation until release")
     func presentationKeepCurrent() async throws {
         try await withManager { manager, _, scene, gate in
