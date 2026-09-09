@@ -562,6 +562,37 @@ private final class PendingManualRouteSteps {
     }
 }
 
+@Suite("Reconciliation condition", .timeLimit(.minutes(1)))
+@MainActor
+struct ReconciliationConditionTests {
+    @Test("An unmet condition returns false when its background timeout fires")
+    func timeoutReturnsFalse() async {
+        #expect(await ReconciliationCondition { false }.wait(timeout: .milliseconds(20)) == false)
+    }
+
+    @Test("An already satisfied condition returns true")
+    func immediateSuccess() async {
+        #expect(await ReconciliationCondition { true }.wait(timeout: .milliseconds(20)))
+    }
+
+    @Test(
+        "Cancelling an unmet condition releases its waiter",
+        arguments: [DispatchTimeInterval.milliseconds(20), .never])
+    func cancellationReturnsFalse(timeout: DispatchTimeInterval) async {
+        let (started, continuation) = AsyncStream.makeStream(of: Void.self)
+        let condition = ReconciliationCondition {
+            continuation.yield(())
+            continuation.finish()
+            return false
+        }
+        let waiter = Task { await condition.wait(timeout: timeout) }
+        var iterator = started.makeAsyncIterator()
+        await iterator.next()
+        waiter.cancel()
+        #expect(await waiter.value == false)
+    }
+}
+
 @MainActor
 private final class ReconciliationCondition {
     private let predicate: @MainActor () -> Bool
@@ -574,12 +605,12 @@ private final class ReconciliationCondition {
         (stream, continuation) = AsyncStream.makeStream()
     }
 
-    func wait() async -> Bool {
+    func wait(timeout: DispatchTimeInterval = .seconds(10)) async -> Bool {
         observe()
-        let timeout = DispatchWorkItem { [continuation] in continuation.finish() }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeout)
+        let timeoutWorkItem = DispatchWorkItem { @Sendable [continuation] in continuation.finish() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
         defer {
-            timeout.cancel()
+            timeoutWorkItem.cancel()
             finished = true
         }
         var iterator = stream.makeAsyncIterator()
