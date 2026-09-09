@@ -15,38 +15,139 @@ nonisolated enum DisplayIdentityResolver {
     }
 }
 
+nonisolated struct DisplayEndpointIdentity: Equatable, Sendable {
+    let displayIdentity: DisplayIdentity
+    let registryID: DDCDisplayCandidate.ID
+}
+
+nonisolated struct DisplayEndpointCandidate: Equatable, Sendable {
+    let displayIdentity: DisplayIdentity
+    let registryID: DDCDisplayCandidate.ID?
+}
+
+nonisolated struct DisplayConnectionToken: Equatable, Sendable {
+    let endpoint: DisplayEndpointIdentity?
+    let generation: UUID
+}
+
+typealias DisplayDiscoverOperation = @Sendable () -> [DDCExternalDisplayRecord]
+typealias DisplayFeatureReadOperation = @Sendable (
+    DDCService,
+    DisplayFeature
+) throws -> (current: UInt16, maximum: UInt16)
+typealias DisplayFeatureWriteOperation = @Sendable (
+    DDCService,
+    DisplayFeature,
+    UInt16
+) throws -> Void
+
+nonisolated enum DisplayEndpointResolver {
+    static func isCurrent(
+        _ expected: DisplayEndpointIdentity,
+        among candidates: [DisplayEndpointCandidate]
+    ) -> Bool {
+        let matches = candidates.filter { $0.displayIdentity == expected.displayIdentity }
+        return matches.count == 1 && matches[0].registryID == expected.registryID
+    }
+
+    static func acceptsResult(
+        captured: DisplayConnectionToken,
+        current: DisplayConnectionToken?
+    ) -> Bool {
+        captured == current
+    }
+
+    static func connectionToken(
+        for endpoint: DisplayEndpointIdentity?,
+        reusing previous: DisplayConnectionToken?
+    ) -> DisplayConnectionToken {
+        if let endpoint, let previous, previous.endpoint == endpoint {
+            return previous
+        }
+        return DisplayConnectionToken(endpoint: endpoint, generation: UUID())
+    }
+}
+
+nonisolated struct DisplayProbeFlight<Value: Sendable>: Sendable {
+    let id: UInt64
+    fileprivate let task: Task<Value, Never>
+
+    func value() async -> Value {
+        await task.value
+    }
+}
+
 actor DisplayProbeSingleFlight<Value: Sendable> {
     private struct Active {
+        let id: UInt64
         let task: Task<Value, Never>
-        var waiterCount: Int
     }
 
     private let operation: @Sendable () async -> Value
+    private var nextFlightID: UInt64 = 0
     private var active: Active?
 
     init(operation: @escaping @Sendable () async -> Value) {
         self.operation = operation
     }
 
-    func value() async -> Value {
-        let task: Task<Value, Never>
-        if var active {
-            active.waiterCount += 1
-            self.active = active
-            task = active.task
-        } else {
-            let operation = operation
-            let created = Task { await operation() }
-            self.active = Active(task: created, waiterCount: 1)
-            task = created
+    func flight() throws -> DisplayProbeFlight<Value> {
+        try Task.checkCancellation()
+        if let active {
+            return DisplayProbeFlight(id: active.id, task: active.task)
         }
 
-        let value = await task.value
-        if var active {
-            active.waiterCount -= 1
-            self.active = active.waiterCount == 0 ? nil : active
+        nextFlightID &+= 1
+        let flightID = nextFlightID
+        let operation = operation
+        let task = Task { [weak self] in
+            let value = await operation()
+            await self?.complete(flightID)
+            return value
         }
-        return value
+        active = Active(id: flightID, task: task)
+        return DisplayProbeFlight(id: flightID, task: task)
+    }
+
+    func value() async throws -> Value {
+        try await flight().value()
+    }
+
+    func cancelAndDrain() async {
+        guard let active else { return }
+        self.active = nil
+        active.task.cancel()
+        _ = await active.task.value
+    }
+
+    private func complete(_ flightID: UInt64) {
+        guard active?.id == flightID else { return }
+        active = nil
+    }
+}
+
+nonisolated struct DisplayProbePublicationState<Value: Sendable>: Sendable {
+    private(set) var latestRequestedFlightID: UInt64 = 0
+    private(set) var latestAcceptedFlightID: UInt64 = 0
+    private(set) var value: Value?
+
+    mutating func requested(_ flightID: UInt64) {
+        latestRequestedFlightID = max(latestRequestedFlightID, flightID)
+    }
+
+    mutating func publish(
+        _ value: Value,
+        from flightID: UInt64,
+        isCancelled: Bool
+    ) -> Bool {
+        guard !isCancelled,
+              flightID == latestRequestedFlightID,
+              flightID >= latestAcceptedFlightID else {
+            return false
+        }
+        latestAcceptedFlightID = flightID
+        self.value = value
+        return true
     }
 }
 
@@ -77,21 +178,34 @@ nonisolated enum DisplayFeatureIO {
     static func set(
         normalized: Double,
         maximum: UInt16,
+        isEndpointCurrent: () -> Bool = { true },
+        claimMutation: () throws -> Void = {},
         write: Write,
         read: Read
-    ) -> DisplayWriteResult {
+    ) throws -> DisplayWriteResult {
         guard maximum > 0 else { return .unavailable }
         guard let requested = rawValue(normalized: normalized, maximum: maximum) else {
             return .invalidTarget
         }
 
         do {
+            guard let liveReading = validated(read: read) else {
+                return .failed(expected: requested, readback: nil)
+            }
+            guard liveReading.maximum == maximum else {
+                return .failed(expected: requested, readback: liveReading)
+            }
+            guard isEndpointCurrent() else { return .unavailable }
+
+            try claimMutation()
             try write(requested)
             let readback = validated(read: read)
             guard readback?.current == requested, readback?.maximum == maximum else {
                 return .failed(expected: requested, readback: readback)
             }
             return .applied(readback!)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return .failed(expected: requested, readback: nil)
         }
@@ -125,25 +239,123 @@ nonisolated enum DisplayFeatureIO {
     }
 }
 
+private nonisolated struct DisplayTrackedOperation: Sendable {
+    let cancel: @Sendable () -> Void
+    let wait: @Sendable () async -> Void
+
+    init<Value: Sendable>(_ task: Task<Value, Error>) {
+        cancel = { task.cancel() }
+        wait = { _ = try? await task.value }
+    }
+}
+
+@MainActor
+final class DisplayOperationRegistry {
+    private var operations: [UUID: DisplayTrackedOperation] = [:]
+    private var activeDrain: (id: UUID, task: Task<Void, Never>)?
+
+    var isDraining: Bool {
+        activeDrain != nil
+    }
+
+    func run<Value: Sendable>(
+        _ operation: @escaping @MainActor @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let task = Task<Value, Error> { @MainActor in
+            try Task.checkCancellation()
+            return try await operation()
+        }
+        let operationID = UUID()
+        operations[operationID] = DisplayTrackedOperation(task)
+        defer { operations[operationID] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func cancelAndDrain(
+        additionalCleanup: @escaping @MainActor @Sendable () async -> Void = {}
+    ) async {
+        if let activeDrain {
+            await activeDrain.task.value
+            if self.activeDrain?.id == activeDrain.id {
+                self.activeDrain = nil
+            }
+            return
+        }
+
+        let drainingOperations = operations
+        drainingOperations.values.forEach { $0.cancel() }
+        let drainID = UUID()
+        let drain = Task { @MainActor in
+            await additionalCleanup()
+            for operation in drainingOperations.values {
+                await operation.wait()
+            }
+        }
+        activeDrain = (drainID, drain)
+        await drain.value
+        if activeDrain?.id == drainID {
+            activeDrain = nil
+        }
+        for operationID in drainingOperations.keys {
+            operations[operationID] = nil
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class DisplayControlService {
+    private struct Connection: Sendable {
+        let service: DDCService
+        let token: DisplayConnectionToken
+    }
+
     private struct ProbeSnapshot: Sendable {
         let service: DDCService
+        let endpoint: DisplayEndpointIdentity?
         let device: DisplayDevice
     }
 
     private let ddcController: DDCController
+    private let mutationAdmission: MutationAdmissionGate
+    private let discoverDisplays: DisplayDiscoverOperation
+    private let readFeature: DisplayFeatureReadOperation
+    private let writeFeature: DisplayFeatureWriteOperation
     private let probeSingleFlight: DisplayProbeSingleFlight<[ProbeSnapshot]>
-    private var services: [DisplayIdentity: DDCService] = [:]
+    private var probePublication = DisplayProbePublicationState<[ProbeSnapshot]>()
+    private var connections: [DisplayIdentity: Connection] = [:]
+    private let directOperations = DisplayOperationRegistry()
+    private var lifecycleGeneration: UInt64 = 0
+    private(set) var isRunning = false
     private(set) var displays: [DisplayDevice] = []
 
-    init(ddcController: DDCController) {
+    init(
+        ddcController: DDCController,
+        mutationAdmission: MutationAdmissionGate,
+        discover: @escaping DisplayDiscoverOperation = {
+            DDCExternalDisplayProbe.discover()
+        },
+        read: @escaping DisplayFeatureReadOperation = { service, feature in
+            let value = try service.readVCP(feature.rawValue)
+            return (value.current, value.max)
+        },
+        write: @escaping DisplayFeatureWriteOperation = { service, feature, value in
+            try service.writeVCP(feature.rawValue, value: value)
+        }
+    ) {
         self.ddcController = ddcController
+        self.mutationAdmission = mutationAdmission
+        self.discoverDisplays = discover
+        self.readFeature = read
+        self.writeFeature = write
         self.probeSingleFlight = DisplayProbeSingleFlight {
             do {
                 return try await ddcController.performSerialized {
-                    Self.makeProbeSnapshots(from: DDCExternalDisplayProbe.discover())
+                    Self.makeProbeSnapshots(from: discover(), read: read)
                 }
             } catch {
                 return []
@@ -151,14 +363,66 @@ final class DisplayControlService {
         }
     }
 
+    func start() {
+        guard !isRunning, !directOperations.isDraining else { return }
+        lifecycleGeneration &+= 1
+        isRunning = true
+    }
+
+    func resume() {
+        start()
+    }
+
+    func stopAndDrain() async {
+        if isRunning {
+            isRunning = false
+            lifecycleGeneration &+= 1
+        }
+        connections.removeAll()
+
+        let probeSingleFlight = probeSingleFlight
+        await directOperations.cancelAndDrain {
+            await probeSingleFlight.cancelAndDrain()
+        }
+    }
+
     func probe() async {
-        let snapshots = await probeSingleFlight.value()
-        services = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.device.id, $0.service) })
-        displays = snapshots.map(\.device).sorted { lhs, rhs in
-            if lhs.name != rhs.name { return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending }
-            if lhs.id.vendorID != rhs.id.vendorID { return lhs.id.vendorID < rhs.id.vendorID }
-            if lhs.id.productID != rhs.id.productID { return lhs.id.productID < rhs.id.productID }
-            return lhs.id.serialNumber < rhs.id.serialNumber
+        guard isRunning else { return }
+        let generation = lifecycleGeneration
+        try? await directOperations.run { @MainActor [self] in
+            guard isRunning, generation == lifecycleGeneration else { return }
+            let flight = try await probeSingleFlight.flight()
+            guard isRunning, generation == lifecycleGeneration else {
+                await probeSingleFlight.cancelAndDrain()
+                return
+            }
+            probePublication.requested(flight.id)
+            let snapshots = await flight.value()
+            guard isRunning,
+                  generation == lifecycleGeneration,
+                  probePublication.publish(
+                snapshots,
+                from: flight.id,
+                isCancelled: Task.isCancelled
+            ) else {
+                return
+            }
+            let previousConnections = connections
+            connections = Dictionary(uniqueKeysWithValues: snapshots.map {
+                let token = DisplayEndpointResolver.connectionToken(
+                    for: $0.endpoint,
+                    reusing: previousConnections[$0.device.id]?.token
+                )
+                return ($0.device.id, Connection(service: $0.service, token: token))
+            })
+            displays = snapshots.map(\.device).sorted { lhs, rhs in
+                if lhs.name != rhs.name {
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+                if lhs.id.vendorID != rhs.id.vendorID { return lhs.id.vendorID < rhs.id.vendorID }
+                if lhs.id.productID != rhs.id.productID { return lhs.id.productID < rhs.id.productID }
+                return lhs.id.serialNumber < rhs.id.serialNumber
+            }
         }
     }
 
@@ -166,66 +430,120 @@ final class DisplayControlService {
         _ feature: DisplayFeature,
         for identity: DisplayIdentity
     ) async -> DisplayFeatureReading? {
-        guard let service = services[identity] else { return nil }
+        guard isRunning, let connection = connections[identity] else { return nil }
+        let generation = lifecycleGeneration
 
-        let reading = try? await ddcController.performSerialized {
-            DisplayFeatureIO.read {
-                let value = try service.readVCP(feature.rawValue)
-                return (value.current, value.max)
+        let ddcController = ddcController
+        let readFeature = readFeature
+        return try? await directOperations.run { @MainActor [self] in
+            let reading = try? await ddcController.performSerialized {
+                DisplayFeatureIO.read {
+                    try readFeature(connection.service, feature)
+                }
             }
-        }
-        guard let reading else { return nil }
+            guard isRunning,
+                  generation == lifecycleGeneration,
+                  let reading,
+                  DisplayEndpointResolver.acceptsResult(
+                captured: connection.token,
+                current: connections[identity]?.token
+              ) else {
+                return nil
+            }
 
-        updateFeature(feature, for: identity, reading: reading)
-        return reading
+            updateFeature(feature, for: identity, reading: reading)
+            return reading
+        }
     }
 
     func set(
         _ normalized: Double,
         feature: DisplayFeature,
         for identity: DisplayIdentity
-    ) async -> DisplayWriteResult {
-        guard let service = services[identity],
+    ) async throws -> DisplayWriteResult {
+        guard isRunning,
+              let connection = connections[identity],
+              let expectedEndpoint = connection.token.endpoint,
               let maximum = displays.first(where: { $0.id == identity })?.features[feature]?.maximum else {
             return .unavailable
         }
+        let generation = lifecycleGeneration
+        return try await directOperations.run { @MainActor [self] in
+            let admissionPermit = try mutationAdmission.acquire(owner: .manual, mode: .shared)
+            defer { mutationAdmission.release(admissionPermit) }
 
-        let result: DisplayWriteResult
-        do {
-            result = try await ddcController.performSerialized {
-                DisplayFeatureIO.set(
+            let result: DisplayWriteResult
+            let ddcController = ddcController
+            let discoverDisplays = discoverDisplays
+            let readFeature = readFeature
+            let writeFeature = writeFeature
+            do {
+                result = try await ddcController.performSerialized { context in
+                    try DisplayFeatureIO.set(
+                        normalized: normalized,
+                        maximum: maximum,
+                        isEndpointCurrent: {
+                            let liveEndpoints = discoverDisplays().compactMap {
+                                record -> DisplayEndpointCandidate? in
+                                guard let displayIdentity = DisplayIdentity(edid: record.edid) else {
+                                    return nil
+                                }
+                                return DisplayEndpointCandidate(
+                                    displayIdentity: displayIdentity,
+                                    registryID: record.registryID
+                                )
+                            }
+                            return DisplayEndpointResolver.isCurrent(
+                                expectedEndpoint,
+                                among: liveEndpoints
+                            )
+                        },
+                        claimMutation: { try context.claimMutation() },
+                        write: { try writeFeature(connection.service, feature, $0) },
+                        read: {
+                            try readFeature(connection.service, feature)
+                        }
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if let expected = DisplayFeatureIO.rawValue(
                     normalized: normalized,
-                    maximum: maximum,
-                    write: { try service.writeVCP(feature.rawValue, value: $0) },
-                    read: {
-                        let value = try service.readVCP(feature.rawValue)
-                        return (value.current, value.max)
-                    }
-                )
+                    maximum: maximum
+                ) {
+                    result = .failed(expected: expected, readback: nil)
+                } else {
+                    result = .invalidTarget
+                }
             }
-        } catch {
-            guard let expected = DisplayFeatureIO.rawValue(
-                normalized: normalized,
-                maximum: maximum
-            ) else { return .invalidTarget }
-            return .failed(expected: expected, readback: nil)
-        }
 
-        switch result {
-        case .applied(let reading):
-            updateFeature(feature, for: identity, reading: reading, writeConfirmed: true)
-        case .failed(_, let readback):
-            if let readback {
-                updateFeature(feature, for: identity, reading: readback, writeConfirmed: false)
-            } else {
-                removeSceneEligibility(feature, for: identity)
+            guard isRunning, generation == lifecycleGeneration else {
+                return result
             }
-        case .unavailable:
-            removeSceneEligibility(feature, for: identity)
-        case .invalidTarget:
-            break
+            guard DisplayEndpointResolver.acceptsResult(
+                captured: connection.token,
+                current: connections[identity]?.token
+            ) else {
+                return .unavailable
+            }
+
+            switch result {
+            case .applied(let reading):
+                updateFeature(feature, for: identity, reading: reading, writeConfirmed: true)
+            case .failed(_, let readback):
+                if let readback {
+                    updateFeature(feature, for: identity, reading: readback, writeConfirmed: false)
+                } else {
+                    removeSceneEligibility(feature, for: identity)
+                }
+            case .unavailable:
+                removeSceneEligibility(feature, for: identity)
+            case .invalidTarget:
+                break
+            }
+            return result
         }
-        return result
     }
 
     func isSceneEligible(
@@ -237,7 +555,8 @@ final class DisplayControlService {
     }
 
     private nonisolated static func makeProbeSnapshots(
-        from records: [DDCExternalDisplayRecord]
+        from records: [DDCExternalDisplayRecord],
+        read: DisplayFeatureReadOperation
     ) -> [ProbeSnapshot] {
         let identified = records.compactMap { record -> (DisplayIdentity, DDCExternalDisplayRecord)? in
             guard let identity = DisplayIdentity(edid: record.edid) else { return nil }
@@ -250,19 +569,22 @@ final class DisplayControlService {
 
             let summary = DisplayFeatureIO.probeAll(
                 read: { feature in
-                    let value = try record.service.readVCP(feature.rawValue)
-                    return (value.current, value.max)
+                    try read(record.service, feature)
                 }
             )
 
             guard !summary.readings.isEmpty else { return nil }
+            let endpoint = record.registryID.map {
+                DisplayEndpointIdentity(displayIdentity: identity, registryID: $0)
+            }
             return ProbeSnapshot(
                 service: record.service,
+                endpoint: endpoint,
                 device: DisplayDevice(
                     id: identity,
                     name: record.name,
                     features: summary.readings,
-                    sceneEligibleFeatures: summary.sceneEligibleFeatures
+                    sceneEligibleFeatures: endpoint == nil ? [] : summary.sceneEligibleFeatures
                 )
             )
         }
@@ -317,8 +639,21 @@ final class DisplayControlService {
 @MainActor
 final class DisplayControlService {
     private(set) var displays: [DisplayDevice] = []
+    private(set) var isRunning = false
 
     init() {}
+
+    func start() {
+        isRunning = true
+    }
+
+    func resume() {
+        start()
+    }
+
+    func stopAndDrain() async {
+        isRunning = false
+    }
 
     func probe() async {}
 
@@ -333,7 +668,7 @@ final class DisplayControlService {
         _ normalized: Double,
         feature: DisplayFeature,
         for identity: DisplayIdentity
-    ) async -> DisplayWriteResult {
+    ) async throws -> DisplayWriteResult {
         .unavailable
     }
 
