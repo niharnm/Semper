@@ -14,7 +14,8 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Source code, tests, and build instructions are public.
 - The published download checked September 8, 2026 is v1.0.0, with Sound capabilities.
 - Release artifact: https://github.com/niharnm/Semper/releases/tag/v1.0.0
-- Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, and Away are in development. Presentation is planned. None of these additional modules is included in v1.0.0.
+- Awake, Displays, Workspace Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation are in development. None of these additional modules is included in v1.0.0.
+- The expanded modules have source implementations; integration and native checks are still in progress.
 - Semper currently requires macOS 15.4 or later.
 - Semper is available to macOS users and to developers who want to build from source.
 - Do not describe Semper as available for Windows, Linux, iOS, or the Mac App Store.
