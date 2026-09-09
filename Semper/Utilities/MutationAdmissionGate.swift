@@ -4,6 +4,7 @@ nonisolated enum MutationAdmissionOwner: Hashable, Sendable {
     case scene
     case awayMode
     case manual
+    case manualDisplay
 }
 
 nonisolated enum MutationAdmissionMode: Sendable {
@@ -60,6 +61,17 @@ final class MutationAdmissionGate {
         case .shared:
             if let exclusivePermit {
                 throw MutationAdmissionError.exclusivePermitActive(owner: exclusivePermit.owner)
+            }
+            let conflictingOwners = Set(sharedPermits.values.lazy.compactMap { permit in
+                switch (owner, permit.owner) {
+                case (.scene, .manualDisplay), (.manualDisplay, .scene):
+                    permit.owner
+                default:
+                    nil
+                }
+            })
+            guard conflictingOwners.isEmpty else {
+                throw MutationAdmissionError.sharedPermitsActive(owners: conflictingOwners)
             }
         case .exclusive:
             if let exclusivePermit {
