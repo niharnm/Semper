@@ -705,6 +705,75 @@ struct SafeEjectServiceTests {
         #expect(backend.ejectCalls == 0)
     }
 
+    @Test(
+        "Shutdown drains a replacement reader before accepting an earlier active cleanup success",
+        .timeLimit(.minutes(1)))
+    func shutdownAfterActiveCleanupGeneration() async throws {
+        let reader = SafeEjectSuspendedTopologyReader()
+        let cleanup = SafeEjectCleanupFixture()
+        await cleanup.allowCleanup()
+        let cache = SafeEjectTopologyCache(
+            read: { try await reader.read() }, retryCleanup: { try await cleanup.retryCleanup() }
+        )
+        let backend = SafeEjectGenerationBackend(cache: cache)
+        let service = SafeEjectService(backend: backend)
+        let (events, eventContinuation) = AsyncStream<SafeEjectGenerationEvent>.makeStream()
+        var eventIterator = events.makeAsyncIterator()
+        backend.onReplacementDrain = { eventContinuation.yield(.replacementDrainStarted) }
+        service.start()
+        await reader.waitForCall(1)
+        let activeRetry = Task { await service.waitForCleanup() }
+        await reader.waitForCancellation(1)
+        await reader.resolve(1)
+        await backend.waitForFirstDrainResult()
+        await reader.waitForCall(2)
+        #expect(backend.firstDrainSucceeded)
+        #expect(service.state == .running)
+        await cleanup.denyCleanup()
+
+        service.shutdown()
+        await reader.waitForCancellation(2)
+        let (joined, joinedContinuation) = AsyncStream<Void>.makeStream()
+        var joinedIterator = joined.makeAsyncIterator()
+        var shutdownReturned = false
+        let shutdownWait = Task {
+            joinedContinuation.yield(())
+            let result = await service.waitForCleanup()
+            shutdownReturned = true
+            eventContinuation.yield(.shutdownReturned)
+            return result
+        }
+        _ = await joinedIterator.next()
+        backend.releaseFirstDrainResult()
+        let nextEvent = await eventIterator.next()
+        #expect(nextEvent == .replacementDrainStarted)
+        #expect(!shutdownReturned)
+        #expect(backend.drainCalls == 2)
+
+        await reader.failCleanup(2)
+        let result = await shutdownWait.value
+        _ = await activeRetry.value
+        do {
+            try result.get()
+            Issue.record("Shutdown must expose the replacement reader's cleanup failure")
+        } catch {
+            #expect(error as? SafeEjectFailure == .cleanupPending)
+        }
+        #expect(service.cleanupFailure == .cleanupPending)
+        #expect(backend.drainCalls == 2)
+        #expect(service.state == .shutDown)
+        cache.invalidate()
+        service.start()
+        #expect(await reader.count == 2)
+
+        await cleanup.allowCleanup()
+        try await service.waitForCleanup().get()
+        #expect(service.cleanupFailure == nil)
+        #expect(await reader.count == 2)
+        eventContinuation.finish()
+        joinedContinuation.finish()
+    }
+
     @Test("Reconnected volume with a reused BSD name cannot reuse old selection")
     func staleConnection() async {
         let selected = volume()
@@ -1212,6 +1281,8 @@ private actor SafeEjectCleanupFixture {
 
     func allowCleanup() { mayCleanUp = true }
 
+    func denyCleanup() { mayCleanUp = false }
+
     func suspendRetry() { suspend = true }
 
     func waitForRetry() async {
@@ -1224,4 +1295,68 @@ private actor SafeEjectCleanupFixture {
         retryContinuation = nil
         suspend = false
     }
+}
+
+private enum SafeEjectGenerationEvent: Equatable, Sendable {
+    case replacementDrainStarted
+    case shutdownReturned
+}
+
+@MainActor
+private final class SafeEjectGenerationBackend: SafeEjectBackend {
+    let cache: SafeEjectTopologyCache
+    private(set) var drainCalls = 0
+    private(set) var firstDrainSucceeded = false
+    var onReplacementDrain: (@MainActor () -> Void)?
+    private var firstResultWaiter: CheckedContinuation<Void, Never>?
+    private var firstResultRelease: CheckedContinuation<Void, Never>?
+
+    init(cache: SafeEjectTopologyCache) { self.cache = cache }
+
+    func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws {
+        cache.start { onEvent(.volumesChanged) }
+    }
+
+    func stop() { cache.stop() }
+
+    func cancelPendingOperation() { cache.cancelPreflight() }
+
+    func inventory() throws -> SafeEjectInventory {
+        if let failure = cache.cleanupFailure { throw failure }
+        return SafeEjectInventory(volumes: [], hasUnidentifiedLocalVolumes: false)
+    }
+
+    func drain() async -> Result<Void, SafeEjectFailure> {
+        drainCalls += 1
+        let index = drainCalls
+        if index > 1 { onReplacementDrain?() }
+        let result = await cache.drain()
+        if index == 1 {
+            if case .success = result { firstDrainSucceeded = true }
+            await withCheckedContinuation { continuation in
+                firstResultRelease = continuation
+                firstResultWaiter?.resume()
+                firstResultWaiter = nil
+            }
+        }
+        return result
+    }
+
+    func waitForFirstDrainResult() async {
+        if firstResultRelease != nil { return }
+        await withCheckedContinuation { firstResultWaiter = $0 }
+    }
+
+    func releaseFirstDrainResult() {
+        firstResultRelease?.resume()
+        firstResultRelease = nil
+    }
+
+    func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> { .failure(.unsupported) }
+
+    func ejectDevice(containing volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> {
+        .failure(.unsupported)
+    }
+
+    func devicePresence(_ id: SafeEjectDeviceID) -> SafeEjectDevicePresence { .unavailable }
 }
