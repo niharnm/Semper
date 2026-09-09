@@ -348,6 +348,50 @@ struct AwakeServiceTests {
         #expect(backend.events == eventsAfterFailure)
     }
 
+    @Test(
+        "Replacement cleanup failure survives manual stop and timed expiry",
+        arguments: [false, true]
+    )
+    func replacementCleanupFailureSurvivesStop(expires: Bool) {
+        let (service, backend, scheduler, clock) = makeService()
+        defer { service.shutdown() }
+
+        service.start(.oneHour)
+        let originalSession = service.session
+        backend.failingKinds = [.preventIdleDisplaySleep]
+        backend.failingReleaseIDs = [2]
+        service.setKeepDisplayAwake(true)
+
+        #expect(service.session == originalSession)
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.activeAssertionIDs == [1, 2])
+
+        if expires {
+            clock.advance(by: 60 * 60)
+            scheduler.fire()
+        } else {
+            service.stop()
+        }
+
+        #expect(service.session == nil)
+        #expect(service.failure == .couldNotRelease)
+        #expect(scheduler.scheduledDate == nil)
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 2) == 1)
+
+        backend.failingKinds = []
+        let eventsAfterStop = backend.events
+        service.start(.twoHours)
+        service.setKeepDisplayAwake(true)
+        service.stop()
+
+        #expect(service.session == nil)
+        #expect(service.failure == .couldNotRelease)
+        #expect(!service.keepDisplayAwake)
+        #expect(backend.events == eventsAfterStop)
+    }
+
     @Test("Expiry at the end date stops the session")
     func expiry() {
         let (service, backend, scheduler, clock) = makeService()

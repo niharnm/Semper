@@ -191,11 +191,13 @@ final class AwakeService {
         scheduler.cancelScheduledExpiry()
         guard session != nil || ownedAssertions != nil else { return }
         session = nil
-        guard let assertions = takeOwnedAssertions() else {
+        // Releasing this session cannot resolve an earlier assertion cleanup failure.
+        if failure != .couldNotRelease {
             failure = nil
-            return
         }
-        failure = releaseAssertions(assertions) ? nil : .couldNotRelease
+        if let assertions = takeOwnedAssertions(), !releaseAssertions(assertions) {
+            failure = .couldNotRelease
+        }
     }
 
     func reconcile() {
