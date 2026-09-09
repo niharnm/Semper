@@ -46,7 +46,7 @@ nonisolated enum SceneApplyFailureCleanup: Equatable, Sendable {
     case rollbackIncomplete(controls: [SceneControl])
 }
 
-nonisolated enum SceneApplyError: Error, Equatable {
+nonisolated enum SceneApplyError: Error, Equatable, Sendable {
     case operationInProgress
     case invalidScene(SceneValidationIssue)
     case transactionAlreadyActive(transactionID: UUID)
@@ -271,6 +271,8 @@ actor SceneCoordinator {
         operationInProgress = true
         defer { operationInProgress = false }
 
+        try Task.checkCancellation()
+
         do {
             try scene.validate()
         } catch {
@@ -309,8 +311,10 @@ actor SceneCoordinator {
         var stagedEntries: [SceneTransactionEntry] = []
 
         for action in scene.actionsInApplyOrder {
+            try Task.checkCancellation()
             let adapter = adapters.adapter(for: action.control)
             let capability = await adapter.capability(for: action.control)
+            try Task.checkCancellation()
             guard capability.isSceneEligible else {
                 switch action.importance {
                 case .required:
@@ -320,10 +324,12 @@ actor SceneCoordinator {
                 }
                 continue
             }
-            if case .unavailable(let reason) = await adapter.preflightTarget(
+            let targetPreflight = await adapter.preflightTarget(
                 action.target,
                 for: action.control
-            ) {
+            )
+            try Task.checkCancellation()
+            if case .unavailable(let reason) = targetPreflight {
                 let skipReason = SceneSkipReason.targetUnavailable(reason)
                 switch action.importance {
                 case .required:
@@ -341,6 +347,7 @@ actor SceneCoordinator {
             }
             do {
                 let snapshot = try await adapter.readValue(for: action.control)
+                try Task.checkCancellation()
                 stagedEntries.append(SceneTransactionEntry(
                     control: action.control,
                     importance: action.importance,
@@ -348,6 +355,7 @@ actor SceneCoordinator {
                     targetValue: action.target
                 ))
             } catch {
+                try Task.checkCancellation()
                 switch action.importance {
                 case .required:
                     requiredFailures.append(ScenePreflightFailure(control: action.control, reason: .readFailed(String(describing: error))))
@@ -359,11 +367,13 @@ actor SceneCoordinator {
 
         var optionalTriggersToSkip = Set<SceneControl>()
         for triggerEntry in stagedEntries {
+            try Task.checkCancellation()
             let adapter = adapters.adapter(for: triggerEntry.control)
             let prerequisites = await adapter.prerequisites(
                 of: triggerEntry.targetValue,
                 for: triggerEntry.control
             )
+            try Task.checkCancellation()
             guard !prerequisites.isEmpty else { continue }
 
             var missingControl: SceneControl?
@@ -411,6 +421,8 @@ actor SceneCoordinator {
             return SceneApplyReport(transactionID: nil, sceneID: scene.id, applied: [], skippedOptional: skippedOptional)
         }
 
+        try Task.checkCancellation()
+
         var transaction = SceneTransaction(
             sceneID: scene.id,
             sceneName: scene.name,
@@ -430,8 +442,16 @@ actor SceneCoordinator {
         for index in transaction.entries.indices {
             let entry = transaction.entries[index]
             let adapter = adapters.adapter(for: entry.control)
+            if Task.isCancelled {
+                throw await unwindFailedApply(
+                    transaction: transaction,
+                    failedControl: entry.control,
+                    underlying: CancellationError()
+                )
+            }
             do {
                 let current = try await adapter.readValue(for: entry.control)
+                try Task.checkCancellation()
                 guard current.matches(
                     entry.snapshotValue,
                     numericTolerance: driftNumericTolerance
@@ -443,6 +463,13 @@ actor SceneCoordinator {
                 }
             } catch {
                 let prewriteFailure = error
+                if error is CancellationError || Task.isCancelled {
+                    throw await unwindFailedApply(
+                        transaction: transaction,
+                        failedControl: entry.control,
+                        underlying: CancellationError()
+                    )
+                }
                 if entry.importance == .optional {
                     transaction.entries[index].phase = .rolledBack
                     do {
@@ -480,8 +507,11 @@ actor SceneCoordinator {
             }
 
             do {
+                try Task.checkCancellation()
                 try await adapter.writeValue(entry.targetValue, for: entry.control)
+                try Task.checkCancellation()
                 let readBack = try await adapter.readValue(for: entry.control)
+                try Task.checkCancellation()
                 guard readBack.matches(
                     entry.targetValue,
                     numericTolerance: readbackNumericTolerance
@@ -499,14 +529,24 @@ actor SceneCoordinator {
                 ))
             } catch {
                 let actionFailure = error
+                if error is CancellationError || Task.isCancelled {
+                    throw await unwindFailedApply(
+                        transaction: transaction,
+                        failedControl: entry.control,
+                        underlying: CancellationError()
+                    )
+                }
                 if entry.importance == .optional {
                     do {
                         let restorationValue = await adapter.restorationValue(
                             for: entry.snapshotValue,
                             control: entry.control
                         )
+                        try Task.checkCancellation()
                         try await adapter.writeValue(restorationValue, for: entry.control)
+                        try Task.checkCancellation()
                         let readBack = try await adapter.readValue(for: entry.control)
+                        try Task.checkCancellation()
                         guard readBack.matches(
                             restorationValue,
                             numericTolerance: readbackNumericTolerance
@@ -527,7 +567,9 @@ actor SceneCoordinator {
                         throw await unwindFailedApply(
                             transaction: transaction,
                             failedControl: entry.control,
-                            underlying: actionFailure
+                            underlying: error is CancellationError || Task.isCancelled
+                                ? CancellationError()
+                                : actionFailure
                         )
                     }
                 }
@@ -538,6 +580,14 @@ actor SceneCoordinator {
                     underlying: actionFailure
                 )
             }
+        }
+
+        if Task.isCancelled, let lastEntry = transaction.entries.last {
+            throw await unwindFailedApply(
+                transaction: transaction,
+                failedControl: lastEntry.control,
+                underlying: CancellationError()
+            )
         }
 
         return SceneApplyReport(
@@ -556,6 +606,21 @@ actor SceneCoordinator {
         transaction: SceneTransaction,
         failedControl: SceneControl,
         underlying: Error
+    ) async -> SceneApplyError {
+        let reason = Self.describeApplyFailure(underlying)
+        return await Task.detached { [self] in
+            await performUnwindFailedApply(
+                transaction: transaction,
+                failedControl: failedControl,
+                underlyingReason: reason
+            )
+        }.value
+    }
+
+    private func performUnwindFailedApply(
+        transaction: SceneTransaction,
+        failedControl: SceneControl,
+        underlyingReason: String
     ) async -> SceneApplyError {
         var transaction = transaction
         var rollbackFailures: [SceneControl] = []
@@ -665,7 +730,7 @@ actor SceneCoordinator {
         }
         return .actionFailed(
             control: failedControl,
-            reason: Self.describeApplyFailure(underlying),
+            reason: underlyingReason,
             cleanup: cleanup
         )
     }
@@ -693,6 +758,8 @@ actor SceneCoordinator {
         operationInProgress = true
         defer { operationInProgress = false }
 
+        try Task.checkCancellation()
+
         let loaded: SceneTransaction?
         do {
             loaded = try journalStore.load()
@@ -709,6 +776,7 @@ actor SceneCoordinator {
         var outcomes: [SceneRestoreOutcome] = []
         var outputRouteBlocksDependentRestoration = false
         for index in transaction.entries.indices.reversed() {
+            try Task.checkCancellation()
             let entry = transaction.entries[index]
             if outputRouteBlocksDependentRestoration,
                entry.phase.needsRestore,
@@ -730,7 +798,9 @@ actor SceneCoordinator {
                 let current: SceneValue
                 do {
                     current = try await adapter.readValue(for: entry.control)
+                    try Task.checkCancellation()
                 } catch {
+                    try Task.checkCancellation()
                     outcomes.append(.failed(
                         entry.control,
                         reason: String(describing: error)
@@ -742,6 +812,7 @@ actor SceneCoordinator {
                     for: entry.snapshotValue,
                     control: entry.control
                 )
+                try Task.checkCancellation()
                 let routeIsSafe = outputRouteIsSafeForDependentRestoration(
                     entry: entry,
                     current: current,
@@ -772,11 +843,13 @@ actor SceneCoordinator {
                 for: entry.snapshotValue,
                 control: entry.control
             )
+            try Task.checkCancellation()
             let isOutputBarrier = entry.control == .audioOutputDevice
             let alreadyRestoredTolerance = entry.phase == .inFlight
                 ? readbackNumericTolerance
                 : driftNumericTolerance
             let capability = await adapter.capability(for: entry.control)
+            try Task.checkCancellation()
             guard capability.isSceneEligible else {
                 if entry.control == .audioOutputDevice,
                    let current = try? await adapter.readValue(for: entry.control),
@@ -812,7 +885,9 @@ actor SceneCoordinator {
             let current: SceneValue
             do {
                 current = try await adapter.readValue(for: entry.control)
+                try Task.checkCancellation()
             } catch {
+                try Task.checkCancellation()
                 outcomes.append(.failed(entry.control, reason: String(describing: error)))
                 if isOutputBarrier {
                     outputRouteBlocksDependentRestoration = true
@@ -855,8 +930,11 @@ actor SceneCoordinator {
             }
 
             do {
+                try Task.checkCancellation()
                 try await adapter.writeValue(restorationValue, for: entry.control)
+                try Task.checkCancellation()
                 let readBack = try await adapter.readValue(for: entry.control)
+                try Task.checkCancellation()
                 guard readBack.matches(
                     restorationValue,
                     numericTolerance: readbackNumericTolerance
@@ -871,12 +949,15 @@ actor SceneCoordinator {
                 try? journalStore.save(transaction)
                 outcomes.append(.restored(entry.control))
             } catch {
+                try Task.checkCancellation()
                 outcomes.append(.failed(entry.control, reason: String(describing: error)))
                 if isOutputBarrier {
                     outputRouteBlocksDependentRestoration = true
                 }
             }
         }
+
+        try Task.checkCancellation()
 
         if transaction.isFullySettled {
             let report = SceneRestoreReport(

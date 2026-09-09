@@ -12,6 +12,42 @@ nonisolated struct SceneWriteRecord: Equatable, Sendable {
     let value: SceneValue
 }
 
+actor SceneOperationSuspension {
+    private var isSuspended = false
+    private var releaseRequested = false
+    private var suspensionContinuation: CheckedContinuation<Void, Never>?
+
+    func suspend() async {
+        if releaseRequested {
+            releaseRequested = false
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            suspensionContinuation = continuation
+            isSuspended = true
+        }
+        isSuspended = false
+    }
+
+    func waitUntilSuspended() async -> Bool {
+        for _ in 0..<200 {
+            if isSuspended { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return isSuspended
+    }
+
+    func resume() {
+        guard let suspensionContinuation else {
+            releaseRequested = true
+            return
+        }
+        self.suspensionContinuation = nil
+        suspensionContinuation.resume()
+    }
+}
+
 /// In-memory adapter standing in for all three domains. Records every write
 /// attempt (including failed ones) in one global log so tests can assert
 /// exact apply, rollback, and restore ordering across controls.
@@ -27,6 +63,10 @@ nonisolated final class SceneControlAdapterMock: SceneControlAdapting {
         var mutationsAfterWrite: [SceneControl: SceneWriteRecord] = [:]
         var readsToFailAfterWrite: [SceneControl: SceneControl] = [:]
         var stuckControls: Set<SceneControl> = []
+        var readSuspensions: [SceneControl: SceneOperationSuspension] = [:]
+        var writeSuspensions: [SceneControl: [SceneValue: SceneOperationSuspension]] = [:]
+        var cancellationAwareReads = false
+        var cancellationAwareWrites = false
         var writeLog: [SceneWriteRecord] = []
     }
 
@@ -115,6 +155,29 @@ nonisolated final class SceneControlAdapterMock: SceneControlAdapting {
         state.withLock { _ = $0.stuckControls.insert(control) }
     }
 
+    func makeReadsCancellationAware() {
+        state.withLock { $0.cancellationAwareReads = true }
+    }
+
+    func makeWritesCancellationAware() {
+        state.withLock { $0.cancellationAwareWrites = true }
+    }
+
+    func suspendNextRead(for control: SceneControl) -> SceneOperationSuspension {
+        let suspension = SceneOperationSuspension()
+        state.withLock { $0.readSuspensions[control] = suspension }
+        return suspension
+    }
+
+    func suspendNextWrite(
+        for control: SceneControl,
+        matching value: SceneValue
+    ) -> SceneOperationSuspension {
+        let suspension = SceneOperationSuspension()
+        state.withLock { $0.writeSuspensions[control, default: [:]][value] = suspension }
+        return suspension
+    }
+
     var writeLog: [SceneWriteRecord] {
         state.withLock { $0.writeLog }
     }
@@ -139,7 +202,14 @@ nonisolated final class SceneControlAdapterMock: SceneControlAdapting {
     }
 
     func readValue(for control: SceneControl) async throws -> SceneValue {
-        try state.withLock {
+        let suspension = state.withLock { $0.readSuspensions.removeValue(forKey: control) }
+        if let suspension {
+            await suspension.suspend()
+        }
+        if state.withLock({ $0.cancellationAwareReads }) {
+            try Task.checkCancellation()
+        }
+        return try state.withLock {
             if $0.failingReadControls.contains(control) {
                 throw SceneMockError(message: "read failed for \(control)")
             }
@@ -151,6 +221,20 @@ nonisolated final class SceneControlAdapterMock: SceneControlAdapting {
     }
 
     func writeValue(_ value: SceneValue, for control: SceneControl) async throws {
+        let suspension = state.withLock { state -> SceneOperationSuspension? in
+            let suspension = state.writeSuspensions[control]?[value]
+            state.writeSuspensions[control]?[value] = nil
+            if state.writeSuspensions[control]?.isEmpty == true {
+                state.writeSuspensions[control] = nil
+            }
+            return suspension
+        }
+        if let suspension {
+            await suspension.suspend()
+        }
+        if state.withLock({ $0.cancellationAwareWrites }) {
+            try Task.checkCancellation()
+        }
         try state.withLock {
             $0.writeLog.append(SceneWriteRecord(control: control, value: value))
             if $0.failingWriteControls.contains(control) {

@@ -1150,6 +1150,266 @@ struct SceneCoordinatorTests {
         #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.off))
     }
 
+    @Test("Cancellation before mutation leaves no journal")
+    func cancellationBeforeMutationLeavesNoJournal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeTemporaryDirectory() }
+        fixture.mock.seed(.awakeMode, value: .awake(.off))
+        fixture.mock.makeReadsCancellationAware()
+        let readSuspension = fixture.mock.suspendNextRead(for: .awakeMode)
+        let scene = SemperScene(name: "Cancel before apply", actions: [
+            SceneAction(
+                control: .awakeMode,
+                target: .awake(.system),
+                importance: .required
+            ),
+        ])
+        let applyTask = Task { [coordinator = fixture.coordinator, scene] in
+            try await coordinator.apply(scene)
+        }
+
+        #expect(await readSuspension.waitUntilSuspended())
+        applyTask.cancel()
+        await readSuspension.resume()
+
+        do {
+            _ = try await applyTask.value
+            Issue.record("Expected scene apply cancellation")
+        } catch is CancellationError {
+            #expect(applyTask.isCancelled)
+        } catch {
+            Issue.record("Unexpected scene apply error: \(error)")
+        }
+
+        #expect(fixture.mock.writeLog.isEmpty)
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.off))
+        #expect(try fixture.journal.load() == nil)
+    }
+
+    @Test("Cancellation after a write rolls back under a fresh task")
+    func cancellationAfterWriteRollsBack() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeTemporaryDirectory() }
+        let display = SceneControl.displayBrightness(displayID: "display-a")
+        fixture.mock.seed(.awakeMode, value: .awake(.off))
+        fixture.mock.seed(display, value: .number(0.2))
+        fixture.mock.makeWritesCancellationAware()
+        let writeSuspension = fixture.mock.suspendNextWrite(
+            for: display,
+            matching: .number(0.8)
+        )
+        let scene = SemperScene(name: "Cancel during apply", actions: [
+            SceneAction(
+                control: .awakeMode,
+                target: .awake(.system),
+                importance: .required
+            ),
+            SceneAction(
+                control: display,
+                target: .number(0.8),
+                importance: .required
+            ),
+        ])
+        let applyTask = Task { [coordinator = fixture.coordinator, scene] in
+            try await coordinator.apply(scene)
+        }
+
+        #expect(await writeSuspension.waitUntilSuspended())
+        applyTask.cancel()
+        await writeSuspension.resume()
+
+        do {
+            _ = try await applyTask.value
+            Issue.record("Expected scene apply cancellation")
+        } catch let error as SceneApplyError {
+            guard case .actionFailed(let control, _, let cleanup) = error else {
+                Issue.record("Unexpected scene apply error: \(error)")
+                return
+            }
+            #expect(control == display)
+            #expect(cleanup == .rolledBack)
+        }
+
+        #expect(fixture.mock.writeLog == [
+            SceneWriteRecord(control: .awakeMode, value: .awake(.system)),
+            SceneWriteRecord(control: display, value: .number(0.2)),
+            SceneWriteRecord(control: .awakeMode, value: .awake(.off)),
+        ])
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.off))
+        #expect(fixture.mock.currentValue(for: display) == .number(0.2))
+        #expect(try fixture.journal.load() == nil)
+    }
+
+    @Test("Cancellation rollback failure retains a retryable journal")
+    func cancellationRollbackFailureRetainsJournal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeTemporaryDirectory() }
+        let display = SceneControl.displayBrightness(displayID: "display-a")
+        fixture.mock.seed(.awakeMode, value: .awake(.off))
+        fixture.mock.seed(display, value: .number(0.2))
+        fixture.mock.makeWritesCancellationAware()
+        fixture.mock.failWrites(for: .awakeMode, matching: .awake(.off))
+        let writeSuspension = fixture.mock.suspendNextWrite(
+            for: display,
+            matching: .number(0.8)
+        )
+        let scene = SemperScene(name: "Retry cancelled cleanup", actions: [
+            SceneAction(
+                control: .awakeMode,
+                target: .awake(.system),
+                importance: .required
+            ),
+            SceneAction(
+                control: display,
+                target: .number(0.8),
+                importance: .required
+            ),
+        ])
+        let applyTask = Task { [coordinator = fixture.coordinator, scene] in
+            try await coordinator.apply(scene)
+        }
+
+        #expect(await writeSuspension.waitUntilSuspended())
+        applyTask.cancel()
+        await writeSuspension.resume()
+
+        do {
+            _ = try await applyTask.value
+            Issue.record("Expected scene apply cancellation")
+        } catch let error as SceneApplyError {
+            guard case .actionFailed(let control, _, let cleanup) = error else {
+                Issue.record("Unexpected scene apply error: \(error)")
+                return
+            }
+            #expect(control == display)
+            #expect(cleanup == .rollbackIncomplete(controls: [.awakeMode]))
+        }
+
+        let pending = try #require(try fixture.journal.load())
+        #expect(pending.entries.map(\.phase) == [.applied, .rolledBack])
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.system))
+        fixture.mock.clearWriteFailures(for: .awakeMode)
+
+        _ = try await fixture.coordinator.restore()
+
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.off))
+        #expect(fixture.mock.currentValue(for: display) == .number(0.2))
+        #expect(try fixture.journal.load() == nil)
+    }
+
+    @Test("Restore cancellation retains partial progress for retry")
+    func restoreCancellationRetainsPartialProgress() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeTemporaryDirectory() }
+        let display = SceneControl.displayBrightness(displayID: "display-a")
+        fixture.mock.seed(.awakeMode, value: .awake(.off))
+        fixture.mock.seed(display, value: .number(0.2))
+        let scene = SemperScene(name: "Cancel restore", actions: [
+            SceneAction(
+                control: .awakeMode,
+                target: .awake(.system),
+                importance: .required
+            ),
+            SceneAction(
+                control: display,
+                target: .number(0.8),
+                importance: .required
+            ),
+        ])
+        _ = try await fixture.coordinator.apply(scene)
+        fixture.mock.makeWritesCancellationAware()
+        let writeSuspension = fixture.mock.suspendNextWrite(
+            for: .awakeMode,
+            matching: .awake(.off)
+        )
+        let restoreTask = Task { [coordinator = fixture.coordinator] in
+            try await coordinator.restore()
+        }
+
+        #expect(await writeSuspension.waitUntilSuspended())
+        restoreTask.cancel()
+        await writeSuspension.resume()
+
+        do {
+            _ = try await restoreTask.value
+            Issue.record("Expected scene restore cancellation")
+        } catch is CancellationError {
+            #expect(restoreTask.isCancelled)
+        } catch {
+            Issue.record("Unexpected scene restore error: \(error)")
+        }
+
+        let pending = try #require(try fixture.journal.load())
+        #expect(pending.entries.map(\.phase) == [.applied, .restored])
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.system))
+        #expect(fixture.mock.currentValue(for: display) == .number(0.2))
+
+        _ = try await fixture.coordinator.restore()
+
+        #expect(fixture.mock.currentValue(for: .awakeMode) == .awake(.off))
+        #expect(fixture.mock.currentValue(for: display) == .number(0.2))
+        #expect(try fixture.journal.load() == nil)
+    }
+
+    @Test("Cancellation cleanup keeps the coordinator busy until rollback finishes")
+    func operationInProgressDuringCancellationCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeTemporaryDirectory() }
+        let display = SceneControl.displayBrightness(displayID: "display-a")
+        fixture.mock.seed(.awakeMode, value: .awake(.off))
+        fixture.mock.seed(display, value: .number(0.2))
+        fixture.mock.makeWritesCancellationAware()
+        let targetSuspension = fixture.mock.suspendNextWrite(
+            for: display,
+            matching: .number(0.8)
+        )
+        let cleanupSuspension = fixture.mock.suspendNextWrite(
+            for: .awakeMode,
+            matching: .awake(.off)
+        )
+        let scene = SemperScene(name: "Wait for cleanup", actions: [
+            SceneAction(
+                control: .awakeMode,
+                target: .awake(.system),
+                importance: .required
+            ),
+            SceneAction(
+                control: display,
+                target: .number(0.8),
+                importance: .required
+            ),
+        ])
+        let applyTask = Task { [coordinator = fixture.coordinator, scene] in
+            try await coordinator.apply(scene)
+        }
+
+        #expect(await targetSuspension.waitUntilSuspended())
+        applyTask.cancel()
+        await targetSuspension.resume()
+        #expect(await cleanupSuspension.waitUntilSuspended())
+
+        do {
+            _ = try await fixture.coordinator.apply(scene)
+            Issue.record("Expected the cleanup operation to remain active")
+        } catch let error as SceneApplyError {
+            #expect(error == .operationInProgress)
+        }
+
+        await cleanupSuspension.resume()
+        do {
+            _ = try await applyTask.value
+            Issue.record("Expected scene apply cancellation")
+        } catch let error as SceneApplyError {
+            guard case .actionFailed(_, _, let cleanup) = error else {
+                Issue.record("Unexpected scene apply error: \(error)")
+                return
+            }
+            #expect(cleanup == .rolledBack)
+        }
+
+        #expect(try fixture.journal.load() == nil)
+    }
+
     private static func seedSnapshots(for actions: [SceneAction], in mock: SceneControlAdapterMock) {
         for action in actions {
             let value: SceneValue
