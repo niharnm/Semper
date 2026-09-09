@@ -56,6 +56,10 @@ final class SafeEjectService {
         receipts = []
     }
 
+    func waitForCleanup() async {
+        await backend.drain()
+    }
+
     func refresh() {
         guard state == .running else { return }
         do {
@@ -74,7 +78,8 @@ final class SafeEjectService {
     func refusal(for volume: SafeEjectVolume) -> SafeEjectFailure? {
         guard state == .running else { return state == .sleeping ? .sleeping : .paused }
         guard activeVolumeID == nil else { return .operationInProgress }
-        return inventoryFailure ?? snapshot.refusal(for: volume)
+        if inventoryFailure == .unavailable { return .unavailable }
+        return snapshot.refusal(for: volume)
     }
 
     @discardableResult
@@ -104,14 +109,14 @@ final class SafeEjectService {
             return record(.unverified(failure), for: selected)
         }
         refresh()
-        guard inventoryFailure == nil else {
-            return record(.unverified(inventoryFailure ?? .unavailable), for: selected)
+        guard inventoryFailure != .unavailable else {
+            return record(.unverified(.unavailable), for: selected)
         }
         guard !snapshot.volumes.contains(where: { $0.id == selected.id }) else {
             return record(.unverified(.stillMounted), for: selected)
         }
-        guard !snapshot.volumes.contains(where: { $0.deviceID == deviceID }) else {
-            return record(.unmountedOnly(.otherMountedVolumes), for: selected)
+        if let failure = snapshot.conflict(with: deviceID) {
+            return record(.unmountedOnly(failure), for: selected)
         }
         switch backend.devicePresence(deviceID) {
         case .present: break
@@ -128,8 +133,8 @@ final class SafeEjectService {
         if case .failure(let failure) = ejectResult {
             return record(.unmountedOnly(failure), for: selected)
         }
-        guard inventoryFailure == nil else {
-            return record(.unverified(inventoryFailure ?? .unavailable), for: selected)
+        guard inventoryFailure != .unavailable else {
+            return record(.unverified(.unavailable), for: selected)
         }
         guard
             !snapshot.volumes.contains(where: {
@@ -137,6 +142,9 @@ final class SafeEjectService {
             })
         else {
             return record(.unverified(.stillMounted), for: selected)
+        }
+        if let failure = snapshot.conflict(with: deviceID) {
+            return record(.unverified(failure), for: selected)
         }
         switch backend.devicePresence(deviceID) {
         case .absent: break
