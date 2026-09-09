@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "product": "SoundSource",
+  "status": "unmeasured",
+  "comparison_eligible": false,
+  "recorded_at": "2026-09-09T01:33:42.498340+00:00",
+  "reason": "No approved controlled workload or process measurement was performed. Advertised capabilities are documented separately in guide/benchmarks.md."
+}
