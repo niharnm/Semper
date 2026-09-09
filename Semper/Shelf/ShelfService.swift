@@ -22,6 +22,11 @@ final class ShelfService {
     private(set) var importCount = 0
     private(set) var message: String?
     private(set) var storeNeedsReset = false
+    private var pendingImportCleanup: Set<String> = []
+    private var importCleanupNeedsRetry = false
+    private var importCancellationCount = 0
+
+    var canClear: Bool { !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry }
 
     let store: ShelfStore
     @ObservationIgnored private let access: any ShelfFileAccess
@@ -95,7 +100,7 @@ final class ShelfService {
         expiryTask = nil
         let drain = Task { [weak self] in
             guard let self else { return }
-            await self.cancelWork()
+            _ = await self.cancelWork()
             if let clearTask = self.clearTask { _ = await clearTask.value }
             for url in self.scopes.values { self.access.end(url) }
             self.scopes.removeAll()
@@ -211,7 +216,6 @@ final class ShelfService {
             storeNeedsReset = false
             persistenceEnabled = false
             try await clear().get()
-            try removeOrphanedCache()
             message = nil
         } catch {
             storeNeedsReset = neededReset
@@ -263,7 +267,10 @@ final class ShelfService {
                 self.clearTask = nil
                 self.scheduleExpiry()
             }
-            await self.cancelWork()
+            if case .failure(let failure) = await self.cancelWork() {
+                self.report(failure)
+                return .failure(failure)
+            }
             guard !self.storeNeedsReset else {
                 self.report(ShelfFailure.invalidStore)
                 return .failure(.invalidStore)
@@ -288,7 +295,12 @@ final class ShelfService {
             self.fileStates.removeAll()
             self.invalidReferenceIDs.removeAll()
             self.checksums.removeAll()
-            if self.message == ShelfFailure.storeWrite.localizedDescription { self.message = nil }
+            if self.message == ShelfFailure.storeWrite.localizedDescription
+                || self.message == "Clear Shelf to retry temporary image cleanup before adding another drop."
+                || self.message == "Wait for cancelled imports to finish cleaning up before adding another drop."
+            {
+                self.message = nil
+            }
             return .success(())
         }
         clearTask = worker
@@ -339,6 +351,14 @@ final class ShelfService {
             report(ShelfFailure.stopped)
             return false
         }
+        guard importCancellationCount == 0 else {
+            message = "Wait for cancelled imports to finish cleaning up before adding another drop."
+            return false
+        }
+        guard pendingImportCleanup.isEmpty, !importCleanupNeedsRetry else {
+            message = "Clear Shelf to retry temporary image cleanup before adding another drop."
+            return false
+        }
         guard providers.count <= ShelfLimits.items - items.count - importTasks.count else {
             report(ShelfFailure.full)
             return false
@@ -366,7 +386,9 @@ final class ShelfService {
                     try self.acceptImported(payload)
                 } catch {
                     if error as? ShelfFailure != .cancelled { self.report(error) }
+                    self.reconcileImportCleanup()
                 }
+                guard self.pendingImportCleanup.isEmpty, !self.importCleanupNeedsRetry else { return }
                 self.importCount = max(0, self.importCount - 1)
             }
         }
@@ -375,13 +397,21 @@ final class ShelfService {
         return true
     }
 
-    func cancelImports() async {
+    @discardableResult
+    func cancelImports() async -> Result<Void, ShelfFailure> {
+        importCancellationCount += 1
+        defer { importCancellationCount -= 1 }
+        if !storeNeedsReset {
+            for name in Array(pendingImportCleanup) { discardImported(.cachedFile(name)) }
+        }
         let workers = importTasks
         for task in workers.values { task.cancel() }
         for (id, task) in workers {
             await task.value
             importTasks[id] = nil
         }
+        reconcileImportCleanup()
+        return pendingImportCleanup.isEmpty && !importCleanupNeedsRetry ? .success(()) : .failure(.storeWrite)
     }
 
     func fileURL(for item: ShelfItem) -> URL? {
@@ -477,14 +507,23 @@ final class ShelfService {
         }
     }
 
-    private func discardImported(_ payload: ShelfImportedPayload) {
+    @discardableResult
+    private func discardImported(_ payload: ShelfImportedPayload) -> Result<Void, ShelfFailure> {
         if case .cachedFile(let name) = payload {
-            do { try store.removeCachedFile(named: name) } catch { report(error) }
+            do {
+                try store.removeCachedFile(named: name)
+                pendingImportCleanup.remove(name)
+            } catch {
+                pendingImportCleanup.insert(name)
+                report(ShelfFailure.storeWrite)
+                return .failure(.storeWrite)
+            }
         }
+        return .success(())
     }
 
-    private func cancelWork() async {
-        await cancelImports()
+    private func cancelWork() async -> Result<Void, ShelfFailure> {
+        let importCleanup = await cancelImports()
         let workers = hashTasks
         for (id, task) in workers {
             task.cancel()
@@ -493,6 +532,18 @@ final class ShelfService {
         for (id, task) in workers {
             _ = await task.result
             hashTasks[id] = nil
+        }
+        return importCleanup
+    }
+
+    private func reconcileImportCleanup() {
+        guard !storeNeedsReset else { return }
+        do {
+            try removeOrphanedCache()
+            importCleanupNeedsRetry = false
+        } catch {
+            importCleanupNeedsRetry = true
+            report(ShelfFailure.storeWrite)
         }
     }
 
