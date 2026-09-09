@@ -27,21 +27,26 @@ state lives in the [product status guide](guide/product-status.md).
 - Denied or revoked permissions, limited runtimes, and failed cleanup stay
   visible with a recovery path. Quit drains composed sessions before the
   services they use. See the [module shell guide](guide/module-shell.md).
-- Finish the current interaction gaps first: keyboard-accessible file selection
-  in File Shelf and cancellation while Presentation prepares or starts.
+- Complete native acceptance of the integrated File Shelf picker and
+  Presentation preparation/start cancellation, including keyboard routing,
+  focus, dismissal, and recovery.
 
-### 3. Window Layout
+### 3. Window Layout acceptance and compatibility
 
-The next planned increment. It is not implemented today.
+The implementation is under review in [PR #106](https://github.com/niharnm/Semper/pull/106).
+It becomes the tenth integrated module only when its source lands on `main`.
 
-- Manual placement commands: left half, right half, maximize to the usable
-  screen area, center, and restore the last placement.
-- Built in its own branch on the existing Workspace Restore window helpers.
-- Manual actions only: no automatic tiling and no window watching.
-- Preserve the intended window when the menu bar takes focus. Verify each
-  placement and keep later manual adjustments intact when restoring.
-- Test half and maximized windows through later center and restore actions
-  without weakening Workspace Restore's fullscreen protections.
+- Verify all five manual commands, optional shortcuts, Home/search/pinned
+  actions, intended-window selection, and later manual changes on real apps.
+- Keep the conservative full-height exclusion explicit. Ordinary full-height
+  windows and targets are refused; halves and maximize can be unavailable when
+  both Dock and menu bar auto-hide. Smaller-window center and restore still
+  require eligible geometry.
+- An excluded or unreadable result requires manual review. Verify that its
+  recovery message survives cancellation and pause until acknowledged.
+- Resolve full-height compatibility through verified behavior before broad
+  support claims. Preserve Workspace Restore's protections. No automatic tiling
+  or persisted window history is included.
 
 ### 4. Cross-module workflows
 
@@ -58,11 +63,14 @@ The next planned increment. It is not implemented today.
   restarts.
 - File Shelf and Safe Eject: behavior improvements from reproducible reports,
   keeping original files and volumes safe.
-- After File Shelf's file picker, add **Resize Image Copy** for one selected
+- Finish review of File Shelf's **Resize a Copy** for one selected
   local JPEG or PNG. Offer 1024 or 2048 pixels on the longest edge without
   enlargement, show output dimensions, and save a separate copy. Preserve
   orientation, color and transparency, explain metadata handling, and support
   cancellation. No batch processing, uploads, or original-file replacement.
+- Preserve pending cleanup through lifecycle changes, bound expiry retries,
+  verify file ownership before removal, and report the actual saved path.
+  Image-copy integration waits for the corrected implementation and tests.
 - Awake and Away: keep power assertions and the curtain testable and honest
   about what they do not block.
 - A new utility needs a clear local user job, no account requirement, the
@@ -119,7 +127,7 @@ discussion and include a hardware test plan.
   Homebrew are current.
 - Integrated on `main` and in no download yet: Awake, Displays, Workspace
   Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation.
-- Planned additions: Window Layout and File Shelf's Resize Image Copy action.
+- Under review, not integrated: Window Layout and File Shelf's Resize a Copy.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, Accessibility window operations, volume ejection, and permission
   behavior.
