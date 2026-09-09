@@ -24,16 +24,24 @@ before removal or quit. Do not request Accessibility from startup or from module
 registration. Audio startup must remain a separate shell decision.
 
 The shell should keep one service instance per added module. Discard the instance
-after shutdown and construct a new one if the module is added again:
+after successful shutdown cleanup and construct a new one if the module is added again:
 
 | Service | Start enabled module | Pause or disable | Remove or quit |
 | --- | --- | --- | --- |
 | `WorkspaceService()` | `await workspace.start()` | `await workspace.pause()` | `await workspace.shutdown()` |
 | `ShelfService()` | `shelf.start()` | `await shelf.pause()` | `await shelf.shutdown()` |
-| `SafeEjectService()` | `storage.start()` | `storage.pause()` | `storage.shutdown()` |
+| `SafeEjectService()` | `storage.start()` | `storage.pause(); await storage.waitForCleanup()` | `storage.shutdown(); await storage.waitForCleanup()` |
 
 These calls run on the main actor. Workspace delegates Accessibility operations
 to its backend actor; shelf imports and checksums have cancellable workers.
+Safe Eject cancels monitoring immediately, then `waitForCleanup()` returns
+`Result<Void, SafeEjectFailure>` after checking its owned metadata-query cleanup.
+Handle the result before removal or quit. On `.failure(.cleanupPending)`, keep
+the service alive, report incomplete cleanup, and offer an explicit retry. The
+same failure is available through `cleanupFailure`; restart cannot clear it.
+Calling `waitForCleanup()` again can clear it after the owned process has exited
+and its resources have closed. A failed cleanup returns without an indefinite
+quit wait. No replacement query starts while cleanup remains pending.
 Mount `WorkspaceView(service: workspace)`, `ShelfDetailView(service: shelf)`, or
 `SafeEjectView(service: storage)` in the appropriate detail route. The menu can
 mount `ShelfCompactView(service: shelf, openDetail: openFiles)`.
@@ -84,6 +92,31 @@ identify open handles, force an eject, or retry after a failure. A request must
 identify one eligible mounted volume, and physical eject must not affect another
 mounted volume that was not selected.
 
+Physical backing must be unambiguous before unmount begins. Logical whole-media
+nodes, including synthesized APFS storage, do not establish physical identity.
+The resolver follows public IOKit parent relationships to supported physical
+media and validates APFS container membership with a bounded, read-only
+`/usr/sbin/diskutil apfs list -plist` query. It revalidates source, store, and
+device identities before each storage operation. Cached topology only informs
+the UI.
+
+The metadata query runs off the main actor with a 1 MiB output limit and a
+three-second deadline. Cancellation requests termination through the owned
+`Process` and waits up to 250 ms. If the process remains alive or closing its
+resources fails, ownership is retained and cleanup is reported as pending.
+Repeated notifications and preflight calls cannot launch another query until an
+explicit cleanup retry confirms exit and closes the resources. There is no raw
+PID-based forced signal. The plist schema is validated explicitly; unsupported
+output refuses the operation without exposing volume data in errors.
+
+Another mounted volume on the selected physical device blocks eject. Proven
+disjoint backing, including internal-only startup storage, does not. Unknown
+relationships still block the request: a virtual disk's backing file could be on
+the selected drive. Multi-device, RAID, virtual, malformed, or incomplete backing
+is unsupported under this single-device action. Use Finder or Disk Utility when
+the module cannot establish the relationship. These checks narrow races without
+claiming an atomic transaction across macOS storage changes.
+
 ## Automated verification
 
 The regular Xcode unit test target uses `Semper.app` as its test host. To exercise
@@ -126,6 +159,9 @@ public-release readiness.
 - [Apple Accessibility objects](https://developer.apple.com/documentation/applicationservices/axuielement)
 - [Apple provider file representations](https://developer.apple.com/documentation/foundation/nsitemprovider/loadfilerepresentation(for:openinplace:completionhandler:))
 - [Apple Disk Arbitration unmount](https://developer.apple.com/documentation/diskarbitration/dadiskunmount(_:_:_:_:))
+- [Apple whole-media lookup behavior](https://github.com/apple-oss-distributions/DiskArbitration/blob/main/DiskArbitration/DADisk.c#L269-L310)
+- [Apple storage protocol characteristics](https://github.com/apple-oss-distributions/IOStorageFamily/blob/main/IOStorageProtocolCharacteristics.h)
+- [Apple IOKit parent iteration](https://developer.apple.com/documentation/iokit/1514366-ioregistryentrygetparentiterator)
 - [Moom saved window layouts](https://manytricks.com/moom/)
 - [Dropover temporary shelf behavior](https://dropoverapp.com/)
 

@@ -14,11 +14,15 @@ final class SafeEjectService {
     private(set) var state: State = .paused
     private(set) var volumes: [SafeEjectVolume] = []
     private(set) var inventoryFailure: SafeEjectFailure?
+    private(set) var cleanupFailure: SafeEjectFailure?
     private(set) var activeVolumeID: SafeEjectVolumeID?
     private(set) var receipts: [SafeEjectReceipt] = []
     private var snapshot = SafeEjectInventory(volumes: [], hasUnidentifiedLocalVolumes: false)
     @ObservationIgnored private let backend: any SafeEjectBackend
     @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var stopGeneration = UUID()
+    @ObservationIgnored private var cleanupEpoch = UUID()
+    @ObservationIgnored private var cleanupWait: Task<Result<Void, SafeEjectFailure>, Never>?
 
     init(backend: any SafeEjectBackend = DiskArbitrationSafeEjectBackend()) {
         self.backend = backend
@@ -29,19 +33,21 @@ final class SafeEjectService {
     }
 
     func start() {
-        guard state == .paused else { return }
+        guard state == .paused, cleanupFailure == nil, cleanupWait == nil else { return }
         do {
             try backend.start { [weak self] event in self?.receive(event) }
             state = .running
             refresh()
         } catch {
             backend.stop()
-            inventoryFailure = .unavailable
+            if error as? SafeEjectFailure == .cleanupPending { cleanupFailure = .cleanupPending }
+            inventoryFailure = cleanupFailure ?? .unavailable
         }
     }
 
     func pause() {
         guard state != .shutDown else { return }
+        stopGeneration = UUID()
         invalidateOperation()
         backend.stop()
         state = .paused
@@ -56,6 +62,33 @@ final class SafeEjectService {
         receipts = []
     }
 
+    @discardableResult
+    func waitForCleanup() async -> Result<Void, SafeEjectFailure> {
+        if let cleanupWait { return await cleanupWait.value }
+        let task = Task { [self] () -> Result<Void, SafeEjectFailure> in
+            var drainedStopGeneration = stopGeneration
+            var result = await backend.drain()
+            // A newer stop must drain any reader scheduled by an earlier active retry.
+            while case .success = result, drainedStopGeneration != stopGeneration {
+                drainedStopGeneration = stopGeneration
+                result = await backend.drain()
+            }
+            switch result {
+            case .success:
+                cleanupEpoch = UUID()
+                cleanupFailure = nil
+                if inventoryFailure == .cleanupPending { inventoryFailure = nil }
+            case .failure(let failure):
+                cleanupFailure = failure
+            }
+            cleanupWait = nil
+            if state == .running { refresh() }
+            return result
+        }
+        cleanupWait = task
+        return await task.value
+    }
+
     func refresh() {
         guard state == .running else { return }
         do {
@@ -67,14 +100,17 @@ final class SafeEjectService {
         } catch {
             volumes = []
             snapshot = SafeEjectInventory(volumes: [], hasUnidentifiedLocalVolumes: true)
-            inventoryFailure = .unavailable
+            if error as? SafeEjectFailure == .cleanupPending { cleanupFailure = .cleanupPending }
+            inventoryFailure = cleanupFailure ?? .unavailable
         }
     }
 
     func refusal(for volume: SafeEjectVolume) -> SafeEjectFailure? {
+        if let cleanupFailure { return cleanupFailure }
         guard state == .running else { return state == .sleeping ? .sleeping : .paused }
         guard activeVolumeID == nil else { return .operationInProgress }
-        return inventoryFailure ?? snapshot.refusal(for: volume)
+        if inventoryFailure == .unavailable { return .unavailable }
+        return snapshot.refusal(for: volume)
     }
 
     @discardableResult
@@ -90,12 +126,16 @@ final class SafeEjectService {
             return record(.refused(.unknownDevice), for: selected)
         }
         let operation = UUID()
+        let cleanupEpoch = cleanupEpoch
         generation = operation
         activeVolumeID = selected.id
         defer {
             if generation == operation { activeVolumeID = nil }
         }
         let unmountResult = await backend.unmount(selected)
+        if case .failure(.cleanupPending) = unmountResult, self.cleanupEpoch == cleanupEpoch {
+            cleanupFailure = .cleanupPending
+        }
         guard state == .running, generation == operation, !Task.isCancelled else {
             return recordUnlessShutdown(.unverified(.interrupted), for: selected)
         }
@@ -104,14 +144,14 @@ final class SafeEjectService {
             return record(.unverified(failure), for: selected)
         }
         refresh()
-        guard inventoryFailure == nil else {
-            return record(.unverified(inventoryFailure ?? .unavailable), for: selected)
+        guard inventoryFailure != .unavailable else {
+            return record(.unverified(.unavailable), for: selected)
         }
         guard !snapshot.volumes.contains(where: { $0.id == selected.id }) else {
             return record(.unverified(.stillMounted), for: selected)
         }
-        guard !snapshot.volumes.contains(where: { $0.deviceID == deviceID }) else {
-            return record(.unmountedOnly(.otherMountedVolumes), for: selected)
+        if let failure = snapshot.conflict(with: deviceID) {
+            return record(.unmountedOnly(failure), for: selected)
         }
         switch backend.devicePresence(deviceID) {
         case .present: break
@@ -121,6 +161,9 @@ final class SafeEjectService {
             return record(.unmountedOnly(.unavailable), for: selected)
         }
         let ejectResult = await backend.ejectDevice(containing: selected)
+        if case .failure(.cleanupPending) = ejectResult, self.cleanupEpoch == cleanupEpoch {
+            cleanupFailure = .cleanupPending
+        }
         guard state == .running, generation == operation, !Task.isCancelled else {
             return recordUnlessShutdown(.unverified(.interrupted), for: selected)
         }
@@ -128,8 +171,8 @@ final class SafeEjectService {
         if case .failure(let failure) = ejectResult {
             return record(.unmountedOnly(failure), for: selected)
         }
-        guard inventoryFailure == nil else {
-            return record(.unverified(inventoryFailure ?? .unavailable), for: selected)
+        guard inventoryFailure != .unavailable else {
+            return record(.unverified(.unavailable), for: selected)
         }
         guard
             !snapshot.volumes.contains(where: {
@@ -137,6 +180,9 @@ final class SafeEjectService {
             })
         else {
             return record(.unverified(.stillMounted), for: selected)
+        }
+        if let failure = snapshot.conflict(with: deviceID) {
+            return record(.unverified(failure), for: selected)
         }
         switch backend.devicePresence(deviceID) {
         case .absent: break

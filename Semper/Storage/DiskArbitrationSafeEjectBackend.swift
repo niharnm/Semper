@@ -1,6 +1,7 @@
 import AppKit
 import DiskArbitration
 import IOKit
+import IOKit.storage
 
 @MainActor
 final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
@@ -8,12 +9,16 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
     private var observers: [NSObjectProtocol] = []
     private var pendingToken: UInt?
     private var timeout: Task<Void, Never>?
+    private let topologyCache = SafeEjectTopologyCache()
+    private var checking = false
+    private var preparedVolume: SafeEjectVolume?
 
     isolated deinit {
         stop()
     }
 
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws {
+        guard topologyCache.cleanupFailure == nil else { throw SafeEjectFailure.cleanupPending }
         guard session == nil else { return }
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             throw SafeEjectFailure.unavailable
@@ -28,13 +33,23 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
             (NSWorkspace.didWakeNotification, .didWake),
         ]
         observers = notifications.map { name, event in
-            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { onEvent(event) }
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    switch event {
+                    case .willSleep: self?.topologyCache.stop()
+                    case .didWake: self?.topologyCache.start { onEvent(.volumesChanged) }
+                    case .volumesChanged: self?.topologyCache.invalidate()
+                    }
+                    onEvent(event)
+                }
             }
         }
+        topologyCache.start { onEvent(.volumesChanged) }
     }
 
     func stop() {
+        topologyCache.stop()
         cancelPendingOperation()
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -44,12 +59,19 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
         session = nil
     }
 
+    func drain() async -> Result<Void, SafeEjectFailure> {
+        await topologyCache.drain()
+    }
+
     func cancelPendingOperation() {
+        topologyCache.cancelPreflight()
+        preparedVolume = nil
         guard let pendingToken else { return }
         finish(pendingToken, result: .failure(.interrupted))
     }
 
     func inventory() throws -> SafeEjectInventory {
+        guard topologyCache.cleanupFailure == nil else { throw SafeEjectFailure.cleanupPending }
         guard let session else { throw SafeEjectFailure.paused }
         guard
             let urls = FileManager.default.mountedVolumeURLs(
@@ -79,16 +101,10 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
                 unidentified = true
                 continue
             }
-            let wholeDisk = DADiskCopyWholeDisk(disk)
-            let wholeDescription = wholeDisk.flatMap { DADiskCopyDescription($0) } as NSDictionary?
-            let description = DADiskCopyDescription(disk) as NSDictionary?
-            var deviceID: SafeEjectDeviceID?
-            if let wholeDisk, let wholeBSD = DADiskGetBSDName(wholeDisk),
-                let wholeRegistryID = registryID(of: wholeDisk),
-                (wholeDescription?[kDADiskDescriptionMediaWholeKey] as? Bool) == true
-            {
-                deviceID = SafeEjectDeviceID(bsdName: String(cString: wholeBSD), registryID: wholeRegistryID)
-            }
+            let topology = registryGraph(of: disk)?.resolve(apfs: topologyCache.value)
+            let deviceID = topology?.deviceID
+            let physicalDisk = deviceID.flatMap { DADiskCreateFromBSDName(kCFAllocatorDefault, session, $0.bsdName) }
+            let physicalDescription = physicalDisk.flatMap { DADiskCopyDescription($0) } as NSDictionary?
             volumes.append(
                 SafeEjectVolume(
                     id: SafeEjectVolumeID(
@@ -97,51 +113,95 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
                     ),
                     name: values.volumeName ?? "Unnamed volume",
                     deviceID: deviceID,
-                    isInternal: wholeDescription?[kDADiskDescriptionDeviceInternalKey] as? Bool
-                        ?? description?[kDADiskDescriptionDeviceInternalKey] as? Bool ?? values.volumeIsInternal,
-                    isRemovable: wholeDescription?[kDADiskDescriptionMediaRemovableKey] as? Bool
+                    isInternal: topology?.isInternal ?? values.volumeIsInternal,
+                    isRemovable: physicalDescription?[kDADiskDescriptionMediaRemovableKey] as? Bool
                         ?? values.volumeIsRemovable,
-                    isEjectable: wholeDescription?[kDADiskDescriptionMediaEjectableKey] as? Bool
+                    isEjectable: physicalDescription?[kDADiskDescriptionMediaEjectableKey] as? Bool
                         ?? values.volumeIsEjectable,
-                    isRoot: url.standardizedFileURL.path == "/"
+                    isRoot: url.standardizedFileURL.path == "/",
+                    topology: topology
                 ))
         }
         return SafeEjectInventory(volumes: volumes, hasUnidentifiedLocalVolumes: unidentified)
     }
 
     func unmount(_ volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> {
-        guard let session else { return .failure(.paused) }
+        guard session != nil else { return .failure(.paused) }
+        guard !checking, pendingToken == nil else { return .failure(.operationInProgress) }
+        checking = true
+        defer { checking = false }
+        preparedVolume = nil
         do {
+            _ = try await topologyCache.fresh()
+            guard !Task.isCancelled, let session else { return .failure(.interrupted) }
             let snapshot = try inventory()
             if let failure = snapshot.refusal(for: volume) { return .failure(failure) }
+            guard volume.topology != nil, volume.id.volumeUUID.flatMap(UUID.init(uuidString:)) != nil,
+                let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, volume.id.mountURL as CFURL),
+                registryID(of: disk) == volume.id.registryID,
+                volumeUUID(of: disk) == volume.id.volumeUUID.flatMap(UUID.init(uuidString:))
+            else { return .failure(.changedVolume) }
+            let result = await perform { context in
+                DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), Self.completed, context)
+            }
+            if case .success = result {
+                _ = try await topologyCache.fresh()
+                guard !Task.isCancelled, self.session != nil else { return .failure(.interrupted) }
+                preparedVolume = volume
+            }
+            return result
+        } catch let failure as SafeEjectFailure {
+            return .failure(failure)
+        } catch SafeEjectAPFSError.cancelled {
+            return .failure(.interrupted)
+        } catch SafeEjectAPFSError.timedOut {
+            return .failure(.topologyTimedOut)
+        } catch is CancellationError {
+            return .failure(.interrupted)
         } catch {
-            return .failure(.unavailable)
-        }
-        guard let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, volume.id.mountURL as CFURL),
-            registryID(of: disk) == volume.id.registryID
-        else { return .failure(.changedVolume) }
-        return await perform { context in
-            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), Self.completed, context)
+            return .failure(.incompleteInventory)
         }
     }
 
     func ejectDevice(containing volume: SafeEjectVolume) async -> Result<Void, SafeEjectFailure> {
-        guard let session else { return .failure(.paused) }
-        guard let id = volume.deviceID else { return .failure(.unknownDevice) }
-        do {
-            let snapshot = try inventory()
-            guard snapshot.hasCompleteDeviceMapping else { return .failure(.incompleteInventory) }
-            guard !snapshot.volumes.contains(where: { $0.deviceID == id }) else {
-                return .failure(.otherMountedVolumes)
-            }
-        } catch {
-            return .failure(.unavailable)
+        guard session != nil else { return .failure(.paused) }
+        guard !checking, pendingToken == nil else { return .failure(.operationInProgress) }
+        guard preparedVolume == volume, let expected = volume.topology, let id = volume.deviceID else {
+            return .failure(.changedVolume)
         }
-        guard let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, id.bsdName),
-            registryID(of: disk) == id.registryID
-        else { return .failure(.changedVolume) }
-        return await perform { context in
-            DADiskEject(disk, DADiskEjectOptions(kDADiskEjectOptionDefault), Self.completed, context)
+        checking = true
+        defer {
+            checking = false
+            preparedVolume = nil
+        }
+        do {
+            let apfs = try await topologyCache.fresh()
+            guard !Task.isCancelled, let session else { return .failure(.interrupted) }
+            guard let source = DADiskCreateFromBSDName(kCFAllocatorDefault, session, volume.id.bsdName),
+                registryID(of: source) == volume.id.registryID,
+                volumeUUID(of: source) == volume.id.volumeUUID.flatMap(UUID.init(uuidString:)),
+                registryGraph(of: source)?.resolve(apfs: apfs) == expected
+            else { return .failure(.changedVolume) }
+            let snapshot = try inventory()
+            if let failure = snapshot.conflict(with: id) { return .failure(failure) }
+            guard let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, id.bsdName),
+                registryID(of: disk) == id.registryID
+            else { return .failure(.changedVolume) }
+            let result = await perform { context in
+                DADiskEject(disk, DADiskEjectOptions(kDADiskEjectOptionDefault), Self.completed, context)
+            }
+            if case .success = result { _ = try await topologyCache.fresh() }
+            return result
+        } catch let failure as SafeEjectFailure {
+            return .failure(failure)
+        } catch SafeEjectAPFSError.cancelled {
+            return .failure(.interrupted)
+        } catch SafeEjectAPFSError.timedOut {
+            return .failure(.topologyTimedOut)
+        } catch is CancellationError {
+            return .failure(.interrupted)
+        } catch {
+            return .failure(.incompleteInventory)
         }
     }
 
@@ -152,7 +212,7 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
         guard status == KERN_SUCCESS else { return .unavailable }
         defer { IOObjectRelease(iterator) }
         let entry = IOIteratorNext(iterator)
-        guard entry != IO_OBJECT_NULL else { return .absent }
+        guard entry != IO_OBJECT_NULL else { return IOIteratorIsValid(iterator) != 0 ? .absent : .unavailable }
         IOObjectRelease(entry)
         return .present
     }
@@ -176,6 +236,24 @@ final class DiskArbitrationSafeEjectBackend: SafeEjectBackend {
         var id: UInt64 = 0
         guard IORegistryEntryGetRegistryEntryID(media, &id) == KERN_SUCCESS else { return nil }
         return id
+    }
+
+    private func volumeUUID(of disk: DADisk) -> UUID? {
+        guard let description = DADiskCopyDescription(disk) as NSDictionary?,
+            let value = description[kDADiskDescriptionVolumeUUIDKey] as AnyObject?,
+            CFGetTypeID(value) == CFUUIDGetTypeID()
+        else { return nil }
+        // The documented CFUUID value needs its exact type checked before the Core Foundation bridge.
+        let uuid = value as! CFUUID
+        guard let text = CFUUIDCreateString(kCFAllocatorDefault, uuid) as String? else { return nil }
+        return UUID(uuidString: text)
+    }
+
+    private func registryGraph(of disk: DADisk) -> SafeEjectRegistryGraph? {
+        let media = DADiskCopyIOMedia(disk)
+        guard media != IO_OBJECT_NULL else { return nil }
+        defer { IOObjectRelease(media) }
+        return SafeEjectRegistryGraph.read(media: media)
     }
 
     private func perform(_ submit: (UnsafeMutableRawPointer?) -> Void) async -> Result<Void, SafeEjectFailure> {
