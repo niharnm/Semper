@@ -276,6 +276,7 @@ struct SemperApp: App {
         FluidMenuBarExtra("Semper", image: launchIconImage, isInserted: $showMenuBarExtra) {
             if let runtime { UtilityShellView(runtime: runtime, compact: true) }
         }
+        .commandsRemoved()  // The library supplies its own empty Settings scene.
     }
 
     init() {
