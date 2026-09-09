@@ -404,7 +404,8 @@ struct ShelfImageCopySessionTests {
             try #require(await ImageSessionIdle(f.session).wait())
             #expect(f.session.receipt?.url == f.output)
             #expect(!f.session.save(size: .pixels1024))
-            try await f.session.cancel().get()
+            await ShelfImageCopyView(service: f.service, request: request).closeAction()
+            #expect(f.session.request == nil)
             #expect(try Data(contentsOf: f.output) == Data("published copy".utf8))
             #expect(f.copier.cleanupTokens.isEmpty)
         }
@@ -525,6 +526,32 @@ struct ShelfImageCopySessionTests {
             #expect(f.copier.cleanupTokens.isEmpty)
             #expect(!FileManager.default.fileExists(atPath: f.output.path))
             #expect(try Data(contentsOf: f.copier.recoveredOutput) == Data("published copy".utf8))
+        }
+    }
+
+    @Test("Previously rendered Cancel and Retry Cleanup actions cannot acknowledge a recovered receipt")
+    func renderedCloseActionsRetainRecoveredReceipt() async throws {
+        try await withFixture(uncertainPublication: true) { f in
+            let request = try await begin(f)
+            let view = ShelfImageCopyView(service: f.service, request: request)
+            let cancel = view.closeAction
+            try #require(f.session.save(size: .pixels1024))
+            try #require(await ImageSessionIdle(f.session).wait())
+            try #require(f.session.needsCleanup && f.session.receipt == nil)
+            let retryCleanup = view.closeAction
+            f.copier.failRecovery = false
+            _ = await f.service.cancelImageCopy(requestID: request.id)
+            try #require(f.session.needsReceiptAcknowledgement)
+            for action in [cancel, retryCleanup] {
+                await action()
+                #expect(f.session.request?.id == request.id && f.session.needsReceiptAcknowledgement)
+                #expect(f.session.receipt?.url == f.copier.recoveredOutput)
+                #expect(f.copier.writes == 1 && f.copier.recoveries == 1 && f.copier.acknowledgements == 0)
+            }
+            let done = view.closeAction
+            await done()
+            #expect(f.session.request == nil && !f.session.needsReceiptAcknowledgement)
+            #expect(f.session.receipt?.url == f.copier.recoveredOutput)
         }
     }
 

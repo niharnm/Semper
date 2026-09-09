@@ -55,7 +55,18 @@ struct ShelfImageCopyView: View {
     let request: ShelfImageCopyRequest
     @State private var size: ShelfImageCopySize = .pixels1024
 
+    var closeAction: () async -> Void {
+        { [service, requestID = request.id, acknowledgeReceipt = session.needsReceiptAcknowledgement] in
+            if acknowledgeReceipt {
+                service.acknowledgeImageCopyReceipt(requestID: requestID)
+            } else {
+                await service.cancelImageCopy(requestID: requestID)
+            }
+        }
+    }
+
     var body: some View {
+        let close = closeAction
         VStack(alignment: .leading, spacing: 16) {
             Text("Resize a Copy").font(.title2.weight(.semibold))
             Text(request.name).font(.headline).lineLimit(2).textSelection(.enabled)
@@ -116,11 +127,7 @@ struct ShelfImageCopyView: View {
                         ? "Done"
                         : session.needsCleanup ? "Retry Cleanup" : session.receipt == nil ? "Cancel" : "Done"
                 ) {
-                    if session.needsReceiptAcknowledgement {
-                        service.acknowledgeImageCopyReceipt(requestID: request.id)
-                    } else {
-                        Task { await service.cancelImageCopy(requestID: request.id) }
-                    }
+                    Task { await close() }
                 }
                 .keyboardShortcut(session.needsCleanup || session.needsReceiptAcknowledgement ? nil : .cancelAction)
                 if session.plan != nil && session.receipt == nil {
