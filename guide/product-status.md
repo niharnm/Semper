@@ -1,14 +1,14 @@
 # Semper product status
 
-Semper's source in this change set contains ten utility modules. This page
+Semper has ten utility modules integrated on `main`. This page
 records what each module does, where it stands, and what remains before
 release. It changes in the same commit as the work that changes a status.
 
-Snapshot: baseline `main` at `6afe10d`, 2026-09-09, including the interaction
-fixes from [PR #108](https://github.com/niharnm/Semper/pull/108). Cleared Window
-Layout source `0f25f65` is staged with that baseline at `e621a11`; its integration
-requires this full change set to merge into `main`. Latest downloadable release:
-v1.0.0, published 2026-08-26, containing Sound only.
+Snapshot: baseline `main` at `f3e278d`, 2026-09-09, including Window Layout and
+website alignment from [PR #110](https://github.com/niharnm/Semper/pull/110).
+Cleared Resize a Copy source `2db9a4a` is staged with that baseline at `a575a87`;
+its integration requires this full change set to merge into `main`. Latest
+downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
 
 ## States
 
@@ -29,7 +29,7 @@ v1.0.0, published 2026-08-26, containing Sound only.
 | Awake | Keep the Mac awake for a chosen duration, with app and battery stop conditions | Integrated | Shared gates, plus assertion, expiry, and stop-condition checks on hardware | [Source](../Semper/Awake), [guide](awake-sessions.md) |
 | Displays | Read and set supported external display brightness, contrast, volume, and input | Integrated | Shared gates, plus DDC checks on real displays | [Source](../Semper/Displays), [guide](module-shell.md#displays) |
 | Workspace Restore | Return selected app windows to a saved arrangement | Integrated | Shared gates, plus Accessibility permission flows, multi-display, and Spaces checks | [Source](../Semper/Workspace), [guide](direct-utilities.md) |
-| Window Layout | Place one eligible window or restore its preceding placement | Implemented in this change set | Source merge and shared gates; full-height/auto-hide limits, focus, shortcuts, constrained windows and recovery need native verification | [Source](../Semper/WindowLayout), [guide](window-layout.md) |
+| Window Layout | Place one eligible window or restore its preceding placement | Integrated | Shared gates; full-height/auto-hide limits, focus, shortcuts, constrained windows and recovery need native verification | [Source](../Semper/WindowLayout), [guide](window-layout.md) |
 | File Shelf | Hold temporary files, links, images, and text between apps | Integrated | Shared gates, plus drop-source, missing-file, and persistence checks | [Source](../Semper/Shelf), [guide](direct-utilities.md) |
 | Safe Eject | Review removable volumes to eject and check each observed result | Integrated | Shared gates, plus disposable-drive single and batch eject checks | [Source](../Semper/Storage), [guide](direct-utilities.md) |
 | Scenes | Save and apply settings across utilities together, with a restore point | Integrated | Shared gates, plus capture, apply, and recovery checks on hardware | [Source](../Semper/Scenes), [guide](module-shell.md) |
@@ -48,20 +48,19 @@ the shared release gates remain separate.
 
 ## Next increments
 
-This proposed feature is outside both the staged source and baseline `main`
-snapshots above and is not released.
+This feature extends File Shelf in the staged source snapshot. It is outside
+the baseline `main` snapshot and is not released. It adds no new module.
 
-| Increment | State | Acceptance before integration |
+| Increment | State | Remaining acceptance |
 | --- | --- | --- |
-| File Shelf Resize a Copy | In review, [PR #109](https://github.com/niharnm/Semper/pull/109) | Correct pending lifecycle/expiry, cleanup ownership and saved-path findings; verify the final implementation before integration and native acceptance |
+| File Shelf Resize a Copy | Implemented in this change set, [PR #109](https://github.com/niharnm/Semper/pull/109) | Combined verification and source merge; native Save, keyboard/VoiceOver, cancellation, recovery and destination compatibility remain separate release gates |
 
 ## Window Layout
 
-Cleared source `0f25f65` adds left half, right half, maximize, center and
+Source `0f25f65` adds left half, right half, maximize, center and
 previous-placement restore with optional shortcuts and Home/search/pinned
-actions. It is included in the staged source snapshot and becomes the tenth
-integrated module when this change set merges into `main`. The baseline main
-snapshot contains nine modules.
+actions. It is integrated through PR #110 at `f3e278d`; both the baseline main
+and staged source snapshots contain ten modules.
 
 Full-height current windows and targets are refused even for ordinary windowed
 apps. Halves and maximize can therefore be unavailable when both the Dock and
@@ -76,6 +75,34 @@ quitting clears it.
 Passing source tests does not establish native focus, keyboard, VoiceOver,
 permission, real-window or hardware acceptance. See the
 [Window Layout guide](window-layout.md).
+
+## File Shelf Resize a Copy
+
+Cleared source `2db9a4a` is included in this change set. Select one fully
+downloaded local JPEG or PNG, review dimensions for a longest edge of 1,024 or
+2,048 pixels, then save a separate copy. Images are not enlarged. The source
+format, displayed orientation, color profile and PNG transparency are kept;
+JPEG re-encoding can lose detail. Descriptive metadata, including camera and
+location data, is removed. Information visible in the pixels remains.
+
+Inputs are limited to 32 MiB, 40 million pixels and 16,384 pixels per side.
+Animated, unsupported, corrupt, unavailable or larger images are refused.
+The original is untouched and existing destinations are never overwritten.
+Saving requires a destination filesystem that supports macOS file cloning;
+unsupported locations are refused. There are no uploads, cloud downloads or
+batch operations.
+
+Failed cleanup retains the affected items and file access for explicit retry.
+Recovery keeps the verified saved path visible until Done; pending Pause or
+Quit waits for that acknowledgement. If edited or deleted output cannot be
+verified, Finish Without Verification ends tracking only after private cleanup.
+It does not delete or republish the public copy. Native image calls may finish
+before cancellation, and no fixed peak memory bound is claimed.
+
+Source clearance does not establish native Save-dialog focus, keyboard,
+VoiceOver, cancellation, recovery, provider/volume or signed-build acceptance.
+See the [image-copy guide](shelf-image-copy.md) for cleanup ownership limits and
+the remaining checks.
 
 ## Shared release gates
 

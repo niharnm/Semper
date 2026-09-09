@@ -1,3 +1,4 @@
+import Foundation
 import KeyboardShortcuts
 import SwiftUI
 
@@ -104,7 +105,7 @@ struct UtilityShellView: View {
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
                 pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason)
         case .module(let id):
-            module(id).disabled(id != .away && runtime.mutationDisabledReason != nil)
+            module(id).disabled(moduleInteractionDisabled(for: id))
         }
     }
 
@@ -128,7 +129,10 @@ struct UtilityShellView: View {
                         UtilityActionList(commands: runtime.commands, actions: runtime.registry.favoriteActions)
                     }
                     ForEach(runtime.registry.addedModules) { module in
-                        if compact, module.id == .shelf,
+                        if compact, module.id == .shelf, shelfStopRecoveryRoute != nil {
+                            ShelfStopRecoveryView(runtime: runtime)
+                                .disabled(moduleInteractionDisabled(for: .shelf))
+                        } else if compact, module.id == .shelf,
                             !runtime.registry.pausedModuleIDs.contains(.shelf),
                             !runtime.lifecycle.stopping.contains(.shelf), !runtime.lifecycle.isShuttingDown,
                             let shelf = runtime.shelf, shelf.isRunning
@@ -230,6 +234,15 @@ struct UtilityShellView: View {
         return .module(.scenes)
     }
 
+    var shelfStopRecoveryRoute: ShelfStopRecoveryRoute? {
+        ShelfStopRecoveryRoute.current(in: runtime)
+    }
+
+    func moduleInteractionDisabled(for id: UtilityModuleID) -> Bool {
+        if id == .shelf, shelfStopRecoveryRoute != nil { return false }
+        return id != .away && runtime.mutationDisabledReason != nil
+    }
+
     @ViewBuilder
     private func module(_ id: UtilityModuleID) -> some View {
         if id == .away, runtime.awayCleanupResult != nil, runtime.awayCleanupResult != .complete {
@@ -241,6 +254,8 @@ struct UtilityShellView: View {
             runtime.sceneShortcuts == nil || runtime.lifecycle.isShuttingDown
         {
             SceneRecoveryView(manager: scenes)
+        } else if id == .shelf, shelfStopRecoveryRoute != nil {
+            ShelfStopRecoveryView(runtime: runtime)
         } else if runtime.registry.pausedModuleIDs.contains(id) {
             ContentUnavailableView {
                 Label("Module paused", systemImage: "pause.circle")
@@ -537,6 +552,117 @@ struct UtilitySettingsView: View {
             if !(await runtime.resetAllSettings()) { resetError = runtime.message }
             resetInProgress = false
         }
+    }
+}
+
+nonisolated enum ShelfStopRecoveryRoute: Equatable, Sendable {
+    case pause, shutdown
+
+    @MainActor
+    static func current(in runtime: UtilityRuntime) -> Self? {
+        guard runtime.shelf?.stopFailure != nil else { return nil }
+        return runtime.lifecycle.isShuttingDown ? .shutdown : .pause
+    }
+
+    @MainActor
+    static func retry(in runtime: UtilityRuntime) async throws {
+        switch current(in: runtime) {
+        case .pause: try await runtime.pause(.shelf)
+        case .shutdown: await runtime.shutdown()
+        case nil: return
+        }
+    }
+
+    @MainActor
+    static func acknowledgeRecoveredCopy(in runtime: UtilityRuntime, requestID: UUID) async throws {
+        guard current(in: runtime) != nil,
+            runtime.shelf?.acknowledgeImageCopyReceipt(requestID: requestID) == true
+        else { return }
+        try await retry(in: runtime)
+    }
+
+    @MainActor
+    static func acknowledgeUnverifiedCopy(in runtime: UtilityRuntime, requestID: UUID) async throws {
+        guard current(in: runtime) != nil, let service = runtime.shelf,
+            service.imageCopy.request?.id == requestID, service.imageCopy.hasUnverifiedPublishedCopy
+        else { return }
+        try await service.acknowledgeUnverifiedImageCopy(requestID: requestID).get()
+        guard runtime.shelf === service, service.imageCopy.request == nil else { return }
+        try await retry(in: runtime)
+    }
+}
+
+private struct ShelfStopRecoveryView: View {
+    @Bindable var runtime: UtilityRuntime
+    @State private var retrying = false
+
+    var body: some View {
+        let acknowledgementRequest =
+            runtime.shelf?.imageCopy.needsReceiptAcknowledgement == true
+            ? runtime.shelf?.imageCopy.request : nil
+        VStack(alignment: .leading, spacing: 14) {
+            Label("File Shelf cleanup needs attention", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+            Text(
+                runtime.shelf?.imageCopy.message ?? runtime.shelf?.stopFailure?.localizedDescription
+                    ?? "Retry cleanup to finish stopping File Shelf."
+            )
+            .foregroundStyle(.secondary)
+            if let session = runtime.shelf?.imageCopy {
+                if session.needsReceiptAcknowledgement, let receipt = session.receipt {
+                    Label("Copy recovered", systemImage: "checkmark.circle").foregroundStyle(.green)
+                    Text(receipt.url.path).font(.callout).textSelection(.enabled)
+                } else {
+                    ForEach(session.recoveryLocations, id: \.self) { location in
+                        Text(location.path).font(.callout).textSelection(.enabled)
+                    }
+                }
+            }
+            Text("Shelf items are retained until cleanup finishes.").font(.callout)
+            Button(acknowledgementRequest == nil ? "Retry Cleanup" : "Done") {
+                guard !retrying else { return }
+                retrying = true
+                Task {
+                    do {
+                        if let acknowledgementRequest {
+                            try await ShelfStopRecoveryRoute.acknowledgeRecoveredCopy(
+                                in: runtime, requestID: acknowledgementRequest.id)
+                        } else {
+                            try await ShelfStopRecoveryRoute.retry(in: runtime)
+                        }
+                    } catch {
+                        runtime.message = error.localizedDescription
+                    }
+                    retrying = false
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(retrying || runtime.shelf?.isStopping == true || runtime.lifecycle.stopping.contains(.shelf))
+            if let session = runtime.shelf?.imageCopy, session.hasUnverifiedPublishedCopy,
+                let request = session.request
+            {
+                ShelfUnverifiedCopyExplanation()
+                Button("Finish Without Verification") {
+                    guard !retrying else { return }
+                    retrying = true
+                    Task {
+                        do {
+                            try await ShelfStopRecoveryRoute.acknowledgeUnverifiedCopy(
+                                in: runtime, requestID: request.id)
+                        } catch {
+                            runtime.message = error.localizedDescription
+                        }
+                        retrying = false
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(
+                    retrying || session.isWorking || runtime.shelf?.isStopping == true
+                        || runtime.lifecycle.stopping.contains(.shelf))
+            }
+            if retrying { ProgressView().controlSize(.small) }
+        }
+        .padding(24)
     }
 }
 

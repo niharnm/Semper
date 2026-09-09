@@ -1,13 +1,12 @@
 # Semper roadmap
 
-Semper's source in this change set contains ten utility modules: Sound, Awake,
-Displays, Workspace Restore, Window Layout, File Shelf, Safe Eject, Scenes,
-Away, and Presentation. The baseline has nine integrated modules. Window Layout
-becomes the tenth integrated module when this change set merges into `main`.
-The downloadable release is v1.0.0, which contains Sound only. This roadmap
-orders the work to deliver the whole suite as
-dependable signed releases without hiding experimental behavior. Per-module
-state lives in the [product status guide](guide/product-status.md).
+Semper has ten utility modules integrated on `main`: Sound, Awake, Displays,
+Workspace Restore, Window Layout, File Shelf, Safe Eject, Scenes, Away, and
+Presentation. Resize a Copy extends File Shelf in this change set and awaits
+integration. The downloadable release is v1.0.0, which contains Sound only.
+This roadmap orders the work to deliver the whole suite as dependable signed
+releases without hiding experimental behavior. Per-module state lives in the
+[product status guide](guide/product-status.md).
 
 ## Current priorities
 
@@ -35,9 +34,9 @@ state lives in the [product status guide](guide/product-status.md).
 
 ### 3. Window Layout acceptance and compatibility
 
-The cleared implementation from [PR #106](https://github.com/niharnm/Semper/pull/106)
-is included in this change set. Integration requires its merge to `main`;
-native acceptance remains open. See the [Window Layout guide](guide/window-layout.md).
+The implementation from [PR #106](https://github.com/niharnm/Semper/pull/106)
+is integrated on `main` through [PR #110](https://github.com/niharnm/Semper/pull/110).
+Native acceptance remains open. See the [Window Layout guide](guide/window-layout.md).
 
 - Verify all five manual commands, optional shortcuts, Home/search/pinned
   actions, intended-window selection, and later manual changes on real apps.
@@ -67,14 +66,17 @@ native acceptance remains open. See the [Window Layout guide](guide/window-layou
   restarts.
 - File Shelf and Safe Eject: behavior improvements from reproducible reports,
   keeping original files and volumes safe.
-- Finish review of File Shelf's **Resize a Copy** for one selected
-  local JPEG or PNG. Offer 1024 or 2048 pixels on the longest edge without
-  enlargement, show output dimensions, and save a separate copy. Preserve
-  orientation, color and transparency, explain metadata handling, and support
-  cancellation. No batch processing, uploads, or original-file replacement.
-- Preserve pending cleanup through lifecycle changes, bound expiry retries,
-  verify file ownership before removal, and report the actual saved path.
-  Image-copy integration waits for the corrected implementation and tests.
+- Complete integration and native acceptance of File Shelf's **Resize a Copy**,
+  implemented in this change set. It resizes one local JPEG or PNG to a longest
+  edge of 1024 or 2048 pixels without enlargement or overwriting a file.
+  Format, displayed orientation, color profile and PNG transparency are kept;
+  descriptive metadata is removed. JPEG re-encoding can lose detail.
+- Verify Save-dialog focus, keyboard access, cancellation, and refusal of
+  destinations without macOS file-cloning support. Exercise cleanup recovery,
+  the verified saved path retained until Done, and Finish Without Verification
+  for changed or deleted output. Private cleanup remains required and public
+  copies remain untouched. See the [image-copy guide](guide/shelf-image-copy.md)
+  for input limits and remaining checks. No batch processing or uploads.
 - Awake and Away: keep power assertions and the curtain testable and honest
   about what they do not block.
 - A new utility needs a clear local user job, no account requirement, the
@@ -130,9 +132,8 @@ discussion and include a hardware test plan.
   unit tests, the static website, and signed releases through GitHub and
   Homebrew are current.
 - Integrated on `main` and in no download yet: Awake, Displays, Workspace
-  Restore, File Shelf, Safe Eject, Scenes, Away, and Presentation.
-- Implemented in this change set, awaiting integration: Window Layout.
-- Under review, not integrated: File Shelf's Resize a Copy.
+  Restore, Window Layout, File Shelf, Safe Eject, Scenes, Away, and Presentation.
+- Implemented in this change set, awaiting integration: File Shelf's Resize a Copy.
 - Hardware-dependent: process taps, device routing, DDC, Bluetooth call mode,
   media keys, Accessibility window operations, volume ejection, and permission
   behavior.

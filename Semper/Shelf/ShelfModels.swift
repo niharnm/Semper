@@ -70,6 +70,7 @@ nonisolated enum ShelfFileState: Equatable, Sendable {
 nonisolated enum ShelfFailure: Error, Equatable, LocalizedError, Sendable {
     case stopped, full, tooLarge, unsupported, missing, cloudOnly, inaccessible
     case invalidStore, storeVersion, storeWrite, cancelled, changedDuringRead, invalidImage
+    case recoveredCopyNeedsAcknowledgement
 
     var errorDescription: String? {
         switch self {
@@ -86,6 +87,7 @@ nonisolated enum ShelfFailure: Error, Equatable, LocalizedError, Sendable {
         case .cancelled: "Operation cancelled."
         case .changedDuringRead: "The file changed while its checksum was being calculated. Try again."
         case .invalidImage: "This image is invalid or exceeds the image size limit."
+        case .recoveredCopyNeedsAcknowledgement: "Review the recovered copy's saved location, then choose Done."
         }
     }
 }
