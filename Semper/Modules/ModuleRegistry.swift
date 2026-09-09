@@ -399,7 +399,6 @@ final class ModuleRegistry {
 
     private func isVisible(_ action: UtilityActionDescriptor) -> Bool {
         state(for: action.module)?.presence == .added
-            && !pausedModuleIDs.contains(action.module)
             && pendingChanges[action.module] == nil
     }
 

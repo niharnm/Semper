@@ -118,7 +118,7 @@ struct ModuleRegistryTests {
         }
     }
 
-    @Test("Available and paused modules are excluded from search and action admission")
+    @Test("Available modules and transitions are hidden while paused added actions remain visible")
     func visibility() throws {
         try withRegistry { registry, _ in
             let shelfAction = action("shelf.open", module: .shelf, title: "Open Shelf")
@@ -133,6 +133,8 @@ struct ModuleRegistryTests {
             #expect(registry.search("").isEmpty)
             #expect(registry.action(for: shelfAction.id) == nil)
             try registry.completePause(.shelf)
+            #expect(registry.search("shelf") == [shelfAction])
+            #expect(registry.action(for: shelfAction.id) == shelfAction)
             try registry.resume(.shelf)
             #expect(registry.action(for: shelfAction.id) == shelfAction)
             #expect(registry.state(for: .shelf)?.runtime == .stopped)
@@ -195,7 +197,7 @@ struct ModuleRegistryTests {
         }
     }
 
-    @Test("A failed drain keeps actions unavailable until explicit resume")
+    @Test("A failed drain keeps actions visible while blocking runtime changes until resume")
     func failedDrain() throws {
         try withRegistry { registry, _ in
             let awakeAction = action("awake.start", title: "Start Awake")
@@ -205,7 +207,8 @@ struct ModuleRegistryTests {
 
             #expect(registry.state(for: .awake)?.presence == .added)
             #expect(registry.state(for: .awake)?.runtime == .failed(reason: "Shutdown failed"))
-            #expect(registry.action(for: awakeAction.id) == nil)
+            #expect(registry.action(for: awakeAction.id) == awakeAction)
+            #expect(registry.search("awake") == [awakeAction])
             #expect(throws: ModuleRegistryError.modulePaused(.awake)) {
                 try registry.setRuntime(.preparing, for: .awake)
             }
@@ -274,7 +277,7 @@ struct ModuleRegistryTests {
         }
     }
 
-    @Test("Paused favorites persist and reappear after resume")
+    @Test("Paused favorites remain visible across persistence and resume")
     func pausedFavorites() throws {
         try withRegistry { registry, defaults in
             let awakeAction = action("awake.start", title: "Start Awake")
@@ -286,11 +289,34 @@ struct ModuleRegistryTests {
             let reloaded = try ModuleRegistry(defaults: defaults)
             try reloaded.register(actions: [awakeAction])
             reloaded.finishActionRegistration()
-            #expect(reloaded.favoriteActions.isEmpty)
+            #expect(reloaded.favoriteActions == [awakeAction])
             #expect(reloaded.favoriteIDs == [awakeAction.id])
+            #expect(reloaded.search("awake") == [awakeAction])
             #expect(reloaded.state(for: .awake)?.runtime == .paused)
             try reloaded.resume(.awake)
             #expect(reloaded.favoriteActions == [awakeAction])
+        }
+    }
+
+    @Test("Paused actions can be pinned while preserving the four-favorite limit")
+    func pinningPausedActions() throws {
+        try withRegistry { registry, defaults in
+            let actions = (1...5).map { action("awake.\($0)", title: "Action \($0)") }
+            try registry.register(actions: actions)
+            try registry.beginPause(.awake)
+            try registry.completePause(.awake)
+
+            for action in actions.prefix(4) {
+                try registry.setFavorite(true, for: action.id)
+            }
+            #expect(throws: ModuleRegistryError.favoriteLimitReached) {
+                try registry.setFavorite(true, for: actions[4].id)
+            }
+            #expect(registry.favoriteActions == Array(actions.prefix(4)))
+            #expect(
+                defaults.stringArray(forKey: ModuleRegistry.PersistenceKey.favoriteActions)
+                    == actions.prefix(4).map(\.id.rawValue))
+            #expect(registry.state(for: .awake)?.runtime == .paused)
         }
     }
 
