@@ -547,8 +547,7 @@ final class WorkspaceService {
             guard let current = try await backend.current(change.windowID), current.id == change.windowID,
                 let frame = current.frame
             else { return result(.skipped(.missingWindow)) }
-            if frame == change.before { return result(.alreadyRestored, recovery: WorkspaceRecoveryState.none) }
-            guard frame == change.after else {
+            guard frame == change.before || frame == change.after else {
                 return result(.skipped(.manualChangePreserved), recovery: .manualChangePreserved)
             }
             if let issue = current.issue { return result(.skipped(.unsupported(issue))) }
@@ -556,6 +555,7 @@ final class WorkspaceService {
             guard displays.contains(change.display), change.display.visibleFrame.contains(change.before) else {
                 return result(.skipped(.changedDisplays))
             }
+            if frame == change.before { return result(.alreadyRestored, recovery: WorkspaceRecoveryState.none) }
             try Task.checkCancellation()
             let observation = try await backend.move(change.windowID, to: change.before, expected: change.after)
             let recovery: WorkspaceRecoveryState
