@@ -610,6 +610,154 @@ struct DisplayInventoryControlTests {
         await displayService.stopAndDrain()
     }
 
+    @Test("Active Scene admission rejects every manual display mutation before writes")
+    @MainActor
+    func activeSceneAdmissionRejectsManualMutations() async throws {
+        let directory = temporaryDirectory("scene-blocks-manual")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let identity = DisplayIdentity(vendorID: 101, productID: 202, serialNumber: 303)!
+        let displayRecord = record(identity: identity, registryID: 901, name: "Desk Display")
+        let admission = MutationAdmissionGate()
+        let brightness = Mutex<UInt16>(40)
+        let volume = Mutex<UInt16>(20)
+        let input = Mutex<UInt16>(0x11)
+        let featureWrites = Mutex(0)
+        let volumeWrites = Mutex(0)
+        let inputWrites = Mutex(0)
+        let displayService = DisplayControlService(
+            ddcController: DDCController(settingsManager: SettingsManager(directory: directory)),
+            mutationAdmission: admission,
+            discover: { [displayRecord] },
+            read: { _, feature in
+                feature == .brightness ? (brightness.withLock { $0 }, 100) : (50, 100)
+            },
+            write: { _, feature, value in
+                guard feature == .brightness else { return }
+                featureWrites.withLock { $0 += 1 }
+                brightness.withLock { $0 = value }
+            },
+            readCapabilities: { _ in Self.capabilities },
+            readVCP: { _, code in
+                code == 0x62
+                    ? (volume.withLock { $0 }, 100)
+                    : (input.withLock { $0 }, 0x11)
+            },
+            writeVCP: { _, code, value in
+                guard code == 0x62 else { return }
+                volumeWrites.withLock { $0 += 1 }
+                volume.withLock { $0 = value }
+            },
+            writeInputOnce: { _, value in
+                inputWrites.withLock { $0 += 1 }
+                input.withLock { $0 = UInt16(value) }
+            },
+            discoverSystemDisplays: { [] }
+        )
+
+        displayService.start()
+        await displayService.probe()
+        let scenePermit = try admission.acquire(owner: .scene, mode: .shared)
+
+        do {
+            _ = try await displayService.set(0.5, feature: .brightness, for: identity)
+            Issue.record("Manual feature write was admitted during an active Scene")
+        } catch {
+            #expect((error as? MutationAdmissionError) == .sharedPermitsActive(owners: [.scene]))
+        }
+        do {
+            _ = try await displayService.setVolume(0.5, for: identity)
+            Issue.record("Manual volume write was admitted during an active Scene")
+        } catch {
+            #expect((error as? MutationAdmissionError) == .sharedPermitsActive(owners: [.scene]))
+        }
+        do {
+            _ = try await displayService.setInput(0x0F, for: identity)
+            Issue.record("Manual input write was admitted during an active Scene")
+        } catch {
+            #expect((error as? MutationAdmissionError) == .sharedPermitsActive(owners: [.scene]))
+        }
+
+        #expect(featureWrites.withLock { $0 } == 0)
+        #expect(volumeWrites.withLock { $0 } == 0)
+        #expect(inputWrites.withLock { $0 } == 0)
+
+        let sceneAdapter = DisplaySceneAdapter(displays: displayService)
+        try await sceneAdapter.writeValue(
+            .number(0.6),
+            for: .displayBrightness(displayID: identity.rawValue)
+        )
+        #expect(featureWrites.withLock { $0 } == 1)
+        #expect(brightness.withLock { $0 } == 60)
+
+        #expect(admission.release(scenePermit))
+        await displayService.stopAndDrain()
+    }
+
+    @Test("A held manual display mutation blocks new Scene admission")
+    @MainActor
+    func heldManualMutationBlocksSceneAdmission() async throws {
+        let directory = temporaryDirectory("manual-blocks-scene")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let identity = DisplayIdentity(vendorID: 101, productID: 202, serialNumber: 303)!
+        let displayRecord = record(identity: identity, registryID: 901, name: "Desk Display")
+        let admission = MutationAdmissionGate()
+        let brightness = Mutex<UInt16>(40)
+        let writeStarted = DisplayInventoryThreadSignal()
+        let drainStarted = DisplayInventoryThreadSignal()
+        let drainFinished = Mutex(false)
+        let releaseWrite = DispatchSemaphore(value: 0)
+        defer { releaseWrite.signal() }
+        let displayService = DisplayControlService(
+            ddcController: DDCController(settingsManager: SettingsManager(directory: directory)),
+            mutationAdmission: admission,
+            discover: { [displayRecord] },
+            read: { _, feature in
+                feature == .brightness ? (brightness.withLock { $0 }, 100) : (50, 100)
+            },
+            write: { _, feature, value in
+                guard feature == .brightness else { return }
+                writeStarted.send()
+                releaseWrite.wait()
+                brightness.withLock { $0 = value }
+            },
+            readCapabilities: { _ in Self.capabilities },
+            readVCP: { _, code in code == 0x62 ? (20, 100) : (0x11, 0x11) },
+            discoverSystemDisplays: { [] }
+        )
+
+        displayService.start()
+        await displayService.probe()
+        let mutation = Task { @MainActor in
+            try await displayService.set(0.5, feature: .brightness, for: identity)
+        }
+        await writeStarted.wait()
+
+        #expect(admission.activeSharedPermitCount == 1)
+        do {
+            _ = try admission.acquire(owner: .scene, mode: .shared)
+            Issue.record("Scene admission succeeded during a manual display write")
+        } catch {
+            #expect((error as? MutationAdmissionError)
+                == .sharedPermitsActive(owners: [.manualDisplay]))
+        }
+
+        let drain = Task { @MainActor in
+            drainStarted.send()
+            await displayService.stopAndDrain()
+            drainFinished.withLock { $0 = true }
+        }
+        await drainStarted.wait()
+        #expect(!drainFinished.withLock { $0 })
+        #expect(admission.activeSharedPermitCount == 1)
+
+        releaseWrite.signal()
+        _ = try? await mutation.value
+        await drain.value
+        #expect(drainFinished.withLock { $0 })
+        #expect(brightness.withLock { $0 } == 50)
+        #expect(admission.activeSharedPermitCount == 0)
+    }
+
     @Test("Group write reports one result for each requested member")
     @MainActor
     func groupWriteReportsEachTarget() async throws {

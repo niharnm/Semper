@@ -31,7 +31,7 @@ nonisolated enum SceneManagerError: LocalizedError, Equatable, Sendable {
         case .operationInProgress:
             "Another scene operation is still running."
         case .mutationsBlocked:
-            "End Away Mode before changing a scene."
+            "Finish the active action before changing a scene."
         case .stopped:
             "Scenes is stopped. Open the module before changing a scene."
         case .presentationReserved:
@@ -394,6 +394,8 @@ final class SceneManager: SceneCommandHandling {
         _ scene: SemperScene, token: UUID, expectedPreview: ScenePreviewReport? = nil
     ) async throws -> SceneApplyReport {
         try await runOperation(access: .presentation(token)) {
+            let permit = try self.scenePermit()
+            defer { self.mutationAdmission.release(permit) }
             try await self.requireNoPending()
             self.presentationSceneID = scene.id
             self.presentationTransactionID = nil
@@ -421,6 +423,8 @@ final class SceneManager: SceneCommandHandling {
 
     func restorePresentation(transactionID: UUID, token: UUID) async throws -> SceneRestoreReport? {
         try await runOperation(access: .presentation(token), recovery: true) {
+            let permit = try self.scenePermit()
+            defer { self.mutationAdmission.release(permit) }
             guard let pending = try await self.ownedPresentationTransaction(), pending.id == transactionID else {
                 throw SceneManagerError.presentationTransactionMismatch
             }
