@@ -59,6 +59,13 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Only nonminimized windows with readable geometry and move/resize support qualify. Full-height windows and targets are refused, including ordinary windows. Halves and Maximize can be unavailable when both the Dock and menu bar auto-hide.
 - Restore skips later manual changes, missing windows, and changed display arrangements. After an excluded post-write result or an unverifiable write, review the window and confirm Keep Current Placement before another action. This discards the preceding placement record.
 
+## File Shelf image copies in source builds
+
+- Resize a Copy accepts one fully downloaded local JPEG or PNG. Choose a longest edge of up to 1,024 or 2,048 pixels. Smaller images keep their dimensions; the original is never changed and existing destination files are refused.
+- Inputs are limited to 32 MiB, 40 million pixels, and 16,384 pixels per side. Animated images and cloud-only files are refused. There is no batch processing or image upload.
+- Copies keep their format, displayed orientation, color profile, and PNG transparency. Camera, location, and descriptive metadata are stripped; information visible in the pixels remains. JPEG re-encoding can lose detail even without resizing.
+- Saving requires a destination filesystem that supports macOS file cloning. Recovery is required when a saved location or temporary cleanup cannot be verified. Consult the Resize a Copy source guide for cancellation and recovery behavior.
+
 ## Contributions
 
 - Semper is actively looking for contributors.
@@ -75,6 +82,7 @@ Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 - Module overview and availability: https://www.semper.systems/#modules
 - Source-build module guide: https://github.com/niharnm/Semper/blob/main/guide/module-shell.md
 - Window Layout source guide: https://github.com/niharnm/Semper/blob/main/guide/window-layout.md
+- Resize a Copy source guide: https://github.com/niharnm/Semper/blob/main/guide/shelf-image-copy.md
 - Mac per-app volume guide: https://www.semper.systems/mac-volume-mixer.html
 - Project fact sheet: https://www.semper.systems/about.html
 - Privacy: https://www.semper.systems/privacy.html

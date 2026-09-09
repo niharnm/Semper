@@ -566,9 +566,21 @@
             <div class="module-description">
               <p>A temporary place for files, links, images, and text you
                 add, ready to drag into another app.</p>
+              <p>In source builds, Resize a Copy saves one fully downloaded local JPEG or PNG
+                at up to 1,024 or 2,048 pixels on its longest edge. It removes descriptive
+                metadata without enlarging the image or changing the original.
+                Saving requires a location that supports macOS file cloning.</p>
               <details><summary>Scope and limits</summary><p>Designed to hold items for the current session unless you choose persistence.
                 It does not watch your clipboard or folders, upload content,
-                or move, rename, or delete original files.</p></details>
+                or move, rename, or delete original files.</p>
+                <p>Resize a Copy accepts one image at a time, up to 32 MiB, 40 million pixels,
+                  and 16,384 pixels per side. Animated images and cloud-only files are refused.
+                  Copies keep their format, displayed orientation, color profile, and PNG transparency.
+                  JPEG re-encoding can lose detail. Removing metadata does not remove information
+                  visible in the image. Existing destination files are never overwritten.</p>
+                <p>The <a href="https://github.com/niharnm/Semper/blob/main/guide/shelf-image-copy.md">Resize a Copy guide</a>
+                  explains saving, cancellation, and recovery when a saved location or cleanup
+                  cannot be verified.</p></details>
             </div>
           </article>
           <article class="module-row" id="module-eject" data-availability="development">
