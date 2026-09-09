@@ -51,33 +51,47 @@ private actor DisplayOperationTestGate {
 private nonisolated final class DisplayThreadSignal: @unchecked Sendable {
     private struct State {
         var isSignalled = false
-        var continuations: [CheckedContinuation<Void, Never>] = []
+        var continuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
     }
 
     private let state = Mutex(State())
 
     func send() {
-        let continuations = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+        let continuations = state.withLock { state -> [CheckedContinuation<Bool, Never>] in
             guard !state.isSignalled else { return [] }
             state.isSignalled = true
-            let continuations = state.continuations
+            let continuations = Array(state.continuations.values)
             state.continuations.removeAll()
             return continuations
         }
-        continuations.forEach { $0.resume() }
+        continuations.forEach { $0.resume(returning: true) }
     }
 
-    func wait() async {
-        await withCheckedContinuation { continuation in
+    func wait() async -> Bool {
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
             let shouldResume = state.withLock { state in
                 guard !state.isSignalled else { return true }
-                state.continuations.append(continuation)
+                state.continuations[id] = continuation
                 return false
             }
             if shouldResume {
-                continuation.resume()
+                continuation.resume(returning: true)
+                return
+            }
+
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                self?.finishWait(id, result: false)
             }
         }
+    }
+
+    private func finishWait(_ id: UUID, result: Bool) {
+        let continuation = state.withLock { state in
+            state.continuations.removeValue(forKey: id)
+        }
+        continuation?.resume(returning: result)
     }
 }
 
@@ -676,15 +690,15 @@ struct DisplayControlServiceTests {
         let refresh = Task { @MainActor in
             await service.probe()
         }
-        await transport.refreshReadStarted.wait()
+        try #require(await transport.refreshReadStarted.wait())
         let setInvoked = DisplayThreadSignal()
         let write = Task { @MainActor in
             setInvoked.send()
             return try await service.set(0.75, feature: .brightness, for: identity)
         }
-        await setInvoked.wait()
+        try #require(await setInvoked.wait())
         transport.releaseRefreshRead()
-        await transport.setReadStarted.wait()
+        try #require(await transport.setReadStarted.wait())
         await refresh.value
         transport.releaseSetRead()
 

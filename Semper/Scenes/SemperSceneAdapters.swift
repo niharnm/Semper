@@ -372,7 +372,12 @@ final class PowerSceneAdapter: SceneControlAdapting {
 
     private func map(_ error: AwakeLeaseError) -> SceneAdapterError {
         switch error {
-        case .serviceUnavailable, .invalidToken, .couldNotAcquire, .couldNotReplace:
+        case .serviceUnavailable,
+             .invalidToken,
+             .couldNotAcquire,
+             .couldNotReplace,
+             .invalidDeadline,
+             .conflictingLease:
             .writeRejected
         }
     }
