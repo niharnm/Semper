@@ -21,6 +21,15 @@ nonisolated struct SceneSkippedAction: Equatable, Sendable {
     let reason: SceneSkipReason
 }
 
+nonisolated struct ScenePreviewReport: Equatable, Sendable {
+    let sceneID: UUID
+    let entries: [SceneTransactionEntry]
+    let skippedOptional: [SceneSkippedAction]
+    let requiredFailures: [ScenePreflightFailure]
+
+    var canApply: Bool { requiredFailures.isEmpty }
+}
+
 nonisolated struct SceneAppliedAction: Equatable, Sendable {
     let control: SceneControl
     let snapshotValue: SceneValue
@@ -49,6 +58,7 @@ nonisolated enum SceneApplyFailureCleanup: Equatable, Sendable {
 nonisolated enum SceneApplyError: Error, Equatable, Sendable {
     case operationInProgress
     case invalidScene(SceneValidationIssue)
+    case previewChanged
     case transactionAlreadyActive(transactionID: UUID)
     case journalUnreadable(String)
     case journalWriteFailed(String)
@@ -63,6 +73,8 @@ extension SceneApplyError: LocalizedError {
             "Another scene operation is still running."
         case .invalidScene(let issue):
             issue.localizedDescription
+        case .previewChanged:
+            "The settings changed after preview. Review them again before applying."
         case .transactionAlreadyActive:
             "Restore or keep the current setup before applying another scene."
         case .journalUnreadable(let reason):
@@ -109,6 +121,7 @@ nonisolated struct SceneRestoreReport: Equatable, Sendable {
 
 nonisolated enum SceneRestoreError: Error, Equatable {
     case operationInProgress
+    case transactionMismatch(expected: UUID, actual: UUID?)
     case journalUnreadable(String)
     /// Some entries could not be restored; the journal was kept so a later
     /// call can retry exactly the unfinished entries.
@@ -120,6 +133,8 @@ extension SceneRestoreError: LocalizedError {
         switch self {
         case .operationInProgress:
             return "Another scene operation is still running."
+        case .transactionMismatch:
+            return "The saved restore point no longer belongs to this session."
         case .journalUnreadable(let reason):
             return "The saved restore point could not be read: \(reason)"
         case .incomplete(let report):
@@ -190,7 +205,20 @@ actor SceneCoordinator {
     /// Discards the pending journal without restoring anything. This is the
     /// explicit "accept current state" escape hatch; it must come from a
     /// deliberate user decision, never from automatic cleanup.
-    func abandonPendingTransaction() throws {
+    func abandonPendingTransaction(expectedTransactionID: UUID? = nil) throws {
+        guard !operationInProgress else { throw SceneRestoreError.operationInProgress }
+        try Task.checkCancellation()
+        if let expectedTransactionID {
+            let actual: UUID?
+            do {
+                actual = try journalStore.load()?.id
+            } catch {
+                throw SceneRestoreError.journalUnreadable(String(describing: error))
+            }
+            guard actual == expectedTransactionID else {
+                throw SceneRestoreError.transactionMismatch(expected: expectedTransactionID, actual: actual)
+            }
+        }
         try journalStore.clear()
     }
 
@@ -264,45 +292,21 @@ actor SceneCoordinator {
         return !transaction.isFullySettled
     }
 
-    // MARK: Apply
-
-    func apply(_ scene: SemperScene) async throws -> SceneApplyReport {
+    func preview(_ scene: SemperScene) async throws -> ScenePreviewReport {
         guard !operationInProgress else { throw SceneApplyError.operationInProgress }
         operationInProgress = true
         defer { operationInProgress = false }
 
         try Task.checkCancellation()
-
         do {
             try scene.validate()
         } catch {
             throw SceneApplyError.invalidScene(error)
         }
+        return try await preflight(scene)
+    }
 
-        let existing: SceneTransaction?
-        do {
-            existing = try journalStore.load()
-        } catch {
-            throw SceneApplyError.journalUnreadable(String(describing: error))
-        }
-        if let existing {
-            do {
-                try existing.validate()
-            } catch {
-                throw SceneApplyError.journalUnreadable(String(describing: error))
-            }
-            // A settled journal is a leftover from an interrupted clear; it
-            // holds no restorable state, so it is safe to drop here.
-            guard existing.isFullySettled else {
-                throw SceneApplyError.transactionAlreadyActive(transactionID: existing.id)
-            }
-            do {
-                try journalStore.clear()
-            } catch {
-                throw SceneApplyError.journalWriteFailed(String(describing: error))
-            }
-        }
-
+    private func preflight(_ scene: SemperScene) async throws -> ScenePreviewReport {
         // Preflight: capability and snapshot reads only, no mutation. All
         // required failures are collected so the error reports every problem
         // at once.
@@ -414,8 +418,68 @@ actor SceneCoordinator {
             stagedEntries.removeAll { optionalTriggersToSkip.contains($0.control) }
         }
 
+        return ScenePreviewReport(
+            sceneID: scene.id,
+            entries: stagedEntries,
+            skippedOptional: skippedOptional,
+            requiredFailures: requiredFailures
+        )
+    }
+
+    // MARK: Apply
+
+    func apply(
+        _ scene: SemperScene,
+        expectedPreview: ScenePreviewReport? = nil
+    ) async throws -> SceneApplyReport {
+        guard !operationInProgress else { throw SceneApplyError.operationInProgress }
+        operationInProgress = true
+        defer { operationInProgress = false }
+
+        try Task.checkCancellation()
+
+        do {
+            try scene.validate()
+        } catch {
+            throw SceneApplyError.invalidScene(error)
+        }
+
+        let existing: SceneTransaction?
+        do {
+            existing = try journalStore.load()
+        } catch {
+            throw SceneApplyError.journalUnreadable(String(describing: error))
+        }
+        if let existing {
+            do {
+                try existing.validate()
+            } catch {
+                throw SceneApplyError.journalUnreadable(String(describing: error))
+            }
+            guard existing.isFullySettled else {
+                throw SceneApplyError.transactionAlreadyActive(transactionID: existing.id)
+            }
+        }
+
+        let preview = try await preflight(scene)
+        if let expectedPreview, preview != expectedPreview {
+            throw SceneApplyError.previewChanged
+        }
+        let requiredFailures = preview.requiredFailures
+        var skippedOptional = preview.skippedOptional
+        let stagedEntries = preview.entries
+
         guard requiredFailures.isEmpty else {
             throw SceneApplyError.requiredPreflightFailed(failures: requiredFailures)
+        }
+        if existing != nil {
+            // Settled journals hold no restorable state. Clear only after
+            // confirming that the reviewed preflight still matches.
+            do {
+                try journalStore.clear()
+            } catch {
+                throw SceneApplyError.journalWriteFailed(String(describing: error))
+            }
         }
         guard !stagedEntries.isEmpty else {
             return SceneApplyReport(transactionID: nil, sceneID: scene.id, applied: [], skippedOptional: skippedOptional)
@@ -753,7 +817,7 @@ actor SceneCoordinator {
     /// transaction is pending. This is also the recovery path after a crash:
     /// `pending` entries are reported untouched and `inFlight` entries are
     /// resolved against snapshot and target.
-    func restore() async throws -> SceneRestoreReport? {
+    func restore(expectedTransactionID: UUID? = nil) async throws -> SceneRestoreReport? {
         guard !operationInProgress else { throw SceneRestoreError.operationInProgress }
         operationInProgress = true
         defer { operationInProgress = false }
@@ -765,6 +829,9 @@ actor SceneCoordinator {
             loaded = try journalStore.load()
         } catch {
             throw SceneRestoreError.journalUnreadable(String(describing: error))
+        }
+        if let expectedTransactionID, loaded?.id != expectedTransactionID {
+            throw SceneRestoreError.transactionMismatch(expected: expectedTransactionID, actual: loaded?.id)
         }
         guard var transaction = loaded else { return nil }
         do {
