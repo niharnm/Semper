@@ -24,14 +24,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var sceneCommands: (any SceneCommandHandling)?
     var updateManager: UpdateManager?
     weak var awayMode: (any AwayTerminationHandling)?
+    var displayService: DisplayControlService?
 
     private let terminateApplication: @MainActor () -> Void
     private let isSystemTerminationRequest: @MainActor () -> Bool
+    private let terminationDrainOverride: (@MainActor () async -> Void)?
+    private let replyToTerminationRequest: @MainActor (NSApplication, Bool) -> Void
     private var permitsAuthenticatedTermination = false
+    private var terminationDrainTask: Task<Void, Never>?
+    private var isTerminationDrainComplete = false
 
     override init() {
         terminateApplication = { NSApp.terminate(nil) }
         isSystemTerminationRequest = Self.currentAppleEventIsSystemTermination
+        terminationDrainOverride = nil
+        replyToTerminationRequest = { application, shouldTerminate in
+            application.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
         super.init()
     }
 
@@ -39,10 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         terminateApplication: @escaping @MainActor () -> Void,
         isSystemTerminationRequest: @escaping @MainActor () -> Bool = {
             AppDelegate.currentAppleEventIsSystemTermination()
+        },
+        terminationDrain: (@MainActor () async -> Void)? = nil,
+        replyToTerminationRequest: @escaping @MainActor (NSApplication, Bool) -> Void = {
+            application,
+            shouldTerminate in
+            application.reply(toApplicationShouldTerminate: shouldTerminate)
         }
     ) {
         self.terminateApplication = terminateApplication
         self.isSystemTerminationRequest = isSystemTerminationRequest
+        self.terminationDrainOverride = terminationDrain
+        self.replyToTerminationRequest = replyToTerminationRequest
         super.init()
     }
 
@@ -77,18 +94,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminationDrainComplete else { return .terminateNow }
+        guard terminationDrainTask == nil else { return .terminateLater }
+
         if permitsAuthenticatedTermination {
             permitsAuthenticatedTermination = false
+        } else if !isSystemTerminationRequest(), awayMode?.isGuarding == true {
+            awayMode?.requestQuit()
+            return .terminateCancel
+        }
+
+        guard terminationDrainOverride != nil || displayService != nil else {
             return .terminateNow
         }
-        if isSystemTerminationRequest() {
-            return .terminateNow
+        terminationDrainTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let terminationDrainOverride {
+                await terminationDrainOverride()
+            } else if let displayService {
+                await displayService.stopAndDrain()
+                #if !APP_STORE
+                await audioEngine?.ddcController.stopAndDrain()
+                #endif
+            }
+            isTerminationDrainComplete = true
+            terminationDrainTask = nil
+            replyToTerminationRequest(sender, true)
         }
-        guard awayMode?.isGuarding == true else {
-            return .terminateNow
-        }
-        awayMode?.requestQuit()
-        return .terminateCancel
+        return .terminateLater
     }
 
     func permitTerminationAfterAwayAuthentication() {
@@ -309,12 +342,17 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
+        let mutationAdmission = MutationAdmissionGate()
         #if !APP_STORE
-        let displayService = DisplayControlService(ddcController: engine.ddcController)
+        precondition(engine.ddcController.installMutationAdmission(mutationAdmission))
+        let displayService = DisplayControlService(
+            ddcController: engine.ddcController,
+            mutationAdmission: mutationAdmission
+        )
         #else
         let displayService = DisplayControlService()
         #endif
-        let mutationAdmission = MutationAdmissionGate()
+        displayService.start()
         #if DEBUG
         let away = uiTestSupport?.makeCoordinator(
             settings: settings,
@@ -613,6 +651,7 @@ struct SemperApp: App {
         _appDelegate.wrappedValue.sceneCommands = sceneManager
         _appDelegate.wrappedValue.updateManager = updater
         _appDelegate.wrappedValue.awayMode = away
+        _appDelegate.wrappedValue.displayService = displayService
         away.onAuthenticatedQuit = { [weak delegate = _appDelegate.wrappedValue] in
             delegate?.permitTerminationAfterAwayAuthentication()
         }

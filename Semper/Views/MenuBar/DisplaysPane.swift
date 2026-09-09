@@ -183,11 +183,23 @@ struct DisplaysPane: View {
         statusMessage = nil
 
         Task {
-            let result = await displayService.set(
-                value,
-                feature: key.feature,
-                for: key.displayID
-            )
+            let result: DisplayWriteResult
+            do {
+                result = try await displayService.set(
+                    value,
+                    feature: key.feature,
+                    for: key.displayID
+                )
+            } catch is CancellationError {
+                pendingWrites.remove(key)
+                syncValues()
+                return
+            } catch {
+                pendingWrites.remove(key)
+                statusMessage = "Display changes are temporarily unavailable."
+                syncValues()
+                return
+            }
             pendingWrites.remove(key)
             let confirmed = displayService.displays
                 .first(where: { $0.id == key.displayID })?

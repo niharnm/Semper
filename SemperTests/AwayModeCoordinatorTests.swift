@@ -728,7 +728,7 @@ struct AwayModeCoordinatorTests {
 
         #expect(subject.coordinator.state == .inactive)
         #expect(subject.coordinator.lastErrorMessage == "\(AwayModeActivationError.powerAssertionFailed.message) The macOS awake request cleanup is still pending.")
-        #expect(subject.awakeService.pendingCleanupToken(for: .awayMode) != nil)
+        #expect(subject.awakeService.hasPendingLeaseCleanup(owner: .awayMode))
         #expect(subject.backend.activeIDs == [1])
         #expect(subject.mutationAdmission.activeExclusiveOwner == .awayMode)
         #expect(throws: MutationAdmissionError.exclusivePermitActive(owner: .awayMode)) {
@@ -740,7 +740,7 @@ struct AwayModeCoordinatorTests {
         subject.coordinator.startCountdown()
 
         #expect(subject.coordinator.state == .countdown(remainingSeconds: 5))
-        #expect(subject.awakeService.pendingCleanupToken(for: .awayMode) == nil)
+        #expect(!subject.awakeService.hasPendingLeaseCleanup(owner: .awayMode))
         #expect(subject.backend.activeIDs.isEmpty)
         #expect(subject.mutationAdmission.activeExclusiveOwner == nil)
         subject.coordinator.cancelCountdown()
@@ -1444,6 +1444,29 @@ struct AwayModeCoordinatorTests {
         #expect(subject.coordinator.pinConfigurationError == "Away Mode setup can no longer be saved.")
     }
 
+    @Test("Setup persistence failure restores prior preferences")
+    func setupPersistenceFailureRestoresPreferences() {
+        let subject = AwayCoordinatorHarness(
+            authenticationMethod: .pin,
+            disclosureCompleted: false,
+            persistenceWriter: SettingsPersistenceWriter { _, _ in
+                throw AwayCoordinatorTestError.expected
+            }
+        )
+        let priorPreferences = subject.coordinator.preferences
+
+        let saved = subject.coordinator.finishSetup(
+            authenticationMethod: .system,
+            theme: .quietOrbits,
+            accent: .amber
+        )
+
+        #expect(!saved)
+        #expect(subject.coordinator.preferences == priorPreferences)
+        #expect(!subject.coordinator.preferences.disclosureCompleted)
+        #expect(subject.coordinator.pinConfigurationError == "Away Mode setup could not be saved.")
+    }
+
     @Test("Canceling the owned setup save leaves a held PIN removal uncommitted")
     func setupCancellationStopsHeldPINRemoval() async {
         let subject = AwayCoordinatorHarness(
@@ -1842,6 +1865,34 @@ struct AwayModeCoordinatorTests {
         subject.backend.failingReleaseIDs = []
         subject.awakeService.shutdown()
         #expect(subject.backend.activeIDs.isEmpty)
+    }
+
+    @Test("Safe power recovery cleans a stale lease before reacquiring")
+    func safePowerRecoveryAfterFailedRelease() {
+        let subject = AwayCoordinatorHarness()
+        subject.enterGuarded()
+        subject.backend.failingReleaseIDs = [1]
+        subject.powerSource.reading = AwayPowerReading(
+            isLowPowerModeEnabled: false,
+            thermalPressure: .critical,
+            powerSupply: .battery(percentage: 80)
+        )
+        subject.powerSource.sendChange()
+
+        #expect(!subject.awakeService.hasLease(for: .awayMode))
+        #expect(subject.backend.activeIDs == [1])
+
+        subject.backend.failingReleaseIDs = []
+        subject.powerSource.reading = AwayPowerReading(
+            isLowPowerModeEnabled: false,
+            thermalPressure: .nominal,
+            powerSupply: .ac(percentage: 80, isCharging: true)
+        )
+        subject.powerSource.sendChange()
+
+        #expect(subject.awakeService.hasLease(for: .awayMode))
+        #expect(subject.backend.activeIDs.count == 1)
+        #expect(subject.coordinator.powerWarning == nil)
     }
 
     @Test("Failed lease cleanup retains exclusive admission and blocks reentry")

@@ -16,6 +16,7 @@ actor SceneOperationSuspension {
     private var isSuspended = false
     private var releaseRequested = false
     private var suspensionContinuation: CheckedContinuation<Void, Never>?
+    private var arrivalContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     func suspend() async {
         if releaseRequested {
@@ -26,16 +27,29 @@ actor SceneOperationSuspension {
         await withCheckedContinuation { continuation in
             suspensionContinuation = continuation
             isSuspended = true
+            let continuations = arrivalContinuations.values
+            arrivalContinuations.removeAll()
+            for continuation in continuations {
+                continuation.resume(returning: true)
+            }
         }
         isSuspended = false
     }
 
     func waitUntilSuspended() async -> Bool {
-        for _ in 0..<200 {
-            if isSuspended { return true }
-            try? await Task.sleep(for: .milliseconds(10))
+        guard !isSuspended else { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            arrivalContinuations[id] = continuation
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(20))
+                await self?.finishArrivalWait(id, result: false)
+            }
         }
-        return isSuspended
+    }
+
+    private func finishArrivalWait(_ id: UUID, result: Bool) {
+        arrivalContinuations.removeValue(forKey: id)?.resume(returning: result)
     }
 
     func resume() {

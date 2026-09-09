@@ -1168,7 +1168,14 @@ struct SceneCoordinatorTests {
             try await coordinator.apply(scene)
         }
 
-        #expect(await readSuspension.waitUntilSuspended())
+        let readDidSuspend = await readSuspension.waitUntilSuspended()
+        #expect(readDidSuspend)
+        guard readDidSuspend else {
+            applyTask.cancel()
+            await readSuspension.resume()
+            _ = try? await applyTask.value
+            return
+        }
         applyTask.cancel()
         await readSuspension.resume()
 
@@ -1214,7 +1221,14 @@ struct SceneCoordinatorTests {
             try await coordinator.apply(scene)
         }
 
-        #expect(await writeSuspension.waitUntilSuspended())
+        let writeDidSuspend = await writeSuspension.waitUntilSuspended()
+        #expect(writeDidSuspend)
+        guard writeDidSuspend else {
+            applyTask.cancel()
+            await writeSuspension.resume()
+            _ = try? await applyTask.value
+            return
+        }
         applyTask.cancel()
         await writeSuspension.resume()
 
@@ -1269,7 +1283,14 @@ struct SceneCoordinatorTests {
             try await coordinator.apply(scene)
         }
 
-        #expect(await writeSuspension.waitUntilSuspended())
+        let writeDidSuspend = await writeSuspension.waitUntilSuspended()
+        #expect(writeDidSuspend)
+        guard writeDidSuspend else {
+            applyTask.cancel()
+            await writeSuspension.resume()
+            _ = try? await applyTask.value
+            return
+        }
         applyTask.cancel()
         await writeSuspension.resume()
 
@@ -1326,7 +1347,14 @@ struct SceneCoordinatorTests {
             try await coordinator.restore()
         }
 
-        #expect(await writeSuspension.waitUntilSuspended())
+        let writeDidSuspend = await writeSuspension.waitUntilSuspended()
+        #expect(writeDidSuspend)
+        guard writeDidSuspend else {
+            restoreTask.cancel()
+            await writeSuspension.resume()
+            _ = try? await restoreTask.value
+            return
+        }
         restoreTask.cancel()
         await writeSuspension.resume()
 
@@ -1383,10 +1411,24 @@ struct SceneCoordinatorTests {
             try await coordinator.apply(scene)
         }
 
-        #expect(await targetSuspension.waitUntilSuspended())
+        let targetDidSuspend = await targetSuspension.waitUntilSuspended()
+        #expect(targetDidSuspend)
+        guard targetDidSuspend else {
+            applyTask.cancel()
+            await targetSuspension.resume()
+            await cleanupSuspension.resume()
+            _ = try? await applyTask.value
+            return
+        }
         applyTask.cancel()
         await targetSuspension.resume()
-        #expect(await cleanupSuspension.waitUntilSuspended())
+        let cleanupDidSuspend = await cleanupSuspension.waitUntilSuspended()
+        #expect(cleanupDidSuspend)
+        guard cleanupDidSuspend else {
+            await cleanupSuspension.resume()
+            _ = try? await applyTask.value
+            return
+        }
 
         do {
             _ = try await fixture.coordinator.apply(scene)

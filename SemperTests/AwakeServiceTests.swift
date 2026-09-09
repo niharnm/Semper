@@ -16,6 +16,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
 
     var failingKinds: Set<PowerAssertionKind> = []
     var failingReleaseIDs: Set<PowerAssertionID> = []
+    var onCreate: (() -> Void)?
     private(set) var events: [Event] = []
     private(set) var requestedReasons: [String] = []
     private(set) var requestedTimeouts: [TimeInterval?] = []
@@ -34,6 +35,7 @@ private final class PowerAssertionBackendMock: PowerAssertionCreating {
         events.append(.created(id, kind))
         requestedReasons.append(reason)
         requestedTimeouts.append(timeout)
+        onCreate?()
         return id
     }
 
@@ -102,12 +104,72 @@ private final class TestClock {
 }
 
 @MainActor
+private final class AwakeConditionsMock: AwakeConditionMonitoring {
+    static let editor = AwakeApplication(
+        id: AwakeProcessIdentity(processIdentifier: 41, launchDate: Date(timeIntervalSince1970: 100)),
+        name: "Editor"
+    )
+    var applications: [AwakeApplication] = [editor]
+    var battery: AwakeBatteryState = .battery(percentage: 80)
+    var onStart: (() -> Void)?
+    var startError: AwakeConditionMonitorError?
+    private(set) var conditions: AwakeStopConditions?
+    private(set) var callbacks: [@MainActor @Sendable (AwakeConditionSnapshot) -> Void] = []
+    private(set) var snapshotCount = 0
+    private(set) var subscriptionCount = 0
+
+    func availableApplications() -> [AwakeApplication] { applications }
+
+    func snapshot(for conditions: AwakeStopConditions) -> AwakeConditionSnapshot {
+        snapshotCount += 1
+        return AwakeConditionSnapshot(
+            selectedApplicationRunning: conditions.application.map { selected in
+                applications.contains { $0.id == selected.id }
+            },
+            battery: conditions.batteryThreshold == nil ? .unknown : battery
+        )
+    }
+
+    func start(
+        conditions: AwakeStopConditions,
+        onChange: @escaping @MainActor @Sendable (AwakeConditionSnapshot) -> Void
+    ) throws(AwakeConditionMonitorError) {
+        if let startError { throw startError }
+        self.conditions = conditions
+        callbacks.append(onChange)
+        subscriptionCount += 1
+        onStart?()
+        onChange(snapshot(for: conditions))
+    }
+
+    func stop() { conditions = nil }
+
+    func emit() {
+        guard let conditions, let callback = callbacks.last else { return }
+        callback(snapshot(for: conditions))
+    }
+}
+
+@MainActor
 @Suite("AwakeService")
 struct AwakeServiceTests {
 
+    @MainActor
+    private final class ManualAdmission {
+        var allowed = true
+        private(set) var checkCount = 0
+
+        func check() -> Bool {
+            checkCount += 1
+            return allowed
+        }
+    }
+
     private func makeService(
         backend: PowerAssertionBackendMock = PowerAssertionBackendMock(),
-        workspaceNotificationCenter: NotificationCenter = NotificationCenter()
+        workspaceNotificationCenter: NotificationCenter = NotificationCenter(),
+        conditionMonitor: any AwakeConditionMonitoring = AwakeConditionsMock(),
+        manualMutationAllowed: @escaping @MainActor () -> Bool = { true }
     ) -> (AwakeService, PowerAssertionBackendMock, ExpirySchedulerMock, TestClock) {
         let scheduler = ExpirySchedulerMock()
         let clock = TestClock()
@@ -115,9 +177,436 @@ struct AwakeServiceTests {
             backend: backend,
             scheduler: scheduler,
             now: { clock.current },
-            workspaceNotificationCenter: workspaceNotificationCenter
+            workspaceNotificationCenter: workspaceNotificationCenter,
+            conditionMonitor: conditionMonitor,
+            manualMutationAllowed: manualMutationAllowed
         )
         return (service, backend, scheduler, clock)
+    }
+
+    @Test("Exclusive control rejects every manual mutation before touching assertions or conditions")
+    func manualAdmissionBeforeStart() {
+        let admission = ManualAdmission()
+        admission.allowed = false
+        let monitor = AwakeConditionsMock()
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor) {
+            admission.check()
+        }
+        defer { service.shutdown() }
+
+        service.setConditions(.init(application: AwakeConditionsMock.editor, batteryThreshold: .twenty))
+        service.setSessionReason("Blocked edit")
+        service.setKeepDisplayAwake(true)
+        service.start(.oneHour)
+        service.stop()
+
+        #expect(admission.checkCount == 5)
+        #expect(service.manualMutationRejected)
+        #expect(service.conditions == AwakeStopConditions())
+        #expect(service.sessionReason.isEmpty)
+        #expect(!service.keepDisplayAwake)
+        #expect(service.session == nil)
+        #expect(backend.events.isEmpty)
+        #expect(monitor.snapshotCount == 0)
+        #expect(monitor.subscriptionCount == 0)
+
+        admission.allowed = true
+        service.start(.oneHour)
+        #expect(!service.manualMutationRejected)
+        #expect(service.session != nil)
+    }
+
+    @Test("Exclusive control preserves an existing session but cannot block a condition stop")
+    func manualAdmissionDuringSession() throws {
+        let admission = ManualAdmission()
+        let monitor = AwakeConditionsMock()
+        let (service, backend, scheduler, _) = makeService(
+            conditionMonitor: monitor, manualMutationAllowed: { admission.check() }
+        )
+        defer { service.shutdown() }
+        service.setConditions(.init(batteryThreshold: .twenty))
+        service.setSessionReason("Export")
+        service.start(.oneHour)
+        let original = service.session
+        let deadline = scheduler.scheduledDate
+        let originalEvents = backend.events
+        let originalSnapshots = monitor.snapshotCount
+
+        admission.allowed = false
+        service.stop()
+        service.start(.twoHours)
+        service.setConditions(.init())
+        service.setSessionReason("Replacement")
+        service.setKeepDisplayAwake(true)
+        #expect(service.manualMutationRejected)
+        #expect(service.session == original)
+        #expect(service.sessionReason == "Export")
+        #expect(service.conditions.batteryThreshold == .twenty)
+        #expect(!service.keepDisplayAwake)
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(backend.events == originalEvents)
+        #expect(monitor.snapshotCount == originalSnapshots)
+
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        monitor.battery = .battery(percentage: 19)
+        monitor.emit()
+        #expect(service.session == nil)
+        #expect(service.lastSessionEndReason == .batteryThresholdReached(20))
+        #expect(!service.manualMutationRejected)
+        #expect(service.hasLease(for: .awayMode))
+        #expect(service.releaseLease(away))
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Expiry, shutdown, and explicit owner cleanup bypass manual admission")
+    func automaticCleanupBypassesAdmission() throws {
+        let admission = ManualAdmission()
+        let (service, backend, scheduler, clock) = makeService {
+            admission.check()
+        }
+        service.start(.thirtyMinutes)
+        admission.allowed = false
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        clock.advance(by: 1_800)
+        scheduler.fire()
+        #expect(service.lastSessionEndReason == .expired)
+        #expect(service.session == nil)
+        #expect(service.hasLease(for: .scene))
+
+        backend.failingReleaseIDs = [2]
+        #expect(!service.releaseLease(scene))
+        backend.failingReleaseIDs = []
+        #expect(service.retryPendingLeaseCleanup(owner: .scene))
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
+        service.shutdown()
+        #expect(admission.checkCount == 1)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(service.failure == nil)
+    }
+
+    @Test("Conditions do not subscribe or inspect power while stopped or with only leases")
+    func conditionsAreSessionOwned() throws {
+        let monitor = AwakeConditionsMock()
+        let (service, _, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor, batteryThreshold: .twenty))
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        service.reconcile()
+        #expect(monitor.snapshotCount == 0)
+        #expect(monitor.subscriptionCount == 0)
+
+        service.start(.oneHour)
+        #expect(monitor.subscriptionCount == 1)
+        service.stop()
+        #expect(monitor.conditions == nil)
+        #expect(service.conditionSnapshot == nil)
+        #expect(service.hasLease(for: .awayMode))
+    }
+
+    @Test("Selected process exit stops only the manual session")
+    func selectedProcessExit() throws {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, _, clock) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: clock.current.addingTimeInterval(7200))
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor))
+        service.start(.oneHour)
+        monitor.applications = []
+        monitor.emit()
+        #expect(service.session == nil)
+        #expect(service.lastSessionEndReason == .selectedApplicationExited("Editor"))
+        #expect(service.effectiveLeaseCount == 3)
+        #expect(backend.activeAssertionIDs == [1, 2, 3])
+        #expect(backend.releaseCount(for: 4) == 1)
+        #expect(monitor.conditions == nil)
+    }
+
+    @Test("A replacement process with the same PID does not extend the selected session")
+    func selectedProcessPIDReuse() {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor))
+        service.start(.untilTurnedOff)
+        monitor.applications = [AwakeApplication(
+            id: AwakeProcessIdentity(processIdentifier: 41, launchDate: Date(timeIntervalSince1970: 200)),
+            name: "Editor"
+        )]
+        monitor.emit()
+        #expect(service.session == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(service.lastSessionEndReason == .selectedApplicationExited("Editor"))
+    }
+
+    @Test("Battery cutoff distinguishes battery, AC, absent battery and unknown readings", arguments: [
+        (AwakeBatteryState.battery(percentage: 21), true),
+        (AwakeBatteryState.battery(percentage: 20), false),
+        (AwakeBatteryState.battery(percentage: 19), false),
+        (AwakeBatteryState.externalPower(percentage: 5), true),
+        (AwakeBatteryState.externalPower(percentage: nil), true),
+        (AwakeBatteryState.noBattery, true),
+        (AwakeBatteryState.unknown, false),
+    ])
+    func batteryCutoffPolicy(battery: AwakeBatteryState, allowed: Bool) {
+        let monitor = AwakeConditionsMock()
+        monitor.battery = battery
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        #expect(service.isActive == allowed)
+        #expect(backend.events.isEmpty == !allowed)
+        if battery == .unknown {
+            #expect(service.lastSessionEndReason == .batteryStateUnavailable)
+        } else if !allowed {
+            #expect(service.lastSessionEndReason == .batteryThresholdReached(20))
+        }
+    }
+
+    @Test("Unplugging below the threshold stops the manual session without ending a lease")
+    func batteryUnplug() throws {
+        let monitor = AwakeConditionsMock()
+        monitor.battery = .externalPower(percentage: 10)
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        monitor.battery = .battery(percentage: 10)
+        monitor.emit()
+        #expect(service.session == nil)
+        #expect(service.hasLease(for: .awayMode))
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(service.lastSessionEndReason == .batteryThresholdReached(20))
+    }
+
+    @Test("Wake reevaluates a missed power change and cancels condition observation")
+    func conditionWakeReconciliation() {
+        let monitor = AwakeConditionsMock()
+        let center = NotificationCenter()
+        let (service, backend, _, _) = makeService(workspaceNotificationCenter: center, conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        monitor.battery = .unknown
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        #expect(service.lastSessionEndReason == .batteryStateUnavailable)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(monitor.conditions == nil)
+    }
+
+    @Test("Condition and reason changes preserve the session deadline and ignore obsolete callbacks")
+    func conditionChangesAndStaleCallbacks() {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, scheduler, clock) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor))
+        service.start(.oneHour)
+        let originalEnd = service.session?.endsAt
+        let originalStart = service.session?.startedAt
+        let obsoleteCallback = monitor.callbacks[0]
+        clock.advance(by: 60)
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.setSessionReason("  Exporting video  ")
+        obsoleteCallback(AwakeConditionSnapshot(selectedApplicationRunning: false, battery: .unknown))
+        #expect(service.isActive)
+        #expect(service.session?.reason == "Exporting video")
+        #expect(service.session?.conditions == AwakeStopConditions(batteryThreshold: .twenty))
+        #expect(service.session?.startedAt == originalStart)
+        #expect(service.session?.endsAt == originalEnd)
+        #expect(scheduler.scheduledDate == originalEnd)
+        #expect(backend.events.count == 1)
+        service.setConditions(AwakeStopConditions())
+        #expect(monitor.conditions == nil)
+        monitor.callbacks.last?(AwakeConditionSnapshot(selectedApplicationRunning: nil, battery: .battery(percentage: 0)))
+        #expect(service.isActive)
+    }
+
+    @Test("A raised cutoff ends the current session immediately")
+    func changedThresholdStopsSession() {
+        let monitor = AwakeConditionsMock()
+        monitor.battery = .battery(percentage: 25)
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        service.setConditions(AwakeStopConditions(batteryThreshold: .thirty))
+        #expect(service.lastSessionEndReason == .batteryThresholdReached(30))
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Reason edits trim whitespace, limit characters, and retain the default without extending time")
+    func reasonLimits() {
+        let (service, backend, _, _) = makeService()
+        defer { service.shutdown() }
+        service.setSessionReason(" \n ")
+        service.start(.oneHour)
+        #expect(service.session?.reason == "Manual Awake session")
+        let deadline = service.session?.endsAt
+        let reason = String(repeating: "🙂", count: 121)
+        service.setSessionReason(reason)
+        #expect(service.sessionReason == String(reason.prefix(120)))
+        #expect(service.session?.reason.count == 120)
+        #expect(service.session?.endsAt == deadline)
+        #expect(backend.events.count == 1)
+    }
+
+    @Test("Editing conditions after expiry cannot extend or resubscribe the session")
+    func changedConditionsAfterExpiry() {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, _, clock) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.start(.thirtyMinutes)
+        clock.advance(by: 1_801)
+        service.setConditions(.init(application: AwakeConditionsMock.editor))
+        #expect(service.session == nil)
+        #expect(service.lastSessionEndReason == .expired)
+        #expect(monitor.subscriptionCount == 0)
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("A process quitting between preflight and subscription releases the newly acquired assertion")
+    func conditionStartupRace() {
+        let monitor = AwakeConditionsMock()
+        monitor.onStart = { [weak monitor] in monitor?.applications = [] }
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor))
+        service.start(.untilTurnedOff)
+        #expect(service.lastSessionEndReason == .selectedApplicationExited("Editor"))
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(monitor.conditions == nil)
+    }
+
+    @Test("Unavailable condition observation stops only the manual session")
+    func conditionSubscriptionFailure() throws {
+        let monitor = AwakeConditionsMock()
+        monitor.startError = .batteryNotificationsUnavailable
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        #expect(service.lastSessionEndReason == .conditionMonitoringUnavailable)
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(monitor.conditions == nil)
+    }
+
+    @Test("Condition cleanup failure stays visible and stopped callbacks cannot retry it")
+    func conditionCleanupFailure() {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, _, _) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(batteryThreshold: .twenty))
+        service.start(.oneHour)
+        let callback = monitor.callbacks[0]
+        backend.failingReleaseIDs = [1]
+        callback(AwakeConditionSnapshot(selectedApplicationRunning: nil, battery: .battery(percentage: 10)))
+        service.stop()
+        let stoppedEvents = backend.events
+        callback(AwakeConditionSnapshot(selectedApplicationRunning: nil, battery: .battery(percentage: 10)))
+        service.start(.oneHour)
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.events == stoppedEvents)
+        #expect(backend.releaseCount(for: 1) == 1)
+    }
+
+    @Test("Expiry and shutdown cancel condition subscriptions and invalidate callbacks", arguments: [false, true])
+    func conditionTeardown(shutdown: Bool) {
+        let monitor = AwakeConditionsMock()
+        let (service, backend, scheduler, clock) = makeService(conditionMonitor: monitor)
+        defer { service.shutdown() }
+        service.setConditions(AwakeStopConditions(application: AwakeConditionsMock.editor))
+        service.start(.oneHour)
+        let callback = monitor.callbacks[0]
+        if shutdown {
+            service.shutdown()
+        } else {
+            clock.advance(by: 3600)
+            scheduler.fire()
+            #expect(service.lastSessionEndReason == .expired)
+        }
+        let finalEvents = backend.events
+        callback(AwakeConditionSnapshot(selectedApplicationRunning: false, battery: .unknown))
+        #expect(backend.events == finalEvents)
+        #expect(monitor.conditions == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Explicit lease retry releases only the failed owner's pending identifiers")
+    func explicitLeaseCleanupRetry() throws {
+        let (service, backend, _, clock) = makeService()
+        defer { service.shutdown() }
+        service.start(.oneHour)
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        let presentation = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                                    deadline: clock.current.addingTimeInterval(300))
+        backend.failingReleaseIDs = [3, 6]
+        #expect(!service.releaseLease(away))
+        #expect(!service.releaseLease(presentation))
+        #expect(!service.retryReleaseLease(presentation))
+        #expect(backend.releaseCount(for: 3) == 1)
+        backend.failingReleaseIDs = [3]
+        #expect(service.retryReleaseLease(presentation))
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.isActive)
+        #expect(service.hasLease(for: .scene))
+        #expect(backend.activeAssertionIDs == [1, 3, 4])
+        backend.failingReleaseIDs = []
+        #expect(service.retryReleaseLease(away))
+        #expect(service.failure == nil)
+        let events = backend.events
+        #expect(service.retryReleaseLease(presentation))
+        #expect(backend.events == events)
+        #expect(service.releaseLease(scene))
+    }
+
+    @Test("Failed acquisition cleanup can be retried by owner without a returned token")
+    func ownerCleanupAfterFailedAcquisition() throws {
+        let (service, backend, _, clock) = makeService()
+        defer { service.shutdown() }
+        service.start(.oneHour)
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        backend.failingKinds = [.preventIdleDisplaySleep]
+        backend.failingReleaseIDs = [3]
+        #expect(throws: AwakeLeaseError.couldNotAcquire) {
+            _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                         deadline: clock.current.addingTimeInterval(300))
+        }
+        #expect(service.hasPendingLeaseCleanup(owner: .presentation))
+        #expect(!service.hasPendingLeaseCleanup(owner: .awayMode))
+        let events = backend.events
+        #expect(service.retryPendingLeaseCleanup(owner: .scene))
+        #expect(backend.events == events)
+        #expect(!service.retryPendingLeaseCleanup(owner: .presentation))
+        backend.failingReleaseIDs = []
+        #expect(service.retryPendingLeaseCleanup(owner: .presentation))
+        #expect(!service.hasPendingLeaseCleanup(owner: .presentation))
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs == [1, 2])
+        #expect(service.isActive)
+        #expect(service.hasLease(for: .awayMode))
+    }
+
+    @Test("Lease retry cannot clear an unresolved manual cleanup failure")
+    func leaseRetryPreservesManualFault() throws {
+        let (service, backend, _, _) = makeService()
+        defer { service.shutdown() }
+        service.start(.oneHour)
+        let token = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        backend.failingReleaseIDs = [1, 2]
+        service.stop()
+        #expect(!service.releaseLease(token))
+        backend.failingReleaseIDs = [1]
+        #expect(service.retryReleaseLease(token))
+        #expect(service.failure == .couldNotRelease)
+        let events = backend.events
+        service.start(.oneHour)
+        #expect(backend.events == events)
     }
 
     @Test("Initial state is inactive with no assertions")
@@ -557,6 +1046,258 @@ struct AwakeServiceTests {
         ])
     }
 
+    @Test(
+        "Presentation refuses missing, expired, and nonfinite deadlines",
+        arguments: [TimeInterval?.none, -1, 0, .infinity, -.infinity, .nan]
+    )
+    func presentationRequiresFiniteDeadline(_ interval: TimeInterval?) {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = interval.map { clock.current.addingTimeInterval($0) }
+
+        #expect(throws: AwakeLeaseError.invalidDeadline) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+
+        #expect(backend.events.isEmpty)
+        #expect(!service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation assertions use their remaining deadline and owner reasons")
+    func presentationAssertionTimeouts() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        backend.onCreate = { clock.advance(by: 10) }
+
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+
+        #expect(backend.requestedTimeouts == [600, 590])
+        #expect(backend.requestedReasons == [
+            "Semper Presentation requested idle sleep prevention",
+            "Semper Presentation requested idle display sleep prevention",
+        ])
+        #expect(service.leaseState(for: .presentation) == AwakeLeaseState(
+            owner: .presentation, keepsDisplayAwake: true, deadline: deadline
+        ))
+        #expect(scheduler.scheduledDate == deadline)
+    }
+
+    @Test("An elapsed deadline during acquisition rolls back the partial assertion")
+    func presentationDeadlineElapsedDuringAcquisition() {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(60)
+        backend.onCreate = { clock.advance(by: 60) }
+
+        #expect(throws: AwakeLeaseError.couldNotAcquire) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+
+        #expect(backend.requestedTimeouts == [60])
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(service.leaseState(for: .presentation) == nil)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation remains independent of manual, Away, and Scene requests")
+    func presentationOwnerIsolation() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        service.start(.oneHour)
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        let presentation = try service.acquireLease(
+            owner: .presentation, keepsDisplayAwake: true, deadline: deadline
+        )
+
+        service.stop()
+        service.start(.twoHours)
+        service.stop()
+        #expect(backend.activeAssertionIDs == [2, 3, 4, 5])
+        #expect(service.effectiveLeaseCount == 3)
+        #expect(scheduler.scheduledDate == deadline)
+
+        #expect(service.releaseLease(scene))
+        #expect(service.releaseLease(away))
+        #expect(backend.activeAssertionIDs == [4, 5])
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(service.releaseLease(presentation))
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Presentation acquisition only reuses an exactly matching active request")
+    func presentationAcquisitionCannotReplaceSession() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        let events = backend.events
+
+        #expect(try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline) == token)
+        #expect(throws: AwakeLeaseError.conflictingLease) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: true, deadline: deadline)
+        }
+        for changedDeadline in [deadline.addingTimeInterval(-60), deadline.addingTimeInterval(60)] {
+            #expect(throws: AwakeLeaseError.conflictingLease) {
+                try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: changedDeadline)
+            }
+        }
+
+        #expect(backend.events == events)
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(service.leaseState(for: .presentation)?.deadline == deadline)
+    }
+
+    @Test("Presentation display changes preserve the original deadline")
+    func presentationDisplayUpdatePreservesDeadline() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let deadline = clock.current.addingTimeInterval(600)
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        clock.advance(by: 120)
+
+        try service.updateLease(token, keepsDisplayAwake: true)
+
+        #expect(backend.requestedTimeouts == [600, 480, 480])
+        #expect(service.leaseState(for: .presentation)?.deadline == deadline)
+        #expect(service.leaseState(for: .presentation)?.keepsDisplayAwake == true)
+        #expect(scheduler.scheduledDate == deadline)
+        clock.advance(by: 480)
+        scheduler.fire()
+        #expect(!service.hasLease(for: .presentation))
+        #expect(backend.activeAssertionIDs.isEmpty)
+    }
+
+    @Test("Presentation expiry releases only its assertions without a manual session")
+    func presentationExpiryWithoutManualSession() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                     deadline: clock.current.addingTimeInterval(600))
+
+        clock.advance(by: 300)
+        scheduler.fire()
+        #expect(service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == clock.current.addingTimeInterval(300))
+        clock.advance(by: 300)
+        scheduler.fire()
+
+        #expect(!service.hasLease(for: .presentation))
+        #expect(service.hasLease(for: .awayMode))
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("Wake expires a Presentation lease even when manual Awake is inactive")
+    func presentationWakeExpiry() throws {
+        let notifications = NotificationCenter()
+        let (service, backend, scheduler, clock) = makeService(workspaceNotificationCenter: notifications)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: clock.current.addingTimeInterval(60))
+        clock.advance(by: 120)
+
+        notifications.post(name: NSWorkspace.didWakeNotification, object: nil)
+
+        #expect(service.leaseStates.isEmpty)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("The timer always tracks the earliest manual or Presentation deadline", arguments: [true, false])
+    func earliestOwnedDeadline(presentationFirst: Bool) throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let startedAt = clock.current
+        let presentationDuration: TimeInterval = presentationFirst ? 900 : 3600
+        service.start(.thirtyMinutes)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: startedAt.addingTimeInterval(presentationDuration))
+
+        let firstInterval = min(1800, presentationDuration)
+        let lastInterval = max(1800, presentationDuration)
+        #expect(scheduler.scheduledDate == startedAt.addingTimeInterval(firstInterval))
+        clock.advance(by: firstInterval)
+        scheduler.fire()
+        #expect(service.isActive == presentationFirst)
+        #expect(service.hasLease(for: .presentation) == !presentationFirst)
+        #expect(scheduler.scheduledDate == startedAt.addingTimeInterval(lastInterval))
+        clock.advance(by: lastInterval - firstInterval)
+        scheduler.fire()
+        #expect(!service.hasEffectiveAwakeRequest)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("An expired Presentation token cannot update or release its replacement")
+    func stalePresentationToken() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let first = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                             deadline: clock.current.addingTimeInterval(60))
+        clock.advance(by: 60)
+        #expect(throws: AwakeLeaseError.invalidToken) {
+            try service.updateLease(first, keepsDisplayAwake: true)
+        }
+        let deadline = clock.current.addingTimeInterval(120)
+        let replacement = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+
+        #expect(first != replacement)
+        #expect(service.releaseLease(first))
+        #expect(throws: AwakeLeaseError.invalidToken) {
+            try service.updateLease(first, keepsDisplayAwake: true)
+        }
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(service.hasLease(for: .presentation))
+        #expect(scheduler.scheduledDate == deadline)
+    }
+
+    @Test("Presentation expiry retains failed-release tracking for shutdown")
+    func presentationExpiryReleaseFailure() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        let token = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                             deadline: clock.current.addingTimeInterval(60))
+        backend.failingReleaseIDs = [2]
+        clock.advance(by: 60)
+        scheduler.fire()
+
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.leaseState(for: .presentation) == nil)
+        #expect(backend.activeAssertionIDs == [2])
+        #expect(!service.releaseLease(token))
+        #expect(backend.releaseCount(for: 2) == 1)
+        #expect(throws: AwakeLeaseError.serviceUnavailable) {
+            try service.acquireLease(owner: .presentation, keepsDisplayAwake: false,
+                                     deadline: clock.current.addingTimeInterval(60))
+        }
+
+        backend.failingReleaseIDs = []
+        service.shutdown()
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(service.releaseLease(token))
+        #expect(scheduler.scheduledDate == nil)
+    }
+
+    @Test("A failed manual replacement cannot cancel Presentation expiry")
+    func manualReplacementFailurePreservesPresentationExpiry() throws {
+        let (service, backend, scheduler, clock) = makeService()
+        service.start(.oneHour)
+        let deadline = clock.current.addingTimeInterval(60)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: false, deadline: deadline)
+        backend.failingReleaseIDs = [1]
+
+        service.start(.twoHours)
+
+        #expect(service.session == nil)
+        #expect(service.failure == .couldNotRelease)
+        #expect(scheduler.scheduledDate == deadline)
+        #expect(backend.activeAssertionIDs == [1, 2])
+        clock.advance(by: 60)
+        scheduler.fire()
+        #expect(!service.hasLease(for: .presentation))
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(service.failure == .couldNotRelease)
+    }
+
     @Test("A lease update acquires its replacement before releasing prior assertions")
     func leaseUpdateOrder() throws {
         let (service, backend, _, _) = makeService()
@@ -612,37 +1353,6 @@ struct AwakeServiceTests {
         #expect(backend.releaseCount(for: 2) == 1)
     }
 
-    @Test("A failed initial lease rollback remains owner scoped and can be retried")
-    func failedInitialLeaseRollbackCleanup() throws {
-        let (service, backend, _, _) = makeService()
-        service.start(.oneHour)
-        backend.failingKinds = [.preventIdleDisplaySleep]
-        backend.failingReleaseIDs = [2]
-
-        #expect(throws: AwakeLeaseError.couldNotAcquire) {
-            try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
-        }
-
-        let cleanupToken = try #require(service.pendingCleanupToken(for: .awayMode))
-        #expect(service.pendingCleanupToken(for: .scene) == nil)
-        #expect(service.failure == .couldNotRelease)
-        #expect(service.leaseState(for: .awayMode) == nil)
-        #expect(service.isActive)
-        #expect(backend.activeAssertionIDs == [1, 2])
-
-        #expect(!service.releaseLease(cleanupToken))
-        #expect(backend.releaseCount(for: 2) == 2)
-
-        backend.failingReleaseIDs = []
-        #expect(service.releaseLease(cleanupToken))
-        #expect(service.pendingCleanupToken(for: .awayMode) == nil)
-        #expect(service.failure == nil)
-        #expect(service.isActive)
-        #expect(backend.activeAssertionIDs == [1])
-        #expect(service.releaseLease(cleanupToken))
-        #expect(backend.releaseCount(for: 2) == 3)
-    }
-
     @Test("Lease release reports a backend failure and retains cleanup state")
     func leaseReleaseFailure() throws {
         let (service, backend, _, _) = makeService()
@@ -656,7 +1366,7 @@ struct AwakeServiceTests {
         #expect(backend.activeAssertionIDs == [1])
 
         #expect(!service.releaseLease(lease))
-        #expect(backend.releaseCount(for: 1) == 2)
+        #expect(backend.releaseCount(for: 1) == 1)
         #expect(throws: AwakeLeaseError.serviceUnavailable) {
             try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
         }
@@ -671,13 +1381,14 @@ struct AwakeServiceTests {
         #expect(!service.releaseLease(lease))
         #expect(backend.releaseCount(for: 1) == 1)
         #expect(backend.releaseCount(for: 2) == 1)
+        let eventsAfterRelease = backend.events
         #expect(!service.releaseLease(lease))
-        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(backend.events == eventsAfterRelease)
 
         backend.failingReleaseIDs = []
         service.shutdown()
         #expect(backend.releaseCount(for: 1) == 1)
-        #expect(backend.releaseCount(for: 2) == 3)
+        #expect(backend.releaseCount(for: 2) == 2)
         #expect(backend.activeAssertionIDs.isEmpty)
         #expect(service.releaseLease(lease))
 
@@ -746,13 +1457,15 @@ struct AwakeServiceTests {
         #expect(backend.releaseCount(for: 2) == 1)
     }
 
-    @Test("Shutdown releases user, Away, and Scene assertions exactly once")
+    @Test("Shutdown releases user, Away, Scene, and Presentation assertions exactly once")
     func shutdownReleasesEveryOwner() throws {
-        let (service, backend, _, _) = makeService()
+        let (service, backend, scheduler, clock) = makeService()
         service.setKeepDisplayAwake(true)
         service.start(.untilTurnedOff)
         _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
         _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+        _ = try service.acquireLease(owner: .presentation, keepsDisplayAwake: true,
+                                     deadline: clock.current.addingTimeInterval(60))
 
         service.shutdown()
         service.shutdown()
@@ -761,7 +1474,8 @@ struct AwakeServiceTests {
         #expect(service.leaseStates.isEmpty)
         #expect(!service.hasEffectiveAwakeRequest)
         #expect(backend.activeAssertionIDs.isEmpty)
-        for id in PowerAssertionID(1)...PowerAssertionID(5) {
+        #expect(scheduler.scheduledDate == nil)
+        for id in PowerAssertionID(1)...PowerAssertionID(7) {
             #expect(backend.releaseCount(for: id) == 1)
         }
     }

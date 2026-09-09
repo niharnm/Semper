@@ -1005,7 +1005,6 @@ final class AwayModeCoordinator: AwayShortcutHandling {
                         keepsDisplayAwake: preferences.keepsDisplayAwake
                     )
                 } catch {
-                    awakeLease = awakeService.pendingCleanupToken(for: .awayMode)
                     throw AwayModeActivationError.powerAssertionFailed
                 }
             }
@@ -1158,6 +1157,13 @@ final class AwayModeCoordinator: AwayShortcutHandling {
             return
         }
 
+        if awakeLease != nil, !awakeService.hasLease(for: .awayMode) {
+            guard releaseAwayLease() else {
+                powerWarning = "The macOS awake request cleanup is pending."
+                return
+            }
+        }
+
         do {
             if let awakeLease {
                 try awakeService.updateLease(
@@ -1171,9 +1177,6 @@ final class AwayModeCoordinator: AwayShortcutHandling {
                 )
             }
         } catch {
-            if awakeLease == nil {
-                awakeLease = awakeService.pendingCleanupToken(for: .awayMode)
-            }
             let didRelease = releaseAwayLease()
             powerWarning = didRelease
                 ? "The macOS awake request failed. macOS may sleep."
@@ -1198,12 +1201,20 @@ final class AwayModeCoordinator: AwayShortcutHandling {
 
     @discardableResult
     private func releaseAwayLease() -> Bool {
-        guard let awakeLease else { return true }
-        guard awakeService.releaseLease(awakeLease) else {
+        if let awakeLease {
+            let released = awakeService.hasLease(for: .awayMode)
+                ? awakeService.releaseLease(awakeLease)
+                : awakeService.retryReleaseLease(awakeLease)
+            guard released else {
+                Self.logger.error("Away power lease cleanup is pending")
+                return false
+            }
+            self.awakeLease = nil
+        }
+        guard awakeService.retryPendingLeaseCleanup(owner: .awayMode) else {
             Self.logger.error("Away power lease cleanup is pending")
             return false
         }
-        self.awakeLease = nil
         return true
     }
 

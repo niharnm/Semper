@@ -86,6 +86,401 @@ struct DDCProbeTests {
         #expect(operationCalls.withLock { $0 } == 1)
     }
 
+    @Test("Serialized work cancelled while queued never starts")
+    func serializedWorkSkipsCancelledCallerBeforeQueueEntry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCQueueTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-serialized-cancellation")
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { blockerStarted in
+            queue.async {
+                blockerStarted.resume()
+                releaseBlocker.wait()
+            }
+        }
+        defer { releaseBlocker.signal() }
+
+        let operationCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Void, Error>?
+
+        await withCheckedContinuation { callerStarted in
+            caller = Task { @MainActor in
+                callerStarted.resume()
+                try await controller.performSerialized {
+                    operationCalls.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releaseBlocker.signal()
+
+        do {
+            try await callerTask.value
+            Issue.record("Cancelled serialized work returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled serialized work returned \(error)")
+        }
+
+        #expect(operationCalls.withLock { $0 } == 0)
+    }
+
+    @Test("Serialized mutation cancelled before its claim does not run")
+    func serializedMutationSkipsCancellationBeforeClaim() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCClaimTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-mutation-cancellation")
+        let releasePrewrite = DispatchSemaphore(value: 0)
+        defer { releasePrewrite.signal() }
+        let writeCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Void, Error>?
+
+        await withCheckedContinuation { prewriteReached in
+            caller = Task { @MainActor in
+                try await controller.performSerialized { context in
+                    prewriteReached.resume()
+                    releasePrewrite.wait()
+                    try context.claimMutation()
+                    writeCalls.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releasePrewrite.signal()
+
+        do {
+            try await callerTask.value
+            Issue.record("Cancelled serialized mutation returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled serialized mutation returned \(error)")
+        }
+
+        #expect(writeCalls.withLock { $0 } == 0)
+    }
+
+    @Test("Serialized mutation claimed before cancellation completes once")
+    func serializedMutationCompletesAfterClaimWins() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCClaimTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-mutation-claim")
+        let releaseWrite = DispatchSemaphore(value: 0)
+        defer { releaseWrite.signal() }
+        let writeCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Int, Error>?
+
+        await withCheckedContinuation { mutationClaimed in
+            caller = Task { @MainActor in
+                try await controller.performSerialized { context in
+                    try context.claimMutation()
+                    mutationClaimed.resume()
+                    releaseWrite.wait()
+                    writeCalls.withLock { $0 += 1 }
+                    return 73
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releaseWrite.signal()
+
+        #expect(try await callerTask.value == 73)
+        #expect(writeCalls.withLock { $0 } == 1)
+    }
+
+    @Test("A delayed volume write keeps admission until its cancelled item finishes")
+    func delayedVolumeWriteDrainsBeforeReleasingAdmission() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCDrainTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scheduler = DeferredDDCWriteScheduler()
+        let writeCalls = Mutex(0)
+        let gate = MutationAdmissionGate()
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: DispatchQueue(label: "com.semper.tests.ddc-delayed-drain"),
+            writeScheduler: scheduler.schedule,
+            volumeWrite: { _, _ in writeCalls.withLock { $0 += 1 } }
+        )
+        let installed = controller.installMutationAdmission(gate)
+        let accepted = controller.setVolume(for: 61, to: 72)
+
+        #expect(installed)
+        #expect(accepted)
+        await scheduler.waitUntilScheduled()
+        controller.stop()
+
+        let drainStarted = DDCTestSignal()
+        let drainCompleted = Mutex(false)
+        let drainTask = Task { @MainActor in
+            drainStarted.signal()
+            await controller.stopAndDrain()
+            drainCompleted.withLock { $0 = true }
+        }
+        await drainStarted.wait()
+
+        #expect(!drainCompleted.withLock { $0 })
+        #expect(gate.activeSharedPermitCount == 1)
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.manual])) {
+            try gate.acquire(owner: .awayMode, mode: .exclusive)
+        }
+        #expect(writeCalls.withLock { $0 } == 0)
+
+        scheduler.submit()
+        await drainTask.value
+
+        #expect(drainCompleted.withLock { $0 })
+        #expect(writeCalls.withLock { $0 } == 0)
+        #expect(gate.activeSharedPermitCount == 0)
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        let released = gate.release(exclusive)
+        #expect(released)
+    }
+
+    @Test("A queued volume write drains before Away gains exclusive admission")
+    func queuedVolumeWriteDrainsBeforeAwayAdmission() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCDrainTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-queued-drain")
+        let blockerStarted = DDCTestSignal()
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        defer { releaseBlocker.signal() }
+        queue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        await blockerStarted.wait()
+
+        let writeCalls = Mutex(0)
+        let gate = MutationAdmissionGate()
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue,
+            writeScheduler: { queue, item in queue.async(execute: item) },
+            volumeWrite: { _, _ in writeCalls.withLock { $0 += 1 } }
+        )
+        let installed = controller.installMutationAdmission(gate)
+        let accepted = controller.setVolume(for: 62, to: 73)
+
+        #expect(installed)
+        #expect(accepted)
+        controller.stop()
+
+        let drainStarted = DDCTestSignal()
+        let drainCompleted = Mutex(false)
+        let drainTask = Task { @MainActor in
+            drainStarted.signal()
+            await controller.stopAndDrain()
+            drainCompleted.withLock { $0 = true }
+        }
+        await drainStarted.wait()
+
+        #expect(!drainCompleted.withLock { $0 })
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.manual])) {
+            try gate.acquire(owner: .awayMode, mode: .exclusive)
+        }
+        #expect(writeCalls.withLock { $0 } == 0)
+
+        releaseBlocker.signal()
+        await drainTask.value
+
+        #expect(drainCompleted.withLock { $0 })
+        #expect(writeCalls.withLock { $0 } == 0)
+        #expect(controller.getVolume(for: 62) == nil)
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        let released = gate.release(exclusive)
+        #expect(released)
+    }
+
+    @Test("Cancellation after a volume mutation claim waits for its actual result")
+    func claimedVolumeWriteCompletesBeforeDrainReturns() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCDrainTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let writeStarted = DDCTestSignal()
+        let releaseWrite = DispatchSemaphore(value: 0)
+        defer { releaseWrite.signal() }
+        let writeCalls = Mutex(0)
+        let gate = MutationAdmissionGate()
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: DispatchQueue(label: "com.semper.tests.ddc-native-drain"),
+            writeScheduler: { queue, item in queue.async(execute: item) },
+            volumeWrite: { _, _ in
+                writeCalls.withLock { $0 += 1 }
+                writeStarted.signal()
+                releaseWrite.wait()
+            }
+        )
+        let installed = controller.installMutationAdmission(gate)
+        let accepted = controller.setVolume(for: 63, to: 74)
+
+        #expect(installed)
+        #expect(accepted)
+        await writeStarted.wait()
+        controller.stop()
+
+        let drainStarted = DDCTestSignal()
+        let drainCompleted = Mutex(false)
+        let drainTask = Task { @MainActor in
+            drainStarted.signal()
+            await controller.stopAndDrain()
+            drainCompleted.withLock { $0 = true }
+        }
+        await drainStarted.wait()
+
+        #expect(!drainCompleted.withLock { $0 })
+        #expect(writeCalls.withLock { $0 } == 1)
+        #expect(throws: MutationAdmissionError.sharedPermitsActive(owners: [.manual])) {
+            try gate.acquire(owner: .awayMode, mode: .exclusive)
+        }
+
+        releaseWrite.signal()
+        await drainTask.value
+
+        #expect(drainCompleted.withLock { $0 })
+        #expect(writeCalls.withLock { $0 } == 1)
+        #expect(controller.getConfirmedVolume(for: 63) == 74)
+        #expect(controller.getVolume(for: 63) == 74)
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        let released = gate.release(exclusive)
+        #expect(released)
+    }
+
+    @Test("Exclusive admission rejects volume and mute changes without side effects")
+    func exclusiveAdmissionRejectsAudioStateChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCAdmissionTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let settingsManager = SettingsManager(directory: directory)
+        let scheduleCalls = Mutex(0)
+        let writeCalls = Mutex(0)
+        let gate = MutationAdmissionGate()
+        let controller = DDCController(
+            settingsManager: settingsManager,
+            writeScheduler: { _, _ in scheduleCalls.withLock { $0 += 1 } },
+            volumeWrite: { _, _ in writeCalls.withLock { $0 += 1 } }
+        )
+        let deviceID: AudioDeviceID = 64
+        let uid = "exclusive-admission-display"
+        controller.applyProbePublication(.matched(
+            services: [deviceID: DDCService(service: kCFBooleanTrue)],
+            deviceUIDs: [deviceID: uid],
+            readVolumes: [deviceID: 65]
+        ))
+        let installed = controller.installMutationAdmission(gate)
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+
+        let volumeAccepted = controller.setVolume(for: deviceID, to: 20)
+        let muteAccepted = controller.mute(for: deviceID)
+
+        #expect(installed)
+        #expect(!volumeAccepted)
+        #expect(!muteAccepted)
+        #expect(controller.getVolume(for: deviceID) == 65)
+        #expect(!controller.isMuted(for: deviceID))
+        #expect(settingsManager.getDDCVolume(for: uid) == nil)
+        #expect(settingsManager.getDDCSavedVolume(for: uid) == nil)
+
+        settingsManager.setDDCMuteState(for: uid, to: true)
+        settingsManager.setDDCSavedVolume(for: uid, to: 71)
+        let unmuteAccepted = controller.unmute(for: deviceID)
+
+        #expect(!unmuteAccepted)
+        #expect(controller.getVolume(for: deviceID) == 65)
+        #expect(controller.isMuted(for: deviceID))
+        #expect(settingsManager.getDDCSavedVolume(for: uid) == 71)
+        #expect(scheduleCalls.withLock { $0 } == 0)
+        #expect(writeCalls.withLock { $0 } == 0)
+        #expect(gate.activeSharedPermitCount == 0)
+        let released = gate.release(exclusive)
+        #expect(released)
+    }
+
+    @Test("Concurrent drain callers wait for the same pending write")
+    func concurrentDrainCallersWaitForPendingWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCDrainTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scheduler = DeferredDDCWriteScheduler()
+        let writeCalls = Mutex(0)
+        let gate = MutationAdmissionGate()
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: DispatchQueue(label: "com.semper.tests.ddc-concurrent-drain"),
+            writeScheduler: scheduler.schedule,
+            volumeWrite: { _, _ in writeCalls.withLock { $0 += 1 } }
+        )
+        let installed = controller.installMutationAdmission(gate)
+        let accepted = controller.setVolume(for: 65, to: 75)
+
+        #expect(installed)
+        #expect(accepted)
+        await scheduler.waitUntilScheduled()
+        controller.stop()
+
+        let firstStarted = DDCTestSignal()
+        let secondStarted = DDCTestSignal()
+        let firstCompleted = Mutex(false)
+        let secondCompleted = Mutex(false)
+        let firstDrain = Task { @MainActor in
+            firstStarted.signal()
+            await controller.stopAndDrain()
+            firstCompleted.withLock { $0 = true }
+        }
+        await firstStarted.wait()
+        let secondDrain = Task { @MainActor in
+            secondStarted.signal()
+            await controller.stopAndDrain()
+            secondCompleted.withLock { $0 = true }
+        }
+        await secondStarted.wait()
+
+        #expect(!firstCompleted.withLock { $0 })
+        #expect(!secondCompleted.withLock { $0 })
+        #expect(gate.activeSharedPermitCount == 1)
+
+        scheduler.submit()
+        await firstDrain.value
+        await secondDrain.value
+
+        #expect(firstCompleted.withLock { $0 })
+        #expect(secondCompleted.withLock { $0 })
+        #expect(writeCalls.withLock { $0 } == 0)
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        let released = gate.release(exclusive)
+        #expect(released)
+    }
+
     @Test("A superseded probe cannot publish its completed result")
     func supersededProbeDoesNotPublish() async {
         let directory = FileManager.default.temporaryDirectory
@@ -205,5 +600,91 @@ private nonisolated enum DDCProbeTestValues {
             ),
             logs: [.info("probe \(input.id)")]
         )
+    }
+}
+
+private nonisolated final class DDCTestSignal: @unchecked Sendable {
+    private struct State {
+        var isSignalled = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = Mutex(State())
+
+    func signal() {
+        let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            guard !state.isSignalled else { return [] }
+            state.isSignalled = true
+            let waiters = state.waiters
+            state.waiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = state.withLock { state in
+                if state.isSignalled {
+                    return true
+                }
+                state.waiters.append(continuation)
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private nonisolated final class DeferredDDCWriteScheduler: @unchecked Sendable {
+    private struct State {
+        var queue: DispatchQueue?
+        var item: DeferredDDCWorkItem?
+    }
+
+    private let state = Mutex(State())
+    private let scheduled = DDCTestSignal()
+
+    func schedule(on queue: DispatchQueue, item: sending DispatchWorkItem) {
+        let item = DeferredDDCWorkItem(item)
+        state.withLock { state in
+            precondition(state.item == nil)
+            state.queue = queue
+            state.item = item
+        }
+        scheduled.signal()
+    }
+
+    func waitUntilScheduled() async {
+        await scheduled.wait()
+    }
+
+    func submit() {
+        let work = state.withLock { state -> (DispatchQueue, DeferredDDCWorkItem)? in
+            guard let queue = state.queue, let item = state.item else { return nil }
+            state.queue = nil
+            state.item = nil
+            return (queue, item)
+        }
+        guard let work else {
+            preconditionFailure("No deferred DDC write was scheduled")
+        }
+        work.1.submit(on: work.0)
+    }
+}
+
+private nonisolated final class DeferredDDCWorkItem: @unchecked Sendable {
+    private let item: DispatchWorkItem
+
+    init(_ item: sending DispatchWorkItem) {
+        self.item = item
+    }
+
+    func submit(on queue: DispatchQueue) {
+        queue.async(execute: item)
     }
 }
