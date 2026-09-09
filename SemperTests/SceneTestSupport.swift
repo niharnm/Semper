@@ -1,6 +1,7 @@
 // SemperTests/SceneTestSupport.swift
 import Foundation
 import Synchronization
+import Testing
 @testable import Semper
 
 nonisolated struct SceneMockError: Error, Equatable {
@@ -37,15 +38,21 @@ actor SceneOperationSuspension {
     }
 
     func waitUntilSuspended() async -> Bool {
+        guard !Task.isCancelled else { return false }
         guard !isSuspended else { return true }
         let id = UUID()
-        return await withCheckedContinuation { continuation in
-            arrivalContinuations[id] = continuation
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(20))
-                await self?.finishArrivalWait(id, result: false)
+        let arrived = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                arrivalContinuations[id] = continuation
             }
+        } onCancel: {
+            Task { await self.finishArrivalWait(id, result: false) }
         }
+        return arrived && !Task.isCancelled
     }
 
     private func finishArrivalWait(_ id: UUID, result: Bool) {
@@ -286,4 +293,88 @@ nonisolated enum SceneTestSupport {
 
     /// Whole-second date so ISO 8601 journal encoding round-trips exactly.
     static let fixedDate = Date(timeIntervalSince1970: 1_757_000_000)
+}
+
+extension SceneOperationSuspension {
+    fileprivate var pendingArrivalWaiterCount: Int { arrivalContinuations.count }
+
+    fileprivate func suspendCancelling(_ waiter: Task<Bool, Never>) async {
+        waiter.cancel()
+        await suspend()
+    }
+}
+
+@Suite("Scene operation suspension", .timeLimit(.minutes(1)))
+@MainActor
+struct SceneOperationSuspensionTests {
+    @Test("Cancellation before arrival-wait entry does not register a continuation")
+    func cancelledBeforeEntry() async {
+        let suspension = SceneOperationSuspension()
+        let waiter = Task { await suspension.waitUntilSuspended() }
+        waiter.cancel()
+        #expect(await waiter.value == false)
+        #expect(await suspension.pendingArrivalWaiterCount == 0)
+    }
+
+    @Test("Cancelling one registered waiter preserves another waiter's arrival")
+    func cancellationDuringWaitPreservesOtherWaiter() async {
+        let suspension = SceneOperationSuspension()
+        let cancelledWaiter = Task { await suspension.waitUntilSuspended() }
+        let remainingWaiter = Task { await suspension.waitUntilSuspended() }
+        while await suspension.pendingArrivalWaiterCount < 2 && !Task.isCancelled {
+            await Task.yield()
+        }
+        #expect(await suspension.pendingArrivalWaiterCount == 2)
+        cancelledWaiter.cancel()
+        #expect(await cancelledWaiter.value == false)
+        #expect(await suspension.pendingArrivalWaiterCount == 1)
+        let operation = Task { await suspension.suspend() }
+        let arrived = await withTaskCancellationHandler {
+            await remainingWaiter.value
+        } onCancel: {
+            remainingWaiter.cancel()
+            Task { await suspension.resume() }
+        }
+        #expect(arrived)
+        await suspension.resume()
+        await operation.value
+        #expect(await suspension.pendingArrivalWaiterCount == 0)
+    }
+
+    @Test("Cancellation wins when arrival precedes the queued cancellation callback")
+    func cancellationRacingArrival() async {
+        let suspension = SceneOperationSuspension()
+        let waiter = Task { await suspension.waitUntilSuspended() }
+        while await suspension.pendingArrivalWaiterCount == 0 && !Task.isCancelled {
+            await Task.yield()
+        }
+        let operation = Task { await suspension.suspendCancelling(waiter) }
+        #expect(await waiter.value == false)
+        await suspension.resume()
+        await operation.value
+        #expect(await suspension.pendingArrivalWaiterCount == 0)
+    }
+
+    @Test("Arrival remains observable until the held operation is resumed")
+    func arrivalBeforeWaitIsObserved() async {
+        let suspension = SceneOperationSuspension()
+        let operation = Task { await suspension.suspend() }
+        #expect(await suspension.waitUntilSuspended())
+        #expect(await suspension.waitUntilSuspended())
+        await suspension.resume()
+        await operation.value
+        #expect(await suspension.pendingArrivalWaiterCount == 0)
+    }
+
+    @Test("Cleanup before operation entry releases its later suspension")
+    func resumeBeforeSuspend() async {
+        let suspension = SceneOperationSuspension()
+        await suspension.resume()
+        await withTaskCancellationHandler {
+            await suspension.suspend()
+        } onCancel: {
+            Task { await suspension.resume() }
+        }
+        #expect(await suspension.pendingArrivalWaiterCount == 0)
+    }
 }

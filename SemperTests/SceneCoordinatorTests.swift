@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Semper
 
-@Suite("Scene coordinator")
+@Suite("Scene coordinator", .timeLimit(.minutes(1)))
 struct SceneCoordinatorTests {
     @Test("Required preflight failure aborts with zero writes")
     func requiredPreflightFailureDoesNotMutate() async throws {
@@ -1173,7 +1173,7 @@ struct SceneCoordinatorTests {
         guard readDidSuspend else {
             applyTask.cancel()
             await readSuspension.resume()
-            _ = try? await applyTask.value
+            _ = await applyTask.result
             return
         }
         applyTask.cancel()
@@ -1226,7 +1226,7 @@ struct SceneCoordinatorTests {
         guard writeDidSuspend else {
             applyTask.cancel()
             await writeSuspension.resume()
-            _ = try? await applyTask.value
+            _ = await applyTask.result
             return
         }
         applyTask.cancel()
@@ -1288,7 +1288,7 @@ struct SceneCoordinatorTests {
         guard writeDidSuspend else {
             applyTask.cancel()
             await writeSuspension.resume()
-            _ = try? await applyTask.value
+            _ = await applyTask.result
             return
         }
         applyTask.cancel()
@@ -1352,7 +1352,7 @@ struct SceneCoordinatorTests {
         guard writeDidSuspend else {
             restoreTask.cancel()
             await writeSuspension.resume()
-            _ = try? await restoreTask.value
+            _ = await restoreTask.result
             return
         }
         restoreTask.cancel()
@@ -1417,7 +1417,7 @@ struct SceneCoordinatorTests {
             applyTask.cancel()
             await targetSuspension.resume()
             await cleanupSuspension.resume()
-            _ = try? await applyTask.value
+            _ = await applyTask.result
             return
         }
         applyTask.cancel()
@@ -1426,7 +1426,7 @@ struct SceneCoordinatorTests {
         #expect(cleanupDidSuspend)
         guard cleanupDidSuspend else {
             await cleanupSuspension.resume()
-            _ = try? await applyTask.value
+            _ = await applyTask.result
             return
         }
 
@@ -1435,6 +1435,10 @@ struct SceneCoordinatorTests {
             Issue.record("Expected the cleanup operation to remain active")
         } catch let error as SceneApplyError {
             #expect(error == .operationInProgress)
+        } catch {
+            await cleanupSuspension.resume()
+            _ = await applyTask.result
+            throw error
         }
 
         await cleanupSuspension.resume()
