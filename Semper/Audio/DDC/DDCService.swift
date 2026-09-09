@@ -263,18 +263,21 @@ final class DDCService: @unchecked Sendable {
         try i2cWriteSingle(packet: packet)
     }
 
-    func readCapabilitiesString() throws -> String {
+    func readCapabilitiesString(
+        isCancelled: @escaping @Sendable () -> Bool
+    ) throws -> String {
         let bytes = try DDCCapabilitiesTransport(
             transaction: { [self] packet in
                 try capabilitiesTransaction(packet: packet)
-            }
+            },
+            isCancelled: isCancelled
         ).read()
         guard bytes.allSatisfy({ $0 <= 0x7F }),
               let text = String(bytes: bytes, encoding: .ascii)
         else {
             throw DDCCapabilitiesError.invalidTextEncoding
         }
-        guard !withUnsafeCurrentTask({ $0?.isCancelled ?? false }) else {
+        guard !isCancelled() else {
             throw DDCCapabilitiesError.cancelled
         }
         return text

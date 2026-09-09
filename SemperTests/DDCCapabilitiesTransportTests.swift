@@ -32,9 +32,9 @@ struct DDCCapabilitiesPacketTests {
         )
     }
 
-    @Test(
-        "Malformed response is rejected",
-        arguments: [
+    @Test("Malformed response is rejected")
+    func malformedResponse() {
+        let testCases = [
             MalformedCase(
                 reply: [UInt8](repeating: 0, count: 38),
                 expected: .allZeroResponse
@@ -80,31 +80,30 @@ struct DDCCapabilitiesPacketTests {
                 expected: .checksumMismatch
             ),
         ]
-    )
-    func malformedResponse(testCase: MalformedCase) {
-        var reply = testCase.reply
-        testCase.mutate(&reply)
 
-        #expect(throws: testCase.expected) {
-            try DDCCapabilitiesPacket.responsePayload(
-                from: reply,
-                expectedOffset: testCase.expectedOffset
-            )
+        for testCase in testCases {
+            var reply = testCase.reply
+            testCase.mutate(&reply)
+
+            #expect(throws: testCase.expected) {
+                try DDCCapabilitiesPacket.responsePayload(
+                    from: reply,
+                    expectedOffset: testCase.expectedOffset
+                )
+            }
         }
     }
 
-    struct MalformedCase: CustomTestStringConvertible, Sendable {
+    private struct MalformedCase {
         let reply: [UInt8]
         let expectedOffset: UInt16
-        let mutate: @Sendable (inout [UInt8]) -> Void
+        let mutate: (inout [UInt8]) -> Void
         let expected: DDCCapabilitiesResponseFailure
-
-        var testDescription: String { String(describing: expected) }
 
         init(
             reply: [UInt8],
             expectedOffset: UInt16 = 0,
-            mutate: @escaping @Sendable (inout [UInt8]) -> Void = { _ in },
+            mutate: @escaping (inout [UInt8]) -> Void = { _ in },
             expected: DDCCapabilitiesResponseFailure
         ) {
             self.reply = reply
@@ -294,6 +293,24 @@ struct DDCCapabilitiesTransportTests {
         #expect(throws: DDCCapabilitiesError.cancelled) {
             try transport.read()
         }
+    }
+
+    @Test("Cancellation after a native fragment prevents the next request")
+    func postTransactionCancellation() {
+        var cancelled = false
+        let recorder = RequestRecorder(
+            replies: [makeResponse(offset: 0, payload: [0x41])],
+            onRequest: { cancelled = true }
+        )
+        let transport = makeTransport(
+            transaction: recorder.transaction,
+            isCancelled: { cancelled }
+        )
+
+        #expect(throws: DDCCapabilitiesError.cancelled) {
+            try transport.read()
+        }
+        #expect(recorder.offsets == [0])
     }
 
     @Test("Deadline is checked after a native transaction returns")
