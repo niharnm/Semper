@@ -41,7 +41,7 @@ struct GeneralTab: View {
         SettingsSection("Behavior", subtitle: "When Semper runs") {
             SettingsRow(
                 "Launch at Login",
-                description: "Keep the mixer ready after you sign in"
+                description: "Start Semper when you sign in"
             ) {
                 Toggle("", isOn: $settings.appSettings.launchAtLogin)
                     .toggleStyle(.switch)
