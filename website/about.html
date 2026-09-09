@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Semper release facts: Sound in v1.0.0, with additional Mac utilities in development. Requirements, privacy, and official links."
+      content="Semper brings Mac utilities together. Get release facts for Sound in v1.0.0 and the other modules in development, plus requirements and official links."
     />
     <meta name="robots" content="index, follow" />
     <meta name="theme-color" content="#f2eee5" />
@@ -44,7 +44,7 @@
         "@id": "https://www.semper.systems/about.html#page",
         "url": "https://www.semper.systems/about.html",
         "name": "About Semper for Mac",
-        "dateModified": "2026-09-08",
+        "dateModified": "2026-09-09",
         "mainEntity": {
           "@type": "SoftwareApplication",
           "@id": "https://www.semper.systems/#software",
@@ -95,7 +95,7 @@
         </div>
         <div class="legal-intro">
           <p>
-            Semper is a native Mac utility, starting with per-app sound.
+            Semper brings Mac utilities together in one native app.
             This page separates the published download from modules still in
             development.
           </p>
@@ -149,7 +149,7 @@
               </div>
               <div>
                 <dt>Category</dt>
-                <dd>Per-app volume mixer, audio router, and equalizer</dd>
+                <dd>Mac utilities; v1.0.0 includes the Sound mixer, audio router, and equalizer</dd>
               </div>
               <div>
                 <dt>Platform</dt>
@@ -183,11 +183,11 @@
         <section class="legal-section" id="capabilities">
           <div class="legal-section-heading">
             <span>02</span>
-            <h2>What Semper does</h2>
+            <h2>Sound in v1.0.0</h2>
           </div>
           <div class="legal-copy">
             <p>
-              Semper creates independent controls for audio-producing Mac
+              Sound creates independent controls for audio-producing Mac
               processes. Volume, mute, boost, a 10-band EQ, and output
               routing are attached to the app they affect.
             </p>
@@ -210,7 +210,9 @@
               None is included in the published v1.0.0 download. Follow the
               <a href="/#modules">module overview</a> for scope and limits.</p>
             <p>Source integration of the expanded modules is complete.
-              Checks for a public release are still in progress.</p>
+              Checks for a public release are still in progress. The
+              <a href="https://github.com/niharnm/Semper/blob/main/guide/module-shell.md">source-build module guide</a>
+              explains Home, adding modules, and opening their controls.</p>
             <p>Away is an app privacy curtain, not a macOS session lock.
               Awake and Away request idle wakefulness; they do not guarantee
               that every job continues running.</p>
@@ -232,10 +234,15 @@
               to Semper maintainers.
             </p>
             <p>
-              Screen &amp; System Audio Recording permission is required for
-              Core Audio process taps. Microphone permission supports input
-              monitoring. Accessibility permission is optional and supports
-              media-key control.
+              For Sound, Screen &amp; System Audio Recording permission is
+              required for Core Audio process taps. Microphone permission
+              supports input monitoring. Accessibility permission is optional
+              for Sound's media-key control.
+            </p>
+            <p>
+              In source builds, Workspace Restore requires Accessibility
+              permission to read and move selected windows. Opening Home or
+              adding a module does not start Sound or request its audio access.
             </p>
             <p>
               See the <a href="privacy.html">full privacy policy</a> for local
@@ -344,7 +351,7 @@
         <span>Semper</span>
       </a>
       <div class="footer-middle">
-        <p class="footer-tagline">Audio control for macOS.</p>
+        <p class="footer-tagline">Everyday Mac utilities.</p>
         <div class="footer-links" aria-label="Resources and legal">
           <a href="mac-volume-mixer.html">Guide</a>
           <a href="privacy.html">Privacy</a>
