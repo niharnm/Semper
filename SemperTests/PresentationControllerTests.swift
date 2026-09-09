@@ -16,6 +16,7 @@ struct PresentationControllerTests {
 
         #expect(fixture.controller.phase == .preview)
         #expect(fixture.controller.canStart)
+        #expect(!fixture.controller.canCancelOperation)
         #expect(fixture.trace.events == [.sceneReserve, .workspaceReserve, .scenePreview])
         #expect(fixture.backend.activeIDs.isEmpty)
         #expect(fixture.controller.deadline == nil)
@@ -32,12 +33,15 @@ struct PresentationControllerTests {
         fixture.reserveGate = gate
         let prepare = Task { try await fixture.prepare() }
         #expect(await gate.waitUntilSuspended())
+        #expect(fixture.controller.canCancelOperation)
 
         prepare.cancel()
         gate.resume()
         await #expect(throws: CancellationError.self) { try await prepare.value }
 
         #expect(fixture.controller.phase == .idle)
+        #expect(!fixture.controller.canCancelOperation)
+        #expect(fixture.controller.message == "Presentation cancelled.")
         #expect(fixture.controller.reservation == nil)
         #expect(fixture.trace.events == [.sceneReserve, .scenePending, .sceneRelease])
         #expect(fixture.backend.activeIDs.isEmpty)
@@ -69,6 +73,7 @@ struct PresentationControllerTests {
         try await fixture.controller.start()
 
         #expect(fixture.controller.phase == .active)
+        #expect(!fixture.controller.canCancelOperation)
         #expect(fixture.receivedPreview == preview)
         #expect(fixture.trace.events == [.awakeAcquire, .sceneApply, .workspaceApply])
         #expect(fixture.backend.timeouts == [1800, 1800])
@@ -162,6 +167,78 @@ struct PresentationControllerTests {
         #expect(fixture.restoreWasCancelled == [false])
         #expect(fixture.controller.phase == .idle)
         #expect(fixture.backend.activeIDs.isEmpty)
+    }
+
+    @Test("The visible cancel action stops startup and waits for window recovery", arguments: [false, true])
+    func cancelActionDrainsStartupRecovery(cancelledReceipt: Bool) async throws {
+        let fixture = PresentationFixture()
+        defer { fixture.awake.shutdown() }
+        let applyGate = PresentationGate()
+        let reverseGate = PresentationGate()
+        fixture.workspace.applyGate = applyGate
+        fixture.workspace.reverseGate = reverseGate
+        if cancelledReceipt {
+            fixture.workspace.appliedReceipt = fixture.workspace.makeReceipt(
+                outcome: .cancelled, recovery: fixture.workspace.pendingRecovery)
+        }
+        try await fixture.prepare()
+        let start = Task { try await fixture.controller.start() }
+        #expect(await applyGate.waitUntilSuspended())
+        #expect(fixture.controller.canCancelOperation)
+        var stopFinished = false
+        let stop = Task {
+            defer { stopFinished = true }
+            try await fixture.controller.stop()
+        }
+
+        #expect(await fixture.trace.waitFor(.workspaceApplyCancelled))
+        #expect(!stopFinished)
+        applyGate.resume()
+        #expect(await reverseGate.waitUntilSuspended())
+        #expect(fixture.controller.phase == .restoring)
+        #expect(!fixture.controller.canCancelOperation)
+        #expect(!stopFinished)
+        reverseGate.resume()
+        await #expect(throws: CancellationError.self) { try await start.value }
+        try await stop.value
+
+        #expect(fixture.workspace.reversedIDs == [fixture.workspace.appliedReceipt.operationID])
+        #expect(fixture.workspace.reverseWasCancelled == [false])
+        #expect(fixture.restoreWasCancelled == [false])
+        #expect(fixture.controller.phase == .idle)
+        #expect(!fixture.controller.canCancelOperation)
+        #expect(fixture.controller.reservation == nil)
+        #expect(fixture.backend.activeIDs.isEmpty)
+        #expect(fixture.controller.message == "Presentation cancelled.")
+    }
+
+    @Test("A cancelled window receipt keeps failed recovery visible and owned")
+    func cancelledReceiptRetainsFailedRecovery() async throws {
+        let fixture = PresentationFixture()
+        defer { fixture.awake.shutdown() }
+        let gate = PresentationGate()
+        fixture.workspace.applyGate = gate
+        fixture.workspace.appliedReceipt = fixture.workspace.makeReceipt(
+            outcome: .cancelled, recovery: fixture.workspace.pendingRecovery)
+        fixture.workspace.reverseResults = (0..<2).map { _ in
+            fixture.workspace.makeReceipt(outcome: .partial, recovery: fixture.workspace.pendingRecovery)
+        }
+        try await fixture.prepare()
+        let start = Task { try await fixture.controller.start() }
+        #expect(await gate.waitUntilSuspended())
+        let stop = Task { try await fixture.controller.stop() }
+        #expect(await fixture.trace.waitFor(.workspaceApplyCancelled))
+        gate.resume()
+        await #expect(throws: CancellationError.self) { try await start.value }
+        await #expect(throws: PresentationError.self) { try await stop.value }
+
+        #expect(fixture.controller.phase == .recoveryRequired)
+        #expect(!fixture.controller.canCancelOperation)
+        #expect(fixture.controller.reservation == fixture.token)
+        #expect(fixture.controller.workspaceReceipt?.needsRecovery == true)
+        #expect(fixture.controller.message?.contains("Some windows could not be restored.") == true)
+        #expect(fixture.workspace.reverseWasCancelled == [false, false])
+        try await fixture.controller.stop()
     }
 
     @Test("Expiry during a suspended start cancels it and waits for recovery")
