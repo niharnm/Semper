@@ -221,6 +221,11 @@ final class AwakeService {
         session != nil || !leaseStates.isEmpty
     }
 
+    var hasPendingAssertionCleanup: Bool {
+        guard failure == .couldNotRelease else { return false }
+        return !pendingSessionReleaseIDs.isEmpty || !pendingLeaseReleaseIDs.isEmpty
+    }
+
     func leaseState(for owner: AwakeLeaseOwner) -> AwakeLeaseState? {
         leaseStates[owner]
     }
@@ -570,7 +575,7 @@ final class AwakeService {
         ) {
             failure = .couldNotRelease
         }
-        retryPendingReleasesAtShutdown()
+        _ = retryPendingAssertionCleanup()
     }
 
     private var effectiveSessionReason: String {
@@ -765,9 +770,10 @@ final class AwakeService {
         }
     }
 
-    private func retryPendingReleasesAtShutdown() {
+    @discardableResult
+    func retryPendingAssertionCleanup() -> Bool {
         guard !pendingSessionReleaseIDs.isEmpty || !pendingLeaseReleaseIDs.isEmpty else {
-            return
+            return true
         }
         pendingSessionReleaseIDs = releaseAssertionIDs(pendingSessionReleaseIDs.sorted())
         let failedLeaseIDs = releaseAssertionIDs(pendingLeaseReleaseIDs.sorted())
@@ -784,5 +790,6 @@ final class AwakeService {
         } else {
             failure = .couldNotRelease
         }
+        return !hasPendingAssertionCleanup
     }
 }
