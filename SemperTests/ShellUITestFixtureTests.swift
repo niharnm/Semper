@@ -212,7 +212,7 @@
                 persistenceWriter: persistenceWriter, drainRuntime: drainRuntime)
             do { try await body(fixture) } catch {
                 let failures = await fixture.shutdownAndDrain()
-                if !failures.isEmpty { Issue.record(failures.joined(separator: "\n")) }
+                if !failures.isEmpty { Issue.record(Comment(rawValue: failures.joined(separator: "\n"))) }
                 throw error
             }
             #expect(await fixture.shutdownAndDrain().isEmpty)
