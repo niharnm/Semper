@@ -6,7 +6,7 @@ Official website: https://www.semper.systems/
 Source repository: https://github.com/niharnm/Semper
 Maintainer: Nihar Manchikakapudi
 Licensing information: https://github.com/niharnm/Semper/blob/main/LICENSE
-Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE
+Repository notices: https://github.com/niharnm/Semper/blob/main/NOTICE.md
 
 ## Current status
 

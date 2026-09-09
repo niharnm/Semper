@@ -3792,12 +3792,12 @@ summary:focus-visible,
 .modules a:focus-visible,
 .comparison a:focus-visible,
 a[href$="/LICENSE"]:focus-visible,
-a[href$="/NOTICE"]:focus-visible {
+a[href$="/NOTICE.md"]:focus-visible {
   outline-color: var(--ink);
 }
 
 .source-copy p a:focus-visible,
 .legal-source a[href$="/LICENSE"]:focus-visible,
-.legal-source a[href$="/NOTICE"]:focus-visible {
+.legal-source a[href$="/NOTICE.md"]:focus-visible {
   outline-color: white;
 }
