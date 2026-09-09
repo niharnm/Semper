@@ -60,34 +60,111 @@ private actor ShelfAsyncGate {
     }
 }
 
+nonisolated private final class ShelfAsyncSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Bool?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func resolve(_ result: Bool) {
+        let waiting: CheckedContinuation<Bool, Never>? = lock.withLock {
+            guard self.result == nil else { return nil }
+            self.result = result
+            defer { continuation = nil }
+            return continuation
+        }
+        waiting?.resume(returning: result)
+    }
+
+    func wait(timeout: DispatchTimeInterval = .seconds(30)) async -> Bool {
+        let watchdog = DispatchWorkItem { self.resolve(false) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        defer { watchdog.cancel() }
+        let received = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let result: Bool? = lock.withLock {
+                    if let result { return result }
+                    self.continuation = continuation
+                    return nil
+                }
+                if let result { continuation.resume(returning: result) }
+            }
+        } onCancel: {
+            self.resolve(false)
+        }
+        return received && !Task.isCancelled
+    }
+}
+
 nonisolated private final class ShelfBlockingAccess: ShelfFileAccess, @unchecked Sendable {
     private let lock = NSLock()
-    private let entered = DispatchSemaphore(value: 0)
+    private let entered = ShelfAsyncSignal()
     private let release = DispatchSemaphore(value: 0)
-    private let cancelled = DispatchSemaphore(value: 0)
+    private let cancelled = ShelfAsyncSignal()
+    private var watchdog: DispatchWorkItem?
+    private var released = false
+    private var expired = false
     private var count = 0
     private var ended = 0
     var balanced: Bool { lock.withLock { count == ended } }
+    var timedOut: Bool { lock.withLock { expired } }
+
+    init(timeout: DispatchTimeInterval = .seconds(30)) {
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let shouldExpire = self.lock.withLock {
+                guard !self.released else { return false }
+                self.expired = true
+                return true
+            }
+            if shouldExpire { self.resume() }
+        }
+        self.watchdog = watchdog
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+    }
+
     func begin(_ url: URL) -> Bool {
         let shouldBlock = lock.withLock {
             count += 1
             return count > 1
         }
         if shouldBlock {
-            entered.signal()
+            entered.resolve(true)
             var reportedCancellation = false
-            while release.wait(timeout: .now() + 0.005) == .timedOut {
+            while !lock.withLock({ released }) {
+                _ = release.wait(timeout: .now() + 0.005)
                 if Task.isCancelled, !reportedCancellation {
                     reportedCancellation = true
-                    cancelled.signal()
+                    cancelled.resolve(true)
                 }
             }
         }
         return true
     }
-    func waitUntilBlocked() -> Bool { entered.wait(timeout: .now() + 5) == .success }
-    func waitUntilCancelled() -> Bool { cancelled.wait(timeout: .now() + 5) == .success }
-    func resume() { release.signal() }
+    func waitUntilBlocked() async -> Bool {
+        await withTaskCancellationHandler {
+            await entered.wait()
+        } onCancel: {
+            self.resume()
+        }
+    }
+    func waitUntilCancelled() async -> Bool {
+        await withTaskCancellationHandler {
+            await cancelled.wait()
+        } onCancel: {
+            self.resume()
+        }
+    }
+    func resume() {
+        watchdog?.cancel()
+        let shouldRelease = lock.withLock {
+            guard !released else { return false }
+            released = true
+            return true
+        }
+        entered.resolve(false)
+        cancelled.resolve(false)
+        if shouldRelease { release.signal() }
+    }
     func end(_ url: URL) { lock.withLock { ended += 1 } }
     func state(of url: URL) -> ShelfFileState { NativeShelfFileAccess().state(of: url) }
     func bookmark(for url: URL) throws -> Data { Data(url.absoluteString.utf8) }
@@ -113,6 +190,47 @@ nonisolated private struct ShelfFixture {
 @Suite("File Shelf")
 @MainActor
 struct ShelfTests {
+    @Test func checksumSignalRetainsArrivalBeforeWaiting() async {
+        let signal = ShelfAsyncSignal()
+        signal.resolve(true)
+        signal.resolve(false)
+        #expect(await signal.wait())
+    }
+
+    @Test func checksumSignalHandlesCancellationBeforeWaiting() async {
+        let signal = ShelfAsyncSignal()
+        let waiting = Task { await signal.wait() }
+        waiting.cancel()
+        #expect(!(await waiting.value))
+        signal.resolve(true)
+        #expect(!(await signal.wait()))
+    }
+
+    @Test func checksumSignalTimesOutWithoutArrival() async {
+        let signal = ShelfAsyncSignal()
+        #expect(!(await signal.wait(timeout: .nanoseconds(0))))
+        signal.resolve(true)
+        #expect(!(await signal.wait()))
+    }
+
+    @Test func checksumWatchdogReleasesLateFileAccess() async {
+        let access = ShelfBlockingAccess(timeout: .nanoseconds(0))
+        defer { access.resume() }
+        #expect(!(await access.waitUntilBlocked()))
+        #expect(!(await access.waitUntilCancelled()))
+        #expect(access.timedOut)
+        let completed = ShelfAsyncSignal()
+        DispatchQueue.global().async {
+            let file = URL(fileURLWithPath: "/unused-shelf-fixture")
+            for _ in 0..<3 {
+                if access.begin(file) { access.end(file) }
+            }
+            completed.resolve(true)
+        }
+        #expect(await completed.wait())
+        #expect(access.balanced)
+    }
+
     @Test func expiryBoundaries() {
         let date = Date(timeIntervalSince1970: 1_000)
         let item = ShelfItem(name: "Text", payload: .text("A"), now: date, expiry: .fifteenMinutes)
@@ -145,6 +263,7 @@ struct ShelfTests {
         defer { fixture.remove() }
         let clock = ShelfClock()
         let access = ShelfBlockingAccess()
+        defer { access.resume() }
         try fixture.store.prepareCache()
         let name = "shelf-item-\(UUID().uuidString).png"
         let cached = try fixture.store.cacheURL(named: name)
@@ -158,25 +277,36 @@ struct ShelfTests {
         try fixture.store.save(items: [item], expiry: .fifteenMinutes)
         let service = ShelfService(store: fixture.store, access: access, now: { clock.read() })
         service.start()
-        service.checksum(item.id)
-        let blocked = await Task.detached { access.waitUntilBlocked() }.value
-        #expect(blocked)
-        clock.advance(900)
-        let expiration = Task { await service.expireItems() }
-        let draining = await Task.detached { access.waitUntilCancelled() }.value
-        #expect(draining)
-        service.setExpiry(.oneHour, for: item.id)
-        access.resume()
-        await expiration.value
-        #expect(service.items.count == 1)
-        #expect(service.items.first?.expiry == .oneHour)
-        #expect(service.checksums[item.id] == .cancelled)
-        #expect(FileManager.default.fileExists(atPath: cached.path))
-        if FileManager.default.fileExists(atPath: cached.path) {
-            #expect(try Data(contentsOf: cached) == image)
+        var expiration: Task<Void, Never>?
+        do {
+            service.checksum(item.id)
+            let blocked = await access.waitUntilBlocked()
+            try #require(blocked)
+            clock.advance(900)
+            let drainingExpiration = Task { await service.expireItems() }
+            expiration = drainingExpiration
+            let draining = await access.waitUntilCancelled()
+            try #require(draining)
+            service.setExpiry(.oneHour, for: item.id)
+            access.resume()
+            await drainingExpiration.value
+            #expect(service.items.count == 1)
+            #expect(service.items.first?.expiry == .oneHour)
+            #expect(service.checksums[item.id] == .cancelled)
+            #expect(FileManager.default.fileExists(atPath: cached.path))
+            if FileManager.default.fileExists(atPath: cached.path) {
+                #expect(try Data(contentsOf: cached) == image)
+            }
+        } catch {
+            access.resume()
+            await expiration?.value
+            await service.shutdown()
+            #expect(access.balanced)
+            throw error
         }
         await service.shutdown()
         #expect(access.balanced)
+        #expect(!access.timedOut)
     }
 
     @Test func storeLoadPrunesExpiredAndOrphanedOwnedCopies() async throws {
@@ -567,30 +697,48 @@ struct ShelfTests {
         let fixture = try ShelfFixture()
         defer { fixture.remove() }
         let access = ShelfBlockingAccess()
+        defer { access.resume() }
         let service = ShelfService(store: fixture.store, access: access)
         service.start()
-        try service.addFile(fixture.file)
-        let item = try #require(service.items.first)
-        service.checksum(item.id)
-        let blocked = await Task.detached { access.waitUntilBlocked() }.value
-        #expect(blocked)
-        let removal = Task { await service.remove(item.id) }
-        await Task.yield()
-        var paused = false
-        let pause = Task {
-            await service.pause()
-            paused = true
+        var removal: Task<Void, Never>?
+        var pause: Task<Void, Never>?
+        do {
+            try service.addFile(fixture.file)
+            let item = try #require(service.items.first)
+            service.checksum(item.id)
+            let blocked = await access.waitUntilBlocked()
+            try #require(blocked)
+            let drainingRemoval = Task { await service.remove(item.id) }
+            removal = drainingRemoval
+            let draining = await access.waitUntilCancelled()
+            try #require(draining)
+            let pauseEntered = ShelfAsyncSignal()
+            var paused = false
+            let drainingPause = Task {
+                pauseEntered.resolve(true)
+                await service.pause()
+                paused = true
+            }
+            pause = drainingPause
+            let pausing = await pauseEntered.wait()
+            try #require(pausing)
+            #expect(!paused)
+            access.resume()
+            await drainingRemoval.value
+            await drainingPause.value
+            #expect(paused)
+            #expect(access.balanced)
+            #expect(service.items.isEmpty)
+        } catch {
+            access.resume()
+            await removal?.value
+            await pause?.value
+            await service.shutdown()
+            #expect(access.balanced)
+            throw error
         }
-        await Task.yield()
-        await Task.yield()
-        #expect(!paused)
-        access.resume()
-        await removal.value
-        await pause.value
-        #expect(paused)
-        #expect(access.balanced)
-        #expect(service.items.isEmpty)
         await service.shutdown()
+        #expect(!access.timedOut)
     }
 
     @Test func cancellingWaitingProviderFinishesWithoutCallback() async throws {
