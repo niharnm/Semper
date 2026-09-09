@@ -272,7 +272,11 @@ final class SoundRuntime {
         feedbackPlayer.shutdown()
         audioEngine.onCallModeActivitiesChanged = nil
         callMode.handleActivities([])
-        alertVolumeRestorationTask = deviceVolumeMonitor.flushAlertVolumeWrite(producedBy: callMode.shutdown)
+        // Retain a manual edit that Call Mode accepts instead of restoring its quieting claim.
+        alertVolumeRestorationTask = deviceVolumeMonitor.flushAlertVolumeWrite(
+            preservingPendingWrite: callMode.isActive,
+            producedBy: callMode.shutdown
+        )
         bluetoothHDGuard.shutdown()
         audioEngine.shutdown()
         audioCommands.shutdown()

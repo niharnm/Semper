@@ -216,6 +216,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     private var alertVolumeDebounceTask: Task<Void, Never>?
     private var pendingAlertVolumeWrite: (id: UUID, percent: Int)?
     private var alertVolumeWriteTask: Task<Bool, Never>?
+    private var failedAlertVolumeWriteTask: Task<Bool, Never>?
     private var alertVolumeWriteID: UUID?
     private var acceptsAlertVolumeWrites = true
     private let alertVolumeWriter: AlertVolumeWriter
@@ -948,12 +949,17 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         }
     }
 
-    func flushAlertVolumeWrite(producedBy operation: () -> Void) -> Task<Bool, Never>? {
-        // Leave preexisting edits cancelable; only promote this operation's write.
+    func flushAlertVolumeWrite(
+        preservingPendingWrite: Bool = false,
+        producedBy operation: () -> Void
+    ) -> Task<Bool, Never>? {
         let previousWriteID = pendingAlertVolumeWrite?.id
         operation()
-        guard let pendingAlertVolumeWrite, pendingAlertVolumeWrite.id != previousWriteID else { return nil }
-        return submitPendingAlertVolumeWrite()
+        if let pendingAlertVolumeWrite {
+            guard preservingPendingWrite || pendingAlertVolumeWrite.id != previousWriteID else { return nil }
+            return submitPendingAlertVolumeWrite()
+        }
+        return preservingPendingWrite ? (alertVolumeWriteTask ?? failedAlertVolumeWriteTask) : nil
     }
 
     @discardableResult
@@ -984,6 +990,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
                 succeeded = false
             }
             if self?.alertVolumeWriteID == pending.id {
+                self?.failedAlertVolumeWriteTask = succeeded ? nil : self?.alertVolumeWriteTask
                 self?.alertVolumeWriteTask = nil
                 self?.alertVolumeWriteID = nil
             }
