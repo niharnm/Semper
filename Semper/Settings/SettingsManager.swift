@@ -71,6 +71,9 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Popup
     var popupSize: MenuBarPopupSize = .comfortable  // Overall menu bar popup size and density
 
+    // Away Mode
+    var awayModePreferences = AwayModePreferences()
+
     init() {}
 
     mutating func setUnifiedLoudnessEnabled(_ enabled: Bool) {
@@ -107,6 +110,10 @@ nonisolated struct AppSettings: Codable, Equatable {
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
+        awayModePreferences = try c.decodeIfPresent(
+            AwayModePreferences.self,
+            forKey: .awayModePreferences
+        ) ?? AwayModePreferences()
     }
 }
 
@@ -166,7 +173,7 @@ final class SettingsManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Semper", category: "SettingsManager")
 
     struct Settings: Codable {
-        static let currentVersion = 17
+        static let currentVersion = 18
 
         var version: Int = currentVersion
         var appVolumes: [String: Float] = [:]

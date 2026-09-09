@@ -120,6 +120,8 @@ final class MockAudioDeviceMonitor: AudioDeviceProviding {
 
     private var devicesByUID: [String: AudioDevice] = [:]
     private var devicesByID: [AudioDeviceID: AudioDevice] = [:]
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
 
     func addOutputDevice(_ device: AudioDevice) {
         outputDevices.append(device)
@@ -137,8 +139,8 @@ final class MockAudioDeviceMonitor: AudioDeviceProviding {
     func inputDevice(for uid: String) -> AudioDevice? { devicesByUID[uid] }
     func device(for id: AudioDeviceID) -> AudioDevice? { devicesByID[id] }
 
-    func start() {}
-    func stop() {}
+    func start() { startCallCount += 1 }
+    func stop() { stopCallCount += 1 }
 }
 
 /// Spec-aligned mock matching A6/A9: per-UID override storage, UID resolved
@@ -168,6 +170,8 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
     var defaultDeviceWritesPublishState = true
     var defaultInputDeviceWritesSucceed = true
     var confirmedOutputVolumes: [AudioDeviceID: Float] = [:]
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
 
     func setVolume(for deviceID: AudioDeviceID, to volume: Float) {
         setVolumeCalls.append((deviceID, volume))
@@ -274,8 +278,8 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
         applyTierOverrideChangeCalls.append(deviceID)
     }
 
-    func start() {}
-    func stop() {}
+    func start() { startCallCount += 1 }
+    func stop() { stopCallCount += 1 }
 }
 
 // MARK: - Mock AccessibilityTrustProviding
@@ -403,7 +407,7 @@ struct SettingsMigrationV10toV11Tests {
     @Test("Re-encode after v10 decode uses the current schema on a fresh Settings instance")
     func defaultSettingsVersionIsCurrent() {
         let fresh = SettingsManager.Settings()
-        #expect(fresh.version == 17)
+        #expect(fresh.version == 18)
         #expect(fresh.deviceVolumeTierOverride.isEmpty)
     }
 

@@ -237,6 +237,78 @@ struct AppShortcutControllerTests {
         #expect(fixture.commands.undoSources == [.appIntent, .appIntent, .appIntent, .appIntent])
     }
 
+    @Test("Away Mode rejects mutations, preserves state, and permits them after exit")
+    func awayModeGatesMutations() throws {
+        let fixture = Fixture(
+            activeApps: [Self.app(pid: 26, name: "Zoom", bundleID: "us.zoom.xos")],
+            outputs: [Self.output(id: 32, uid: "output.usb", name: "USB Audio")]
+        )
+        fixture.activeCallSession = CallModeSession(
+            applicationIdentifier: "us.zoom.xos",
+            displayName: "Zoom",
+            inputDeviceUID: nil,
+            startedAt: Date()
+        )
+        fixture.commands.undoResult = .restored
+        fixture.allowsMutations = false
+
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.setVolume(
+                applicationIdentifier: "us.zoom.xos",
+                percent: 25
+            )
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.setMute(
+                applicationIdentifier: "us.zoom.xos",
+                muted: true
+            )
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.route(
+                applicationIdentifier: "us.zoom.xos",
+                outputUID: "output.usb"
+            )
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.followDefaultOutput(
+                applicationIdentifier: "us.zoom.xos"
+            )
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.switchDefaultOutput(outputUID: "output.usb")
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.setAudioProcessingMode(.bypassed)
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.startCallMode(applicationIdentifier: "us.zoom.xos")
+        }
+        #expect(throws: AppShortcutExecutionError.awayModeActive) {
+            try fixture.controller.undoLastChange()
+        }
+        let blockedEnd = fixture.controller.endCallModeSession()
+
+        #expect(fixture.commands.calls.isEmpty)
+        #expect(fixture.commands.undoSources.isEmpty)
+        #expect(fixture.startedCalls.isEmpty)
+        #expect(fixture.endCallCount == 0)
+        #expect(blockedEnd.status == .unchanged)
+
+        fixture.allowsMutations = true
+        _ = try fixture.controller.setVolume(
+            applicationIdentifier: "us.zoom.xos",
+            percent: 25
+        )
+        _ = try fixture.controller.undoLastChange()
+        let permittedEnd = fixture.controller.endCallModeSession()
+
+        #expect(fixture.commands.calls.count == 1)
+        #expect(fixture.commands.undoSources == [.appIntent])
+        #expect(fixture.endCallCount == 1)
+        #expect(permittedEnd.status == .applied)
+    }
+
     @Test("Native intents request foreground launch when Semper is quit")
     func intentsOpenSemperWhenRun() {
         #expect(SemperSetAppVolumeIntent.openAppWhenRun)
@@ -290,6 +362,7 @@ private final class Fixture {
     var activeCallSession: CallModeSession?
     var startedCalls: [String] = []
     var endCallCount = 0
+    var allowsMutations = true
 
     lazy var controller = AppShortcutController(
         activeApplications: { [unowned self] in activeApps },
@@ -302,7 +375,8 @@ private final class Fixture {
         callModeEnabled: { [unowned self] in isCallModeEnabled },
         activeCallSession: { [unowned self] in activeCallSession },
         startCallMode: { [unowned self] identifier, _ in startedCalls.append(identifier) },
-        endCallMode: { [unowned self] in endCallCount += 1 }
+        endCallMode: { [unowned self] in endCallCount += 1 },
+        allowsMutations: { [unowned self] in allowsMutations }
     )
 
     init(

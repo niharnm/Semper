@@ -322,9 +322,9 @@ struct OutputVolumeLimitPersistenceTests {
             .appendingPathComponent("SemperVolumeLimitTests-\(UUID().uuidString)", isDirectory: true)
     }
 
-    @Test("Default settings use schema 17")
+    @Test("Default settings use schema 18")
     func schemaVersion() {
-        #expect(SettingsManager.Settings().version == 17)
+        #expect(SettingsManager.Settings().version == 18)
     }
 
     @Test("Loading an older file advances its schema on the next write")
@@ -339,7 +339,7 @@ struct OutputVolumeLimitPersistenceTests {
         manager.flushSync()
 
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
-        #expect(object?["version"] as? Int == 17)
+        #expect(object?["version"] as? Int == 18)
     }
 
     @Test("Limits clamp, persist by UID, and clear with nil")

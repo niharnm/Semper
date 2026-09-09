@@ -202,4 +202,15 @@ struct HUDWindowControllerTimerTests {
         #expect(hud.showCallCount == 1)
         #expect(hud.showDidUpdatePanel == true)
     }
+
+    @Test("Away guard suppresses the HUD")
+    func awayGuardSuppressesHUD() {
+        let hud = makeController(popupVisible: false)
+        hud.isSuppressed = { true }
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "Test Device")
+
+        #expect(hud.showCallCount == 1)
+        #expect(!hud.showDidUpdatePanel)
+    }
 }

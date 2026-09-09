@@ -36,12 +36,17 @@ final class MenuBarPopupController: MenuBarPopupControlling {
     /// the button via `setAccessibilityTitle(title)` where `title` is the first
     /// argument we pass to `FluidMenuBarExtra(...)` in `SemperApp`.
     private let accessibilityTitle: String
+    var isPresentationAllowed: () -> Bool = { true }
 
     init(accessibilityTitle: String = "Semper") {
         self.accessibilityTitle = accessibilityTitle
     }
 
     func toggle() {
+        guard isPresentationAllowed() else {
+            dismiss()
+            return
+        }
         guard let statusItem = findStatusItem() else {
             Self.logger.debug("toggle: no status item found yet (cold-launch race?); ignoring")
             return
@@ -72,6 +77,15 @@ final class MenuBarPopupController: MenuBarPopupControlling {
         }
 
         NSApp.postEvent(event, atStart: false)
+    }
+
+    func dismiss() {
+        for window in NSApp.windows where window.isVisible {
+            let typeName = String(describing: type(of: window))
+            if typeName.contains("FluidMenuBarExtra") {
+                window.orderOut(nil)
+            }
+        }
     }
 
     // MARK: - NSApp.windows + KVC introspection

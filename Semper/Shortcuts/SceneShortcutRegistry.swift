@@ -16,15 +16,21 @@ extension SceneManager: SceneShortcutManaging {}
 final class SceneShortcutRegistry {
     private let settings: SettingsManager
     private let sceneManager: any SceneShortcutManaging
+    private let allowsShortcuts: () -> Bool
     private var registeredSceneIDs = Set<UUID>()
     private var didStart = false
 
     private(set) var conflicts: [UUID: String] = [:]
     private(set) var persistenceErrors: [UUID: String] = [:]
 
-    init(settings: SettingsManager, sceneManager: any SceneShortcutManaging) {
+    init(
+        settings: SettingsManager,
+        sceneManager: any SceneShortcutManaging,
+        allowsShortcuts: @escaping () -> Bool = { true }
+    ) {
         self.settings = settings
         self.sceneManager = sceneManager
+        self.allowsShortcuts = allowsShortcuts
     }
 
     func name(for sceneID: UUID) -> KeyboardShortcuts.Name {
@@ -93,6 +99,7 @@ final class SceneShortcutRegistry {
     }
 
     func performShortcut(for sceneID: UUID) async {
+        guard allowsShortcuts() else { return }
         do {
             _ = try await sceneManager.applyScene(id: sceneID)
         } catch {
@@ -162,6 +169,7 @@ final class SceneShortcutRegistry {
     private func stableID(for action: ShortcutAction) -> String {
         switch action {
         case .togglePopup: "toggle-popup"
+        case .toggleAwayMode: "toggle-away-mode"
         case .targetAppVolumeUp: "frontmost-app-volume-up"
         case .targetAppVolumeDown: "frontmost-app-volume-down"
         case .targetAppMuteToggle: "frontmost-app-mute-toggle"
