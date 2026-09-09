@@ -52,11 +52,13 @@ enum AwakeServiceFailure: Error, Equatable, Sendable {
 enum AwakeLeaseOwner: Hashable, Sendable {
     case awayMode
     case scene
+    case presentation
 
     fileprivate var systemReason: String {
         switch self {
         case .awayMode: "Semper Away Mode requested idle sleep prevention"
         case .scene: "Semper Scene requested idle sleep prevention"
+        case .presentation: "Semper Presentation requested idle sleep prevention"
         }
     }
 
@@ -64,6 +66,7 @@ enum AwakeLeaseOwner: Hashable, Sendable {
         switch self {
         case .awayMode: "Semper Away Mode requested idle display sleep prevention"
         case .scene: "Semper Scene requested idle display sleep prevention"
+        case .presentation: "Semper Presentation requested idle display sleep prevention"
         }
     }
 }
@@ -76,6 +79,13 @@ struct AwakeLeaseToken: Hashable, Sendable {
 struct AwakeLeaseState: Equatable, Sendable {
     let owner: AwakeLeaseOwner
     let keepsDisplayAwake: Bool
+    let deadline: Date?
+
+    init(owner: AwakeLeaseOwner, keepsDisplayAwake: Bool, deadline: Date? = nil) {
+        self.owner = owner
+        self.keepsDisplayAwake = keepsDisplayAwake
+        self.deadline = deadline
+    }
 }
 
 enum AwakeLeaseError: Error, Equatable, Sendable {
@@ -83,6 +93,8 @@ enum AwakeLeaseError: Error, Equatable, Sendable {
     case invalidToken
     case couldNotAcquire
     case couldNotReplace
+    case invalidDeadline
+    case conflictingLease
 }
 
 @MainActor
@@ -189,13 +201,26 @@ final class AwakeService {
 
     func acquireLease(
         owner: AwakeLeaseOwner,
-        keepsDisplayAwake: Bool
+        keepsDisplayAwake: Bool,
+        deadline: Date? = nil
     ) throws(AwakeLeaseError) -> AwakeLeaseToken {
+        if owner == .presentation, deadline == nil {
+            throw .invalidDeadline
+        }
+        let timeout = deadline.map { $0.timeIntervalSince(now()) }
+        if let timeout, !timeout.isFinite || timeout <= 0 {
+            throw .invalidDeadline
+        }
+        reconcile()
         guard !didShutDown, failure != .couldNotRelease else {
             throw .serviceUnavailable
         }
 
         if let existing = leases[owner] {
+            guard existing.state.deadline == deadline,
+                  owner != .presentation || existing.state.keepsDisplayAwake == keepsDisplayAwake else {
+                throw .conflictingLease
+            }
             if existing.state.keepsDisplayAwake != keepsDisplayAwake {
                 try updateLease(existing.token, keepsDisplayAwake: keepsDisplayAwake)
             }
@@ -206,6 +231,7 @@ final class AwakeService {
         switch acquireAssertions(
             keepDisplayAwake: keepsDisplayAwake,
             timeout: nil,
+            deadline: deadline,
             systemReason: owner.systemReason,
             displayReason: owner.displayReason,
             trackLeaseCleanup: true,
@@ -219,10 +245,11 @@ final class AwakeService {
         }
 
         let token = AwakeLeaseToken(owner: owner, generation: UUID())
-        let state = AwakeLeaseState(owner: owner, keepsDisplayAwake: keepsDisplayAwake)
+        let state = AwakeLeaseState(owner: owner, keepsDisplayAwake: keepsDisplayAwake, deadline: deadline)
         leases[owner] = LeaseRecord(token: token, state: state, assertions: acquired)
         leaseStates[owner] = state
         failure = nil
+        rescheduleExpiry()
         return token
     }
 
@@ -236,12 +263,19 @@ final class AwakeService {
         guard let existing = leases[token.owner], existing.token == token else {
             throw .invalidToken
         }
+        let timeout = existing.state.deadline.map { $0.timeIntervalSince(now()) }
+        if let timeout, !timeout.isFinite || timeout <= 0 {
+            _ = releaseLease(token)
+            throw .invalidToken
+        }
         guard existing.state.keepsDisplayAwake != keepsDisplayAwake else { return }
+        defer { rescheduleExpiry() }
 
         let acquired: OwnedAssertions
         switch acquireAssertions(
             keepDisplayAwake: keepsDisplayAwake,
             timeout: nil,
+            deadline: existing.state.deadline,
             systemReason: token.owner.systemReason,
             displayReason: token.owner.displayReason,
             trackLeaseCleanup: true,
@@ -262,7 +296,9 @@ final class AwakeService {
             throw .couldNotReplace
         }
 
-        let state = AwakeLeaseState(owner: token.owner, keepsDisplayAwake: keepsDisplayAwake)
+        let state = AwakeLeaseState(
+            owner: token.owner, keepsDisplayAwake: keepsDisplayAwake, deadline: existing.state.deadline
+        )
         leases[token.owner] = LeaseRecord(token: token, state: state, assertions: acquired)
         leaseStates[token.owner] = state
         failure = nil
@@ -273,6 +309,7 @@ final class AwakeService {
         guard let existing = leases[token.owner], existing.token == token else {
             return pendingLeaseReleaseIDsByToken[token] == nil
         }
+        defer { rescheduleExpiry() }
 
         leases[token.owner] = nil
         leaseStates[token.owner] = nil
@@ -366,7 +403,7 @@ final class AwakeService {
     }
 
     func stop() {
-        scheduler.cancelScheduledExpiry()
+        defer { rescheduleExpiry() }
         guard session != nil || ownedAssertions != nil else { return }
         session = nil
         // Releasing this session cannot resolve an earlier assertion cleanup failure.
@@ -379,14 +416,17 @@ final class AwakeService {
     }
 
     func reconcile() {
-        guard let session, let endsAt = session.endsAt else { return }
-        if now() >= endsAt {
+        guard !didShutDown else { return }
+        let currentDate = now()
+        if let endsAt = session?.endsAt, currentDate >= endsAt {
             stop()
-        } else {
-            scheduler.scheduleExpiry(at: endsAt) { [weak self] in
-                self?.reconcile()
+        }
+        for record in Array(leases.values) {
+            if let deadline = record.state.deadline, currentDate >= deadline {
+                _ = releaseLease(record.token)
             }
         }
+        rescheduleExpiry()
     }
 
     func shutdown() {
@@ -428,8 +468,10 @@ final class AwakeService {
 
     private func rescheduleExpiry() {
         scheduler.cancelScheduledExpiry()
-        guard let endsAt = session?.endsAt else { return }
-        scheduler.scheduleExpiry(at: endsAt) { [weak self] in
+        guard !didShutDown else { return }
+        let deadlines = leases.values.compactMap(\.state.deadline) + [session?.endsAt].compactMap(\.self)
+        guard let deadline = deadlines.min() else { return }
+        scheduler.scheduleExpiry(at: deadline) { [weak self] in
             self?.reconcile()
         }
     }
@@ -437,17 +479,25 @@ final class AwakeService {
     private func acquireAssertions(
         keepDisplayAwake: Bool,
         timeout: TimeInterval?,
+        deadline: Date? = nil,
         systemReason: String,
         displayReason: String,
         trackLeaseCleanup: Bool,
         leaseToken: AwakeLeaseToken?
     ) -> Result<OwnedAssertions, AwakeServiceFailure> {
+        func remainingTimeout() throws(AwakeServiceFailure) -> TimeInterval? {
+            guard let deadline else { return timeout }
+            let remaining = deadline.timeIntervalSince(now())
+            guard remaining.isFinite, remaining > 0 else { throw .couldNotStart }
+            return remaining
+        }
+
         let system: PowerAssertionID
         do {
             system = try backend.createAssertion(
                 kind: .preventIdleSystemSleep,
                 reason: systemReason,
-                timeout: timeout
+                timeout: remainingTimeout()
             )
         } catch {
             return .failure(.couldNotStart)
@@ -461,7 +511,7 @@ final class AwakeService {
             let display = try backend.createAssertion(
                 kind: .preventIdleDisplaySleep,
                 reason: displayReason,
-                timeout: timeout
+                timeout: remainingTimeout()
             )
             return .success(OwnedAssertions(system: system, display: display))
         } catch {
@@ -486,8 +536,8 @@ final class AwakeService {
         }
         guard releaseAssertions(previous) else {
             _ = releaseAssertions(replacement)
-            scheduler.cancelScheduledExpiry()
             session = nil
+            rescheduleExpiry()
             failure = .couldNotRelease
             return false
         }

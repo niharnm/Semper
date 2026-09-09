@@ -447,7 +447,7 @@ struct UtilityLifecycleTests {
     @Test("A shutdown failure is reported while remaining modules still drain")
     func shutdownFailureContinuesCleanup() async throws {
         try await withLifecycle { _, lifecycle in
-            var awakeStopped = false
+            var stopped: [UtilityModuleID] = []
             try lifecycle.register(
                 .presentation,
                 binding: .init(
@@ -455,16 +455,102 @@ struct UtilityLifecycleTests {
                     stop: { _ in
                         throw LifecycleTestError.stop
                     }))
+            for id in [UtilityModuleID.workspace, .shelf, .sound, .awake] {
+                try lifecycle.register(id, binding: .init(start: {}, stop: { _ in stopped.append(id) }))
+            }
+            await lifecycle.shutdown()
+            #expect(stopped == [.workspace, .shelf, .sound, .awake])
+            #expect(lifecycle.failures[.presentation] == "Test stop failed.")
+        }
+    }
+
+    @Test("Composed recovery retains requested services while unrelated modules stop")
+    func shutdownRetainsRecoveryServices() async throws {
+        try await withLifecycle { registry, lifecycle in
+            let retained: Set<UtilityModuleID> = [.workspace, .sound, .awake]
+            let reason = "Restore the selected windows before quitting."
+            var running: Set<UtilityModuleID> = []
+            for id in [UtilityModuleID.presentation, .workspace, .sound, .awake, .shelf] {
+                try registry.add(id)
+                try lifecycle.register(
+                    id,
+                    binding: .init(
+                        start: { running.insert(id) },
+                        stop: { stopReason in
+                            #expect(stopReason == .termination)
+                            if id == .presentation {
+                                throw UtilityCleanupDeferral(reason: reason, retaining: retained)
+                            }
+                            running.remove(id)
+                        }))
+                try await lifecycle.start(id)
+            }
+
+            await lifecycle.shutdown()
+
+            #expect(running == retained.union([.presentation]))
+            #expect(lifecycle.failures[.presentation] == reason)
+            #expect(lifecycle.failures[.shelf] == nil)
+            for id in retained {
+                #expect(lifecycle.failures[id] == "Kept running for Presentation recovery. \(reason)")
+                #expect(lifecycle.failures[id] != lifecycle.failures[.presentation])
+                #expect(registry.state(for: id)?.runtime == .ready)
+            }
+        }
+    }
+
+    @Test("Shutdown retries recompute retained services and share successful recovery")
+    func shutdownRecoveryRetry() async throws {
+        try await withLifecycle { _, lifecycle in
+            let retryEntered = LifecycleLatch()
+            let retryRelease = LifecycleLatch()
+            var stops: [UtilityModuleID: Int] = [:]
             try lifecycle.register(
-                .awake,
+                .presentation,
                 binding: .init(
                     start: {},
                     stop: { _ in
-                        awakeStopped = true
+                        stops[.presentation, default: 0] += 1
+                        switch stops[.presentation] {
+                        case 1:
+                            throw UtilityCleanupDeferral(
+                                reason: "Session restoration remains.", retaining: [.workspace, .sound, .awake])
+                        case 2:
+                            throw UtilityCleanupDeferral(reason: "Window restoration remains.", retaining: [.workspace])
+                        default:
+                            retryEntered.open()
+                            await retryRelease.wait()
+                        }
                     }))
+            for id in [UtilityModuleID.workspace, .shelf, .sound, .awake] {
+                try lifecycle.register(
+                    id, binding: .init(start: {}, stop: { _ in stops[id, default: 0] += 1 }))
+            }
+
             await lifecycle.shutdown()
-            #expect(awakeStopped)
-            #expect(lifecycle.failures[.presentation] == "Test stop failed.")
+            #expect(stops == [.presentation: 1, .shelf: 1])
+
+            await lifecycle.shutdown()
+            #expect(stops == [.presentation: 2, .shelf: 1, .sound: 1, .awake: 1])
+            #expect(lifecycle.failures[.presentation] == "Window restoration remains.")
+            #expect(
+                lifecycle.failures[.workspace] == "Kept running for Presentation recovery. Window restoration remains.")
+            #expect(lifecycle.failures[.sound] == nil)
+            #expect(lifecycle.failures[.awake] == nil)
+
+            let firstRetry = Task { await lifecycle.shutdown() }
+            await retryEntered.wait()
+            let secondRetry = Task { await lifecycle.shutdown() }
+            await advanceTasks()
+            #expect(stops == [.presentation: 3, .shelf: 1, .sound: 1, .awake: 1])
+            retryRelease.open()
+            await firstRetry.value
+            await secondRetry.value
+            #expect(stops == [.presentation: 3, .workspace: 1, .shelf: 1, .sound: 1, .awake: 1])
+            #expect(lifecycle.failures.isEmpty)
+
+            await lifecycle.shutdown()
+            #expect(stops == [.presentation: 3, .workspace: 1, .shelf: 1, .sound: 1, .awake: 1])
         }
     }
 

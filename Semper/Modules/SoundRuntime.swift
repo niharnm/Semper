@@ -3,9 +3,15 @@ import Foundation
 
 enum SoundRuntimeShutdownError: LocalizedError {
     case audioResourceCleanup
+    case alertVolumeRestoration
 
     var errorDescription: String? {
-        "Sound could not release every audio resource. Quit Semper before starting Sound again."
+        switch self {
+        case .audioResourceCleanup:
+            "Sound could not release every audio resource. Quit Semper before starting Sound again."
+        case .alertVolumeRestoration:
+            "Sound could not restore the alert volume. Check the alert volume in System Settings."
+        }
     }
 }
 
@@ -30,6 +36,7 @@ final class SoundRuntime {
     let launchIconImage: NSImage
     private let appShortcutController: AppShortcutController
     private var startupTask: Task<Void, Never>?
+    private var alertVolumeRestorationTask: Task<Bool, Never>?
     private(set) var isShutDown = false
 
     init(
@@ -263,7 +270,9 @@ final class SoundRuntime {
         hudController.volumeWriter = nil
         hudController.shutdown()
         feedbackPlayer.shutdown()
-        callMode.shutdown()
+        audioEngine.onCallModeActivitiesChanged = nil
+        callMode.handleActivities([])
+        alertVolumeRestorationTask = deviceVolumeMonitor.flushAlertVolumeWrite(producedBy: callMode.shutdown)
         bluetoothHDGuard.shutdown()
         audioEngine.shutdown()
         audioCommands.shutdown()
@@ -273,8 +282,12 @@ final class SoundRuntime {
     func shutdownAndDrain() async throws {
         shutdown()
         await audioEngine.shutdownAndDrain()
-        guard audioEngine.shutdownCleanupResult.failureCount == 0 else {
+        let alertWritesDrained = await deviceVolumeMonitor.drainAlertVolumeWrites()
+        guard audioEngine.shutdownCleanupResult.failureCount == 0, alertWritesDrained else {
             throw SoundRuntimeShutdownError.audioResourceCleanup
+        }
+        if await alertVolumeRestorationTask?.value == false {
+            throw SoundRuntimeShutdownError.alertVolumeRestoration
         }
     }
 }

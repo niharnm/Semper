@@ -25,6 +25,13 @@ enum UtilityLifecycleError: LocalizedError {
     }
 }
 
+struct UtilityCleanupDeferral: LocalizedError, Equatable, Sendable {
+    let reason: String
+    let retaining: Set<UtilityModuleID>
+
+    var errorDescription: String? { reason }
+}
+
 @Observable
 @MainActor
 final class UtilityLifecycle {
@@ -165,8 +172,14 @@ final class UtilityLifecycle {
             let order: [UtilityModuleID] = [
                 .presentation, .away, .scenes, .workspace, .shelf, .storage, .displays, .sound, .awake,
             ]
+            var retainedServices: [UtilityModuleID: String] = [:]
             for id in order {
                 guard !self.terminated.contains(id), let binding = self.bindings[id] else { continue }
+                if let reason = retainedServices[id] {
+                    self.failures[id] = reason
+                    self.cleanupFailures[id] = reason
+                    continue
+                }
                 do {
                     try await binding.stop(.termination)
                     self.started.remove(id)
@@ -176,6 +189,12 @@ final class UtilityLifecycle {
                 } catch {
                     self.failures[id] = error.localizedDescription
                     self.cleanupFailures[id] = error.localizedDescription
+                    if let deferral = error as? UtilityCleanupDeferral {
+                        let title = self.registry.descriptor(for: id)?.title ?? id.rawValue
+                        for retainedID in deferral.retaining {
+                            retainedServices[retainedID] = "Kept running for \(title) recovery. \(deferral.reason)"
+                        }
+                    }
                 }
             }
             if !self.failures.isEmpty { self.shutdownTask = nil }

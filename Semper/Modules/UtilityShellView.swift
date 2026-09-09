@@ -120,21 +120,37 @@ struct UtilityShellView: View {
                         UtilityActionList(commands: runtime.commands, actions: runtime.registry.favoriteActions)
                     }
                     ForEach(runtime.registry.addedModules) { module in
-                        Button {
-                            runtime.destination = .module(module.id)
-                            if compact { openWindow(id: "utilities") }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: module.symbolName).frame(width: 24)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(module.title).font(.headline)
-                                    Text(runtime.summary(for: module.id)).font(.caption).foregroundStyle(.secondary)
+                        if compact, module.id == .shelf,
+                            !runtime.registry.pausedModuleIDs.contains(.shelf),
+                            !runtime.lifecycle.stopping.contains(.shelf), !runtime.lifecycle.isShuttingDown,
+                            let shelf = runtime.shelf, shelf.isRunning
+                        {
+                            ShelfCompactView(service: shelf) {
+                                Task {
+                                    do {
+                                        try await runtime.open(.shelf)
+                                        runtime.message = nil
+                                    } catch { runtime.message = error.localizedDescription }
                                 }
-                                Spacer()
-                                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-                            }.contentShape(Rectangle())
+                            }
+                        } else {
+                            Button {
+                                runtime.destination = .module(module.id)
+                                if compact { openWindow(id: "utilities") }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: module.symbolName).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(module.title).font(.headline)
+                                        Text(runtime.summary(for: module.id)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                     if let message = runtime.message { Text(message).foregroundStyle(.orange) }
                     ForEach(runtime.lifecycle.failures.keys.sorted(by: { $0.rawValue < $1.rawValue }), id: \.self) {
@@ -157,16 +173,22 @@ struct UtilityShellView: View {
     @ViewBuilder
     private func module(_ id: UtilityModuleID) -> some View {
         if runtime.registry.pausedModuleIDs.contains(id) {
-            ContentUnavailableView(
-                "Module paused", systemImage: "pause.circle",
-                description: Text("Resume this module in Modules before opening it."))
+            ContentUnavailableView {
+                Label("Module paused", systemImage: "pause.circle")
+            } description: {
+                if case .failed(let reason) = runtime.registry.state(for: id)?.runtime {
+                    Text("\(reason) Retry stopping this module in Modules.")
+                } else {
+                    Text("Resume this module in Modules before opening it.")
+                }
+            }
         } else if runtime.registry.state(for: id)?.presence != .added {
             ContentUnavailableView(
                 "Module not added", systemImage: "square.grid.2x2", description: Text("Add this module in Modules."))
         } else {
             switch id {
             case .sound:
-                if let sound = runtime.sound {
+                if let sound = runtime.usableSound {
                     MenuBarPopupView(
                         audioEngine: sound.audioEngine, audioCommands: sound.audioCommands,
                         audioActivityStore: sound.audioActivityStore, callMode: sound.callMode,
@@ -175,12 +197,33 @@ struct UtilityShellView: View {
                         accessibility: sound.accessibility, mediaKeyStatus: sound.mediaKeyStatus,
                         popupVisibility: sound.popupVisibility, hudController: sound.hudController,
                         mediaKeyMonitor: sound.mediaKeyMonitor, experimentManager: runtime.experiments,
-                        showsModuleSwitcher: false)
+                        showsModuleSwitcher: false, presentation: .detailWindow)
                 } else {
                     startModule(id)
                 }
             case .awake:
                 if let awake = runtime.awake { AwakeModuleView(awake: awake) } else { startModule(id) }
+            case .workspace:
+                if let workspace = runtime.workspace {
+                    WorkspaceView(service: workspace)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
+            case .shelf:
+                if let shelf = runtime.shelf {
+                    ShelfDetailView(service: shelf)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
+            case .storage:
+                if let storage = runtime.storage {
+                    SafeEjectView(service: storage)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
             default:
                 startModule(id)
             }
@@ -199,6 +242,9 @@ struct UtilityShellView: View {
                     } catch { runtime.message = error.localizedDescription }
                 }
             }.buttonStyle(.borderedProminent)
+            if case .failed(let reason) = runtime.registry.state(for: id)?.runtime {
+                Text(reason).foregroundStyle(.orange)
+            }
             if let message = runtime.message { Text(message).foregroundStyle(.orange) }
         }
         .padding(24)
@@ -220,19 +266,29 @@ struct UtilitySettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Search Semper actions").font(.headline)
                 KeyboardShortcuts.Recorder("Keyboard shortcut", name: UtilityRuntime.searchShortcut)
-                Text("Sound shortcuts and media keys are available after Sound starts.").foregroundStyle(.secondary)
-                if let sound = runtime.sound {
+                if let sound = runtime.usableSound {
                     ShortcutsTab(
                         settings: runtime.settings, accessibility: sound.accessibility,
                         mediaKeyStatus: sound.mediaKeyStatus, mediaKeyMonitor: sound.mediaKeyMonitor,
                         shortcutsRegistry: sound.shortcutsRegistry)
+                } else {
+                    Text("Sound shortcuts and media keys are available after Sound starts.").foregroundStyle(.secondary)
+                    if case .failed(let reason) = runtime.registry.state(for: .sound)?.runtime {
+                        Text(reason).foregroundStyle(.orange)
+                    }
                 }
             }.padding(24).tabItem { Label("Shortcuts", systemImage: "command") }
-            if let sound = runtime.sound {
+            if let sound = runtime.usableSound {
                 AudioTab(
                     settings: runtime.settings, audioEngine: sound.audioEngine, audioCommands: sound.audioCommands,
                     callMode: sound.callMode, bluetoothHDGuard: sound.bluetoothHDGuard,
                     deviceVolumeMonitor: sound.deviceVolumeMonitor
+                )
+                .tabItem { Label("Sound", systemImage: "speaker.wave.2") }
+            } else if case .failed(let reason) = runtime.registry.state(for: .sound)?.runtime {
+                ContentUnavailableView(
+                    "Sound needs attention", systemImage: "exclamationmark.triangle",
+                    description: Text(reason)
                 )
                 .tabItem { Label("Sound", systemImage: "speaker.wave.2") }
             }

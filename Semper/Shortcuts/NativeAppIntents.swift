@@ -154,6 +154,19 @@ enum SemperMuteState: String, AppEnum {
 @MainActor
 enum SemperAppIntentRuntime {
     private static var controller: AppShortcutController?
+    private static weak var activationOwner: AnyObject?
+    private static var activate: (@MainActor () async throws -> Void)?
+
+    static func installActivation(owner: AnyObject, activate: @escaping @MainActor () async throws -> Void) {
+        activationOwner = owner
+        self.activate = activate
+    }
+
+    static func uninstallActivation(owner: AnyObject) {
+        guard activationOwner === owner else { return }
+        activationOwner = nil
+        activate = nil
+    }
 
     static func install(_ controller: AppShortcutController) {
         self.controller = controller
@@ -190,7 +203,10 @@ enum SemperAppIntentRuntime {
 
     static func perform(
         _ operation: @MainActor (AppShortcutController) throws -> AppShortcutExecution
-    ) throws -> AppShortcutExecution {
+    ) async throws -> AppShortcutExecution {
+        try Task.checkCancellation()
+        if activationOwner != nil, let activate { try await activate() }
+        try Task.checkCancellation()
         guard let controller else { throw AppShortcutExecutionError.unavailable }
         return try operation(controller)
     }

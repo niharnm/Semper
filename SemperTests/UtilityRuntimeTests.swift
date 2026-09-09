@@ -15,6 +15,9 @@ struct UtilityRuntimeTests {
         try await withRuntime(addedModules: addedModules) { runtime, probe, defaults in
             #expect(runtime.sound == nil)
             #expect(runtime.awake == nil)
+            #expect(runtime.workspace == nil)
+            #expect(runtime.shelf == nil)
+            #expect(runtime.storage == nil)
             #expect(probe.creationCount == 0)
             #expect(!runtime.updateManager.isConfigured)
             #expect(
@@ -33,7 +36,7 @@ struct UtilityRuntimeTests {
 
     @Test(
         "Adding, pausing, removing, and adding again never starts a dormant module",
-        arguments: [UtilityModuleID.sound, .awake, .shelf])
+        arguments: [UtilityModuleID.sound, .awake, .workspace, .shelf, .storage])
     func moduleManagementIsDormant(module: UtilityModuleID) async throws {
         try await withRuntime(addedModules: []) { runtime, probe, _ in
             try runtime.registry.add(module)
@@ -164,7 +167,11 @@ struct UtilityRuntimeTests {
             settings: settings,
             defaults: defaults,
             updateManager: updater,
-            soundFactory: probe.makeSound
+            soundFactory: probe.makeSound,
+            awakeFactory: { try probe.unexpectedCreation(.awake) },
+            workspaceFactory: { try probe.unexpectedCreation(.workspace) },
+            shelfFactory: { try probe.unexpectedCreation(.shelf) },
+            storageFactory: { try probe.unexpectedCreation(.storage) }
         )
         #expect(runtime.updateManager === updater)
         do {
@@ -176,13 +183,23 @@ struct UtilityRuntimeTests {
         }
         #expect(runtime.sound == nil)
         #expect(runtime.awake == nil)
+        #expect(runtime.workspace == nil)
+        #expect(runtime.shelf == nil)
+        #expect(runtime.storage == nil)
         #expect(probe.creationCount == 0)
+        #expect(probe.otherCreationAttempts.isEmpty)
     }
 }
 
 @MainActor
 private final class SoundCreationProbe {
     private(set) var creationCount = 0
+    private(set) var otherCreationAttempts: [UtilityModuleID] = []
+
+    func unexpectedCreation<Service>(_ module: UtilityModuleID) throws -> Service {
+        otherCreationAttempts.append(module)
+        throw UnexpectedSoundCreation.attempted
+    }
 
     func makeSound(
         _ settings: SettingsManager,

@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         url.host ?? "")
                 else { continue }
                 do {
-                    try await runtime.lifecycle.start(.sound)
+                    try await runtime.start(.sound)
                     guard !runtime.lifecycle.isShuttingDown,
                         runtime.registry.state(for: .sound)?.presence == .added,
                         !runtime.registry.pausedModuleIDs.contains(.sound), let sound = runtime.sound
@@ -120,6 +120,7 @@ struct SemperApp: App {
                 exit(EXIT_SUCCESS)
             }
             let runtime = try UtilityRuntime()
+            runtime.installIntentActivation()
             _runtime = State(initialValue: runtime)
             _appDelegate.wrappedValue.runtime = runtime
             UNUserNotificationCenter.current().delegate = _appDelegate.wrappedValue

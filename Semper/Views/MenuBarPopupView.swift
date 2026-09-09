@@ -37,6 +37,12 @@ struct MenuBarPopupView: View {
 
     var awakeService: AwakeService? = nil
     var showsModuleSwitcher = true
+    var presentation: Presentation = .menuBarPopup
+
+    enum Presentation {
+        case menuBarPopup
+        case detailWindow
+    }
 
     @State private var selectedModule: SemperModule = SemperModule.initial
 
@@ -56,8 +62,8 @@ struct MenuBarPopupView: View {
     /// Debounce EQ toggle to prevent rapid clicks during animation
     @State private var isEQAnimating = false
 
-    /// Track popup visibility to pause VU meter polling when hidden
-    @State private var isPopupVisible = true
+    /// Pauses level polling until the window hosting these controls is visible.
+    @State private var isPopupVisible = false
 
     /// Error message shown when AutoEQ profile import fails
     @State private var autoEQImportError: String?
@@ -155,6 +161,18 @@ struct MenuBarPopupView: View {
             WindowAppearanceBridge(appearance: audioEngine.settingsManager.appSettings.appearance.nsAppearance)
                 .frame(width: 0, height: 0)
         )
+        .background {
+            if presentation == .detailWindow {
+                SoundDetailWindowVisibilityBridge { visible in
+                    isPopupVisible = visible
+                    if visible {
+                        audioEngine.bluetoothDeviceMonitor.refresh()
+                        syncNavOrder()
+                    }
+                }
+                .frame(width: 0, height: 0)
+            }
+        }
         .popupGlassBackground()
         .preferredColorScheme(audioEngine.settingsManager.appSettings.appearance.swiftUIColorScheme)
         .environment(\.appearancePreference, audioEngine.settingsManager.appSettings.appearance)
@@ -219,8 +237,9 @@ struct MenuBarPopupView: View {
             // FluidMenuBarExtra's popup window so unrelated windows (the HID-tap
             // primer, NSAlert panels, etc.) don't mark the popup as visible and
             // suppress the HUD.
-            guard let window = notification.object as? NSWindow,
-                  String(describing: type(of: window)).contains("FluidMenuBarExtra")
+            guard presentation == .menuBarPopup,
+                let window = notification.object as? NSWindow,
+                String(describing: type(of: window)).contains("FluidMenuBarExtra")
             else { return }
             isPopupVisible = true
             popupVisibility.isVisible = true
@@ -233,13 +252,18 @@ struct MenuBarPopupView: View {
             textEntry.buffer = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
-            guard let window = notification.object as? NSWindow,
-                  String(describing: type(of: window)).contains("FluidMenuBarExtra")
+            guard presentation == .menuBarPopup,
+                let window = notification.object as? NSWindow,
+                String(describing: type(of: window)).contains("FluidMenuBarExtra")
             else { return }
             isPopupVisible = false
             popupVisibility.isVisible = false
             hasKeyboardEngaged = false
             selectedRow = nil
+        }
+        .onDisappear {
+            isPopupVisible = false
+            if presentation == .menuBarPopup { popupVisibility.isVisible = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             // SwiftUI Menu tracking (e.g. sample-rate picker in the device
@@ -1948,6 +1972,119 @@ struct MenuBarPopupView: View {
             NSApp.keyWindow?.resignKey()
         }
         return activated
+    }
+}
+
+private struct SoundDetailWindowVisibilityBridge: NSViewRepresentable {
+    let onVisibilityChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> SoundDetailWindowTrackerView {
+        SoundDetailWindowTrackerView(onVisibilityChanged: onVisibilityChanged)
+    }
+
+    func updateNSView(_ nsView: SoundDetailWindowTrackerView, context: Context) {
+        nsView.onVisibilityChanged = onVisibilityChanged
+    }
+
+    static func dismantleNSView(_ nsView: SoundDetailWindowTrackerView, coordinator: ()) {
+        nsView.stopTracking()
+    }
+}
+
+@MainActor
+final class SoundDetailWindowTrackerView: NSView {
+    var onVisibilityChanged: (Bool) -> Void
+    private let notificationCenter: NotificationCenter
+    private let isApplicationHidden: () -> Bool
+    private var observers: [NSObjectProtocol] = []
+    private var visibilityTask: Task<Void, Never>?
+    private var lastVisibility: Bool?
+    private var isTracking = true
+    private var isClosing = false
+
+    init(
+        notificationCenter: NotificationCenter = .default,
+        isApplicationHidden: @escaping () -> Bool = { NSApp?.isHidden ?? false },
+        onVisibilityChanged: @escaping (Bool) -> Void
+    ) {
+        self.notificationCenter = notificationCenter
+        self.isApplicationHidden = isApplicationHidden
+        self.onVisibilityChanged = onVisibilityChanged
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopTracking()
+        isTracking = true
+        isClosing = false
+        if let window {
+            for name in [
+                NSWindow.didChangeOcclusionStateNotification,
+                NSWindow.didMiniaturizeNotification,
+                NSWindow.didDeminiaturizeNotification,
+                NSWindow.didBecomeKeyNotification,
+                NSWindow.didResignKeyNotification,
+                NSWindow.willCloseNotification,
+            ] {
+                observers.append(
+                    notificationCenter.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            guard let self else { return }
+                            if name == NSWindow.willCloseNotification { self.isClosing = true }
+                            if name == NSWindow.didBecomeKeyNotification { self.isClosing = false }
+                            self.scheduleVisibilityUpdate()
+                        }
+                    })
+            }
+            for name in [NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+                observers.append(
+                    notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                        MainActor.assumeIsolated { self?.scheduleVisibilityUpdate() }
+                    })
+            }
+        }
+        scheduleVisibilityUpdate()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        scheduleVisibilityUpdate()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        scheduleVisibilityUpdate()
+    }
+
+    func stopTracking() {
+        isTracking = false
+        visibilityTask?.cancel()
+        visibilityTask = nil
+        for observer in observers { notificationCenter.removeObserver(observer) }
+        observers.removeAll()
+    }
+
+    private func scheduleVisibilityUpdate() {
+        visibilityTask?.cancel()
+        visibilityTask = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self, self.isTracking else { return }
+            let visible =
+                self.window.map {
+                    $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible)
+                        && !self.isApplicationHidden() && !self.isHiddenOrHasHiddenAncestor && !self.isClosing
+                } ?? false
+            guard visible != self.lastVisibility else { return }
+            self.lastVisibility = visible
+            self.onVisibilityChanged(visible)
+        }
+    }
+
+    isolated deinit {
+        stopTracking()
     }
 }
 
