@@ -105,6 +105,20 @@ struct MediaKeyMonitorHandlerTests {
         #expect(commands.calls.last?.context.reason == .shortcut)
     }
 
+    @Test("Away input suppression blocks media-key mutations")
+    func awayInputSuppression() {
+        let commands = RecordingAudioCommandSink()
+        let (monitor, _, _, _) = makeMonitor(
+            audioCommands: commands,
+            withDefaultOutput: true
+        )
+        monitor.isInputSuppressed = { true }
+
+        monitor.handle(.volumeUp(isRepeat: false))
+
+        #expect(commands.calls.isEmpty)
+    }
+
     // MARK: - Volume step arithmetic
 
     @Test("volumeUp on software tier steps in slider domain (x² taper)")

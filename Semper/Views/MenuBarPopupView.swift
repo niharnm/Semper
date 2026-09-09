@@ -38,6 +38,7 @@ struct MenuBarPopupView: View {
     @Bindable var displayService: DisplayControlService
 
     let awakeService: AwakeService
+    @Bindable var awayMode: AwayModeCoordinator
 
     @State private var selectedModule: SemperModule = SemperModule.initial
 
@@ -171,6 +172,12 @@ struct MenuBarPopupView: View {
                 }
                 .scrollIndicators(.never)
                 .frame(maxHeight: popupDimensions.maxContentHeight)
+            case .away:
+                AwayModuleView(
+                    coordinator: awayMode,
+                    onOpenSettings: openAwaySettingsWindow
+                )
+                popupFooter
             }
         }
         .frame(width: popupDimensions.width)
@@ -307,7 +314,10 @@ struct MenuBarPopupView: View {
 
     private var moduleSwitcherBar: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            ModuleSwitcher(selection: $selectedModule, isAwakeActive: awakeService.isActive)
+            ModuleSwitcher(
+                selection: $selectedModule,
+                activeModules: activeModules
+            )
 
             Spacer(minLength: 0)
 
@@ -339,6 +349,17 @@ struct MenuBarPopupView: View {
             return "Awake until \(endsAt.formatted(date: .omitted, time: .shortened))"
         }
         return "Awake until turned off"
+    }
+
+    private var activeModules: Set<SemperModule> {
+        var modules: Set<SemperModule> = []
+        if awakeService.isActive {
+            modules.insert(.awake)
+        }
+        if awayMode.isGuarding {
+            modules.insert(.away)
+        }
+        return modules
     }
 
     private var awakeStatusHintShort: String {
@@ -611,6 +632,11 @@ struct MenuBarPopupView: View {
         NSApp.keyWindow?.resignKey()
         NSApp.activate(ignoringOtherApps: true)
         openSettings()
+    }
+
+    private func openAwaySettingsWindow() {
+        UserDefaults.standard.set("away", forKey: "settings.selectedSection")
+        openSettingsWindow()
     }
 
     @discardableResult

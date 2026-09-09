@@ -3,10 +3,19 @@ import SwiftUI
 import UserNotifications
 import FluidMenuBarExtra
 import AppKit
+import CoreServices
 import Darwin
 import os
 
 private let logger = Logger(subsystem: "systems.semper.Semper", category: "App")
+
+@MainActor
+protocol AwayTerminationHandling: AnyObject {
+    var isGuarding: Bool { get }
+    func requestQuit()
+}
+
+extension AwayModeCoordinator: AwayTerminationHandling {}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -14,6 +23,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var audioCommands: (any AudioCommandDispatching)?
     var sceneCommands: (any SceneCommandHandling)?
     var updateManager: UpdateManager?
+    weak var awayMode: (any AwayTerminationHandling)?
+
+    private let terminateApplication: @MainActor () -> Void
+    private let isSystemTerminationRequest: @MainActor () -> Bool
+    private var permitsAuthenticatedTermination = false
+
+    override init() {
+        terminateApplication = { NSApp.terminate(nil) }
+        isSystemTerminationRequest = Self.currentAppleEventIsSystemTermination
+        super.init()
+    }
+
+    init(
+        terminateApplication: @escaping @MainActor () -> Void,
+        isSystemTerminationRequest: @escaping @MainActor () -> Bool = {
+            AppDelegate.currentAppleEventIsSystemTermination()
+        }
+    ) {
+        self.terminateApplication = terminateApplication
+        self.isSystemTerminationRequest = isSystemTerminationRequest
+        super.init()
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let audioEngine, let audioCommands, let updateManager else {
@@ -23,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             audioEngine: audioEngine,
             audioCommands: audioCommands,
             sceneCommands: sceneCommands,
+            allowsMutations: { [weak self] in self?.awayMode?.isGuarding != true },
             checkForUpdates: updateManager.checkForUpdates
         )
 
@@ -43,11 +75,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if permitsAuthenticatedTermination {
+            permitsAuthenticatedTermination = false
+            return .terminateNow
+        }
+        if isSystemTerminationRequest() {
+            return .terminateNow
+        }
+        guard awayMode?.isGuarding == true else {
+            return .terminateNow
+        }
+        awayMode?.requestQuit()
+        return .terminateCancel
+    }
+
+    func permitTerminationAfterAwayAuthentication() {
+        permitsAuthenticatedTermination = true
+        terminateApplication()
+    }
+
+    private static func currentAppleEventIsSystemTermination() -> Bool {
+        guard let reason = NSAppleEventManager.shared()
+            .currentAppleEvent?
+            .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?
+            .enumCodeValue else {
+            return false
+        }
+        return isSystemTerminationReason(reason)
+    }
+
+    static func isSystemTerminationReason(_ reason: OSType?) -> Bool {
+        guard let reason else { return false }
+        return [kAEQuitAll, kAEShutDown, kAERestart, kAEReallyLogOut].contains(reason)
+    }
 }
 
 @main
 struct SemperApp: App {
     private let instanceLock: AppInstanceLock
+    #if DEBUG
+    private let awayUITestSupport: AwayUITestSupport?
+    #endif
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var audioEngine: AudioEngine
     @State private var audioCommands: AudioCommandDispatcher
@@ -69,6 +139,7 @@ struct SemperApp: App {
     @State private var displayService: DisplayControlService
     @State private var sceneManager: SceneManager
     @State private var sceneShortcutRegistry: SceneShortcutRegistry
+    @State private var awayMode: AwayModeCoordinator
     @StateObject private var updateManager: UpdateManager
     @State private var showMenuBarExtra = true
 
@@ -94,6 +165,7 @@ struct SemperApp: App {
                 shortcutsRegistry: shortcutsRegistry,
                 sceneManager: sceneManager,
                 sceneShortcutRegistry: sceneShortcutRegistry,
+                awayMode: awayMode,
                 updateManager: updateManager
             )
         }
@@ -124,7 +196,8 @@ struct SemperApp: App {
             experimentManager: experimentManager,
             sceneManager: sceneManager,
             displayService: displayService,
-            awakeService: awakeService
+            awakeService: awakeService,
+            awayMode: awayMode
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
@@ -135,8 +208,31 @@ struct SemperApp: App {
     }
 
     init() {
+        #if DEBUG
+        let uiTestSupport = AwayUITestSupport.current()
+        awayUITestSupport = uiTestSupport
+        let isXCTestHost = uiTestSupport == nil
+            && (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+                || NSClassFromString("XCTestCase") != nil)
+        let testHostDirectory = isXCTestHost
+            ? FileManager.default.temporaryDirectory.appendingPathComponent(
+                "Semper-XCTestHost-\(ProcessInfo.processInfo.processIdentifier)",
+                isDirectory: true
+            )
+            : nil
+        #endif
+
         do {
-            switch try AppInstanceLock.acquire() {
+            #if DEBUG
+            let lockAcquisition = try uiTestSupport.map {
+                try AppInstanceLock.acquire(in: $0.settingsDirectory)
+            } ?? testHostDirectory.map {
+                try AppInstanceLock.acquire(in: $0)
+            } ?? AppInstanceLock.acquire()
+            #else
+            let lockAcquisition = try AppInstanceLock.acquire()
+            #endif
+            switch lockAcquisition {
             case .acquired(let instanceLock):
                 self.instanceLock = instanceLock
             case .alreadyRunning:
@@ -152,15 +248,37 @@ struct SemperApp: App {
         }
 
         // Install crash handler to clean up aggregate devices on abnormal exit
+        #if DEBUG
+        if !isXCTestHost {
+            CrashGuard.install()
+        }
+        #else
         CrashGuard.install()
+        #endif
         // Destroy any orphaned aggregate devices from previous crashes
+        #if DEBUG
+        let startupCleanup = uiTestSupport == nil && !isXCTestHost
+            ? OrphanedTapCleanup.destroyOrphanedDevices()
+            : OrphanedTapCleanupResult.empty
+        let settings = uiTestSupport.map {
+            SettingsManager(directory: $0.settingsDirectory)
+        } ?? testHostDirectory.map {
+            SettingsManager(directory: $0)
+        } ?? SettingsManager(managesLaunchAtLogin: true)
+        uiTestSupport?.prepare(settings)
+        #else
         let startupCleanup = OrphanedTapCleanup.destroyOrphanedDevices()
-
         let settings = SettingsManager(managesLaunchAtLogin: true)
+        #endif
         let updater = UpdateManager()
         _updateManager = StateObject(wrappedValue: updater)
         _experimentManager = State(initialValue: ExperimentManager())
+        #if DEBUG
+        let awake = uiTestSupport?.awakeService
+            ?? AwakeService(backend: IOPMPowerAssertionBackend())
+        #else
         let awake = AwakeService(backend: IOPMPowerAssertionBackend())
+        #endif
         _awakeService = State(initialValue: awake)
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
@@ -168,7 +286,14 @@ struct SemperApp: App {
             permission: permission,
             settingsManager: settings,
             autoEQProfileManager: profileManager,
-            initialCleanupResult: startupCleanup
+            initialCleanupResult: startupCleanup,
+            startMonitorsAutomatically: {
+                #if DEBUG
+                uiTestSupport == nil && !isXCTestHost
+                #else
+                true
+                #endif
+            }()
         )
         _audioEngine = State(initialValue: engine)
         let activityStore = AudioActivityStore()
@@ -190,6 +315,23 @@ struct SemperApp: App {
         let displayService = DisplayControlService()
         #endif
         let mutationAdmission = MutationAdmissionGate()
+        #if DEBUG
+        let away = uiTestSupport?.makeCoordinator(
+            settings: settings,
+            mutationAdmission: mutationAdmission
+        ) ?? AwayModeCoordinator(
+            settings: settings,
+            awakeService: awake,
+            mutationAdmission: mutationAdmission
+        )
+        #else
+        let away = AwayModeCoordinator(
+            settings: settings,
+            awakeService: awake,
+            mutationAdmission: mutationAdmission
+        )
+        #endif
+        _awayMode = State(initialValue: away)
         let sceneManager = SceneManager(
             engine: engine,
             commands: commandDispatcher,
@@ -199,7 +341,8 @@ struct SemperApp: App {
         )
         let sceneShortcutRegistry = SceneShortcutRegistry(
             settings: settings,
-            sceneManager: sceneManager
+            sceneManager: sceneManager,
+            allowsShortcuts: { [weak away] in away?.blocksOrdinaryShortcuts != true }
         )
         sceneManager.onScenesChanged = { [weak sceneShortcutRegistry] in
             sceneShortcutRegistry?.sync()
@@ -236,7 +379,8 @@ struct SemperApp: App {
             AppShortcutController(
                 engine: engine,
                 commands: commandDispatcher,
-                callMode: callMode
+                callMode: callMode,
+                allowsMutations: { [weak away] in away?.isGuarding != true }
             )
         )
         let bluetoothHDGuard = BluetoothHDGuardCoordinator(
@@ -340,7 +484,13 @@ struct SemperApp: App {
         )
         monitor.iconCoordinator = coordinator
         // Defer start() so NSApplication.shared is fully bootstrapped before we walk NSApp.windows.
+        #if DEBUG
+        if uiTestSupport == nil {
+            DispatchQueue.main.async { [coordinator] in coordinator.start() }
+        }
+        #else
         DispatchQueue.main.async { [coordinator] in coordinator.start() }
+        #endif
         _iconCoordinator = State(initialValue: coordinator)
 
         // Render the scene's first frame with the user's chosen style instead of a generic
@@ -371,8 +521,15 @@ struct SemperApp: App {
         accessibilityService.onTrustChanged = { [weak monitor] _ in
             monitor?.reconcile()
         }
+        #if DEBUG
+        if uiTestSupport == nil {
+            accessibilityService.start()
+            monitor.reconcile()
+        }
+        #else
         accessibilityService.start()
         monitor.reconcile()
+        #endif
 
         // Global hotkeys (KeyboardShortcuts SPM, Carbon-backed; no Accessibility
         // permission required for the hotkey itself). Registry start() is deferred
@@ -388,18 +545,64 @@ struct SemperApp: App {
                 )
             }
         )
+        #if DEBUG
+        if uiTestSupport == nil {
+            resolver.start()
+        }
+        #else
         resolver.start()
+        #endif
         let registry = ShortcutsRegistry(
             settings: settings,
             popupController: popupController,
             resolver: resolver,
             audioEngine: engine,
             audioCommands: commandDispatcher,
-            hud: hud
+            hud: hud,
+            awayHandler: away
         )
         registry.onShortcutsChanged = { [weak sceneShortcutRegistry] in
             sceneShortcutRegistry?.sync()
         }
+
+        popupController.isPresentationAllowed = { [weak away] in
+            away?.isGuarding != true
+        }
+        hud.isSuppressed = { [weak away] in
+            away?.isGuarding == true
+        }
+        monitor.isInputSuppressed = { [weak away] in
+            away?.isGuarding == true
+        }
+        updater.shouldDeferRelaunch = { [weak away] in
+            away?.isGuarding == true
+        }
+        away.onWillGuard = { [weak popupController, weak hud] in
+            popupController?.dismiss()
+            hud?.hide()
+        }
+        away.onDidDisarm = { [weak updater] in
+            updater?.resumeDeferredInstallation()
+        }
+        away.makeCurtainContent = { [weak away] screen, isPrimary in
+            guard let away else {
+                throw AwayWindowFailure.contentCreationFailed
+            }
+            return NSHostingView(
+                rootView: AwayCurtainView(
+                    coordinator: away,
+                    screen: screen,
+                    isPrimary: isPrimary
+                )
+            )
+        }
+        #if DEBUG
+        if let uiTestSupport {
+            DispatchQueue.main.async { [uiTestSupport, away] in
+                uiTestSupport.showHostWindow(coordinator: away)
+            }
+        }
+        #endif
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
@@ -409,6 +612,10 @@ struct SemperApp: App {
         _appDelegate.wrappedValue.audioCommands = commandDispatcher
         _appDelegate.wrappedValue.sceneCommands = sceneManager
         _appDelegate.wrappedValue.updateManager = updater
+        _appDelegate.wrappedValue.awayMode = away
+        away.onAuthenticatedQuit = { [weak delegate = _appDelegate.wrappedValue] in
+            delegate?.permitTerminationAfterAwayAuthentication()
+        }
 
         // DeviceVolumeMonitor is now created and started inside AudioEngine
         // This ensures proper initialization order: deviceMonitor.start() -> deviceVolumeMonitor.start()
@@ -417,11 +624,20 @@ struct SemperApp: App {
         UNUserNotificationCenter.current().delegate = _appDelegate.wrappedValue
 
         // Request notification authorization (for device disconnect alerts)
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { granted, error in
-            if let error {
-                logger.error("Notification authorization error: \(error.localizedDescription)")
+        #if DEBUG
+        if uiTestSupport == nil && !isXCTestHost {
+            requestNotificationAuthorization()
+        }
+        #else
+        requestNotificationAuthorization()
+        #endif
+
+        func requestNotificationAuthorization() {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, error in
+                if let error {
+                    logger.error("Notification authorization error: \(error.localizedDescription)")
+                }
             }
-            // If not granted, notifications will silently not appear - acceptable behavior
         }
 
         // Flush debounced settings + tear down the CGEventTap before dealloc.
@@ -429,8 +645,9 @@ struct SemperApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake] _ in
+        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake, away] _ in
             MainActor.assumeIsolated {
+                away.shutdown()
                 coordinator.stop()
                 monitor.stop()
                 accessibilityService.stop()
@@ -440,6 +657,9 @@ struct SemperApp: App {
                 awake.shutdown()
                 engine.shutdown()
                 settings.flushSync()
+                #if DEBUG
+                uiTestSupport?.cleanUp()
+                #endif
             }
         }
     }

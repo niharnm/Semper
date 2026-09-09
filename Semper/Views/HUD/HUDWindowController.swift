@@ -28,6 +28,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     var frameProvider: () -> NSRect? = { NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame }
     private(set) var showCallCount: Int = 0
     private(set) var showDidUpdatePanel: Bool = false
+    var isSuppressed: () -> Bool = { false }
 
     init(
         settingsManager: SettingsManager,
@@ -74,7 +75,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         showCallCount += 1
         showDidUpdatePanel = false
 
-        guard !popupVisibility.isVisible else {
+        guard !popupVisibility.isVisible, !isSuppressed() else {
             logger.debug("Skipping HUD show: popup is visible")
             return
         }
@@ -181,7 +182,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         showCallCount += 1
         showDidUpdatePanel = false
 
-        guard !popupVisibility.isVisible else {
+        guard !popupVisibility.isVisible, !isSuppressed() else {
             logger.debug("Skipping per-app HUD: popup is visible")
             return
         }

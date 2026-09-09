@@ -187,6 +187,10 @@ final class AwakeService {
         leaseStates[owner] != nil
     }
 
+    func pendingCleanupToken(for owner: AwakeLeaseOwner) -> AwakeLeaseToken? {
+        pendingLeaseReleaseIDsByToken.keys.first { $0.owner == owner }
+    }
+
     func acquireLease(
         owner: AwakeLeaseOwner,
         keepsDisplayAwake: Bool
@@ -202,6 +206,7 @@ final class AwakeService {
             return existing.token
         }
 
+        let token = AwakeLeaseToken(owner: owner, generation: UUID())
         let acquired: OwnedAssertions
         switch acquireAssertions(
             keepDisplayAwake: keepsDisplayAwake,
@@ -209,7 +214,7 @@ final class AwakeService {
             systemReason: owner.systemReason,
             displayReason: owner.displayReason,
             trackLeaseCleanup: true,
-            leaseToken: nil
+            leaseToken: token
         ) {
         case .success(let assertions):
             acquired = assertions
@@ -218,7 +223,6 @@ final class AwakeService {
             throw .couldNotAcquire
         }
 
-        let token = AwakeLeaseToken(owner: owner, generation: UUID())
         let state = AwakeLeaseState(owner: owner, keepsDisplayAwake: keepsDisplayAwake)
         leases[owner] = LeaseRecord(token: token, state: state, assertions: acquired)
         leaseStates[owner] = state
@@ -270,23 +274,27 @@ final class AwakeService {
 
     @discardableResult
     func releaseLease(_ token: AwakeLeaseToken) -> Bool {
-        guard let existing = leases[token.owner], existing.token == token else {
+        guard !didShutDown else {
             return pendingLeaseReleaseIDsByToken[token] == nil
         }
+        guard let existing = leases[token.owner], existing.token == token else {
+            return retryPendingLeaseRelease(for: token)
+        }
 
+        let hadPendingCleanup = pendingLeaseReleaseIDsByToken[token] != nil
         leases[token.owner] = nil
         leaseStates[token.owner] = nil
         guard releaseLeaseAssertions(existing.assertions, for: token) else {
             failure = .couldNotRelease
             return false
         }
-        guard pendingLeaseReleaseIDsByToken[token] == nil else {
+        guard !hadPendingCleanup || retryPendingLeaseRelease(for: token) else {
             failure = .couldNotRelease
             return false
         }
-        if failure != .couldNotRelease {
-            failure = nil
-        }
+        failure = pendingSessionReleaseIDs.isEmpty && pendingLeaseReleaseIDs.isEmpty
+            ? nil
+            : .couldNotRelease
         return true
     }
 
@@ -538,6 +546,27 @@ final class AwakeService {
         if let token {
             pendingLeaseReleaseIDsByToken[token, default: []].formUnion(ids)
         }
+    }
+
+    private func retryPendingLeaseRelease(for token: AwakeLeaseToken) -> Bool {
+        guard let pendingIDs = pendingLeaseReleaseIDsByToken[token] else {
+            return true
+        }
+
+        let failedIDs = releaseAssertionIDs(pendingIDs.sorted())
+        pendingLeaseReleaseIDs.subtract(pendingIDs)
+        pendingLeaseReleaseIDs.formUnion(failedIDs)
+        pendingLeaseReleaseIDsByToken[token] = failedIDs.isEmpty ? nil : failedIDs
+
+        if failedIDs.isEmpty {
+            if pendingSessionReleaseIDs.isEmpty, pendingLeaseReleaseIDs.isEmpty {
+                failure = nil
+            }
+            return true
+        }
+
+        failure = .couldNotRelease
+        return false
     }
 
     private func retryPendingReleasesAtShutdown() {

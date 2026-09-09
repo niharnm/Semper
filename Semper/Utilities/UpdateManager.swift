@@ -39,6 +39,24 @@ struct AutomaticUpdateState {
     }
 }
 
+final class UpdateInstallationDeferral {
+    var shouldDefer: () -> Bool = { false }
+
+    private var installHandlers: [() -> Void] = []
+
+    func postpone(_ installHandler: @escaping () -> Void) -> Bool {
+        guard shouldDefer() else { return false }
+        installHandlers.append(installHandler)
+        return true
+    }
+
+    func resume() {
+        let handlers = installHandlers
+        installHandlers.removeAll()
+        handlers.forEach { $0() }
+    }
+}
+
 enum UpdateChannel: String, CaseIterable, Identifiable {
     case stable
     case canary
@@ -91,6 +109,12 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
             }
         }
     }
+    var shouldDeferRelaunch: () -> Bool {
+        get { installationDeferral.shouldDefer }
+        set { installationDeferral.shouldDefer = newValue }
+    }
+
+    private let installationDeferral = UpdateInstallationDeferral()
 
     override convenience init() {
         self.init(bundle: .main, userDefaults: .standard)
@@ -143,6 +167,18 @@ final class UpdateManager: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     func allowedChannels(for updater: SPUUpdater) -> Set<String> {
         updateChannel.allowedSparkleChannels
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+        untilInvokingBlock installHandler: @escaping () -> Void
+    ) -> Bool {
+        installationDeferral.postpone(installHandler)
+    }
+
+    func resumeDeferredInstallation() {
+        installationDeferral.resume()
     }
 
     func checkForUpdates() {

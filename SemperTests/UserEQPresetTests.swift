@@ -663,7 +663,7 @@ struct SettingsVersionTests {
     @Test("Default Settings().version is current")
     func defaultVersion() {
         let settings = SettingsManager.Settings()
-        #expect(settings.version == 17)
+        #expect(settings.version == 18)
     }
 
     @Test("userEQPresets defaults to empty array in Settings()")

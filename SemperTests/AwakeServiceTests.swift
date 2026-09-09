@@ -612,6 +612,37 @@ struct AwakeServiceTests {
         #expect(backend.releaseCount(for: 2) == 1)
     }
 
+    @Test("A failed initial lease rollback remains owner scoped and can be retried")
+    func failedInitialLeaseRollbackCleanup() throws {
+        let (service, backend, _, _) = makeService()
+        service.start(.oneHour)
+        backend.failingKinds = [.preventIdleDisplaySleep]
+        backend.failingReleaseIDs = [2]
+
+        #expect(throws: AwakeLeaseError.couldNotAcquire) {
+            try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
+        }
+
+        let cleanupToken = try #require(service.pendingCleanupToken(for: .awayMode))
+        #expect(service.pendingCleanupToken(for: .scene) == nil)
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.leaseState(for: .awayMode) == nil)
+        #expect(service.isActive)
+        #expect(backend.activeAssertionIDs == [1, 2])
+
+        #expect(!service.releaseLease(cleanupToken))
+        #expect(backend.releaseCount(for: 2) == 2)
+
+        backend.failingReleaseIDs = []
+        #expect(service.releaseLease(cleanupToken))
+        #expect(service.pendingCleanupToken(for: .awayMode) == nil)
+        #expect(service.failure == nil)
+        #expect(service.isActive)
+        #expect(backend.activeAssertionIDs == [1])
+        #expect(service.releaseLease(cleanupToken))
+        #expect(backend.releaseCount(for: 2) == 3)
+    }
+
     @Test("Lease release reports a backend failure and retains cleanup state")
     func leaseReleaseFailure() throws {
         let (service, backend, _, _) = makeService()
@@ -625,7 +656,7 @@ struct AwakeServiceTests {
         #expect(backend.activeAssertionIDs == [1])
 
         #expect(!service.releaseLease(lease))
-        #expect(backend.releaseCount(for: 1) == 1)
+        #expect(backend.releaseCount(for: 1) == 2)
         #expect(throws: AwakeLeaseError.serviceUnavailable) {
             try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
         }
@@ -640,14 +671,13 @@ struct AwakeServiceTests {
         #expect(!service.releaseLease(lease))
         #expect(backend.releaseCount(for: 1) == 1)
         #expect(backend.releaseCount(for: 2) == 1)
-        let eventsAfterRelease = backend.events
         #expect(!service.releaseLease(lease))
-        #expect(backend.events == eventsAfterRelease)
+        #expect(backend.releaseCount(for: 2) == 2)
 
         backend.failingReleaseIDs = []
         service.shutdown()
         #expect(backend.releaseCount(for: 1) == 1)
-        #expect(backend.releaseCount(for: 2) == 2)
+        #expect(backend.releaseCount(for: 2) == 3)
         #expect(backend.activeAssertionIDs.isEmpty)
         #expect(service.releaseLease(lease))
 
