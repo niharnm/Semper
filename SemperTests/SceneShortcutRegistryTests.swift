@@ -118,6 +118,22 @@ struct SceneShortcutRegistryTests {
         registry.clearAllShortcuts()
     }
 
+    @Test("A scene shortcut reports application failures")
+    func reportsApplyFailure() async {
+        let settings = makeSettings()
+        let scene = makeScene(
+            name: "Studio",
+            shortcut: SceneShortcut(keyCode: 23, modifiers: 768)
+        )
+        let manager = SceneShortcutManagerStub(scenes: [scene])
+        manager.applyError = SceneManagerError.mutationsBlocked
+        let registry = SceneShortcutRegistry(settings: settings, sceneManager: manager)
+
+        await registry.performShortcut(for: scene.id)
+
+        #expect(manager.reportedFailure == SceneManagerError.mutationsBlocked.localizedDescription)
+    }
+
     private func makeSettings() -> SettingsManager {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SemperSceneShortcutTests-\(UUID().uuidString)")
@@ -153,12 +169,21 @@ struct SceneShortcutRegistryTests {
 @MainActor
 private final class SceneShortcutManagerStub: SceneShortcutManaging {
     var scenes: [SemperScene]
+    var applyError: (any Error)?
+    private(set) var reportedFailure: String?
 
     init(scenes: [SemperScene]) {
         self.scenes = scenes
     }
 
-    func apply(scene: SemperScene) {}
+    func applyScene(id: UUID) async throws -> SceneCommandExecution {
+        if let applyError { throw applyError }
+        return SceneCommandExecution(message: "Applied")
+    }
+
+    func reportSceneCommandFailure(_ message: String) {
+        reportedFailure = message
+    }
 
     func setShortcut(_ shortcut: SceneShortcut?, for sceneID: UUID) throws {
         guard let index = scenes.firstIndex(where: { $0.id == sceneID }) else {

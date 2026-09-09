@@ -35,7 +35,6 @@ struct MenuBarPopupView: View {
     let mediaKeyMonitor: MediaKeyMonitor
     let experimentManager: ExperimentManager
     @Bindable var sceneManager: SceneManager
-    @Bindable var awakeController: AwakeController
     @Bindable var displayService: DisplayControlService
 
     let awakeService: AwakeService

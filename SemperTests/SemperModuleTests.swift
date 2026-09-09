@@ -7,18 +7,20 @@ struct SemperModuleTests {
 
     @Test("Raw identifiers are stable")
     func stableIdentifiers() {
+        #expect(SemperModule.home.id == "home")
         #expect(SemperModule.sound.id == "sound")
         #expect(SemperModule.awake.id == "awake")
+        #expect(SemperModule.displays.id == "displays")
     }
 
-    @Test("Module order lists Sound first")
+    @Test("Module order starts with Home")
     func moduleOrder() {
-        #expect(SemperModule.allCases == [.sound, .awake])
+        #expect(SemperModule.allCases == [.home, .sound, .awake, .displays])
     }
 
-    @Test("The popup opens on Sound")
+    @Test("The popup opens on Home")
     func initialModule() {
-        #expect(SemperModule.initial == .sound)
+        #expect(SemperModule.initial == .home)
     }
 
     @Test("Every module has a name and symbol")

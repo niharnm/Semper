@@ -66,7 +66,6 @@ struct SemperApp: App {
     @State private var resolver: TargetAppResolver
     @State private var experimentManager: ExperimentManager
     @State private var awakeService: AwakeService
-    @State private var awakeController: AwakeController
     @State private var displayService: DisplayControlService
     @State private var sceneManager: SceneManager
     @State private var sceneShortcutRegistry: SceneShortcutRegistry
@@ -123,10 +122,9 @@ struct SemperApp: App {
             hudController: hudController,
             mediaKeyMonitor: mediaKeyMonitor,
             experimentManager: experimentManager,
-            awakeService: awakeService,
             sceneManager: sceneManager,
-            awakeController: awakeController,
-            displayService: displayService
+            displayService: displayService,
+            awakeService: awakeService
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
@@ -186,17 +184,18 @@ struct SemperApp: App {
         }
         _audioCommands = State(initialValue: commandDispatcher)
         _audioActivityStore = State(initialValue: activityStore)
-        let awakeController = AwakeController()
         #if !APP_STORE
         let displayService = DisplayControlService(ddcController: engine.ddcController)
         #else
         let displayService = DisplayControlService()
         #endif
+        let mutationAdmission = MutationAdmissionGate()
         let sceneManager = SceneManager(
             engine: engine,
             commands: commandDispatcher,
-            awake: awakeController,
-            displays: displayService
+            awake: awake,
+            displays: displayService,
+            mutationAdmission: mutationAdmission
         )
         let sceneShortcutRegistry = SceneShortcutRegistry(
             settings: settings,
@@ -205,7 +204,6 @@ struct SemperApp: App {
         sceneManager.onScenesChanged = { [weak sceneShortcutRegistry] in
             sceneShortcutRegistry?.sync()
         }
-        _awakeController = State(initialValue: awakeController)
         _displayService = State(initialValue: displayService)
         _sceneManager = State(initialValue: sceneManager)
         _sceneShortcutRegistry = State(initialValue: sceneShortcutRegistry)
@@ -431,7 +429,7 @@ struct SemperApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake, awakeController] _ in
+        ) { [settings, engine, callMode, bluetoothHDGuard, monitor, accessibilityService, hud, coordinator, awake] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
@@ -439,7 +437,6 @@ struct SemperApp: App {
                 hud.shutdown()
                 callMode.shutdown()
                 bluetoothHDGuard.shutdown()
-                awakeController.stop()
                 awake.shutdown()
                 engine.shutdown()
                 settings.flushSync()

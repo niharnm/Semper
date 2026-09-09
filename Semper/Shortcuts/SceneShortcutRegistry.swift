@@ -4,7 +4,8 @@ import KeyboardShortcuts
 @MainActor
 protocol SceneShortcutManaging: AnyObject {
     var scenes: [SemperScene] { get }
-    func apply(scene: SemperScene)
+    func applyScene(id: UUID) async throws -> SceneCommandExecution
+    func reportSceneCommandFailure(_ message: String)
     func setShortcut(_ shortcut: SceneShortcut?, for sceneID: UUID) throws
 }
 
@@ -83,16 +84,20 @@ final class SceneShortcutRegistry {
             if didStart {
                 KeyboardShortcuts.onKeyDown(for: sceneName) { [weak self] in
                     Task { @MainActor [weak self] in
-                        guard let self,
-                              let current = self.sceneManager.scenes.first(where: { $0.id == scene.id }) else {
-                            return
-                        }
-                        self.sceneManager.apply(scene: current)
+                        await self?.performShortcut(for: scene.id)
                     }
                 }
             }
         }
         registeredSceneIDs = currentIDs
+    }
+
+    func performShortcut(for sceneID: UUID) async {
+        do {
+            _ = try await sceneManager.applyScene(id: sceneID)
+        } catch {
+            sceneManager.reportSceneCommandFailure(error.localizedDescription)
+        }
     }
 
     func recordCallback(

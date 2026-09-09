@@ -300,9 +300,11 @@ final class DisplaySceneAdapter: SceneControlAdapting {
 
 @MainActor
 final class PowerSceneAdapter: SceneControlAdapting {
-    private let awake: AwakeController
+    private let awake: AwakeService
+    private var sceneLease: AwakeLeaseToken?
+    private var readFailed = false
 
-    init(awake: AwakeController) {
+    init(awake: AwakeService) {
         self.awake = awake
     }
 
@@ -319,26 +321,59 @@ final class PowerSceneAdapter: SceneControlAdapting {
 
     func readValue(for control: SceneControl) async throws -> SceneValue {
         guard control == .awakeMode else { throw SceneAdapterError.unsupportedControl }
-        let state: SceneAwakeState
-        switch awake.activeMode {
-        case .system: state = .system
-        case .displayAndSystem: state = .displayAndSystem
-        case nil: state = .off
+        guard !readFailed else { throw SceneAdapterError.readUnavailable }
+        guard let lease = awake.leaseState(for: .scene) else {
+            return .awake(.off)
         }
-        return .awake(state)
+        return .awake(lease.keepsDisplayAwake ? .displayAndSystem : .system)
     }
 
     func writeValue(_ value: SceneValue, for control: SceneControl) async throws {
         guard control == .awakeMode, case .awake(let state) = value else {
             throw SceneAdapterError.invalidValue
         }
+        guard !readFailed else { throw SceneAdapterError.writeRejected }
+
         switch state {
         case .off:
-            awake.stop()
+            guard let sceneLease else { return }
+            self.sceneLease = nil
+            guard awake.releaseLease(sceneLease) else {
+                readFailed = true
+                throw SceneAdapterError.writeRejected
+            }
         case .system:
-            guard awake.apply(.system) != .failed else { throw SceneAdapterError.writeRejected }
+            try setLease(keepsDisplayAwake: false)
         case .displayAndSystem:
-            guard awake.apply(.displayAndSystem) != .failed else { throw SceneAdapterError.writeRejected }
+            try setLease(keepsDisplayAwake: true)
+        }
+    }
+
+    private func setLease(keepsDisplayAwake: Bool) throws {
+        do {
+            if let sceneLease {
+                try awake.updateLease(sceneLease, keepsDisplayAwake: keepsDisplayAwake)
+            } else {
+                sceneLease = try awake.acquireLease(
+                    owner: .scene,
+                    keepsDisplayAwake: keepsDisplayAwake
+                )
+            }
+        } catch let error {
+            if awake.leaseState(for: .scene) == nil {
+                sceneLease = nil
+            }
+            if awake.failure == .couldNotRelease {
+                readFailed = true
+            }
+            throw map(error)
+        }
+    }
+
+    private func map(_ error: AwakeLeaseError) -> SceneAdapterError {
+        switch error {
+        case .serviceUnavailable, .invalidToken, .couldNotAcquire, .couldNotReplace:
+            .writeRejected
         }
     }
 }

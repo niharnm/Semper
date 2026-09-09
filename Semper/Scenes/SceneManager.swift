@@ -8,6 +8,7 @@ nonisolated enum SceneManagerError: LocalizedError, Equatable, Sendable {
     case libraryUnreadable(String)
     case duplicateName(String)
     case operationInProgress
+    case mutationsBlocked
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ nonisolated enum SceneManagerError: LocalizedError, Equatable, Sendable {
             "A scene named \(name) already exists. Confirm replacement to update it."
         case .operationInProgress:
             "Another scene operation is still running."
+        case .mutationsBlocked:
+            "End Away Mode before changing a scene."
         }
     }
 }
@@ -40,20 +43,22 @@ final class SceneManager: SceneCommandHandling {
 
     private let engine: AudioEngine
     private let commands: any AudioCommandDispatching
-    private let awake: AwakeController
+    private let awake: AwakeService
     private let displays: DisplayControlService
     private let libraryStore: any SceneLibraryStoring
     private let coordinator: SceneCoordinator
+    private let mutationAdmission: MutationAdmissionGate
     private var preparationTask: Task<Void, Never>?
     private let libraryLoadFailure: String?
 
     init(
         engine: AudioEngine,
         commands: any AudioCommandDispatching,
-        awake: AwakeController,
+        awake: AwakeService,
         displays: DisplayControlService,
         libraryStore: (any SceneLibraryStoring)? = nil,
-        journalStore: (any SceneJournalStoring)? = nil
+        journalStore: (any SceneJournalStoring)? = nil,
+        mutationAdmission: MutationAdmissionGate
     ) {
         let directory = SceneStorageLocation.defaultDirectory
         let resolvedLibraryStore = libraryStore ?? FileSceneLibraryStore(directory: directory)
@@ -72,6 +77,7 @@ final class SceneManager: SceneCommandHandling {
         self.awake = awake
         self.displays = displays
         self.libraryStore = resolvedLibraryStore
+        self.mutationAdmission = mutationAdmission
         self.scenes = loadedScenes
         self.libraryLoadFailure = libraryLoadFailure
         self.coordinator = SceneCoordinator(
@@ -129,6 +135,8 @@ final class SceneManager: SceneCommandHandling {
         guard !isBusy else { return }
         Task { @MainActor [weak self] in
             guard let self, !isBusy else { return }
+            guard let permit = acquireSceneMutationPermit() else { return }
+            defer { mutationAdmission.release(permit) }
             isBusy = true
             defer { isBusy = false }
 
@@ -139,33 +147,6 @@ final class SceneManager: SceneCommandHandling {
             } catch {
                 await refreshPendingState()
                 statusMessage = "The restore point could not be removed: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    func setAwakeMode(_ mode: AwakeMode?) {
-        guard !isBusy else { return }
-        Task { @MainActor [weak self] in
-            guard let self, !isBusy else { return }
-            isBusy = true
-            defer { isBusy = false }
-
-            do {
-                let reservation = try await coordinator.beginUserOverride(for: .awakeMode)
-                if let mode {
-                    guard awake.apply(mode) != .failed else {
-                        hasPendingRestore = try await coordinator.cancelUserOverride(reservation)
-                        statusMessage = "Awake mode could not be changed."
-                        return
-                    }
-                } else {
-                    awake.stop()
-                }
-                hasPendingRestore = try await coordinator.commitUserOverride(reservation)
-                statusMessage = mode == nil ? "Awake turned off." : "Awake mode changed."
-            } catch {
-                await refreshPendingState()
-                statusMessage = "Awake mode could not be changed: \(error.localizedDescription)"
             }
         }
     }
@@ -271,6 +252,10 @@ final class SceneManager: SceneCommandHandling {
         guard let scene = scenes.first(where: { $0.id == id }) else {
             throw SceneManagerError.sceneNotFound(id)
         }
+        guard let permit = acquireSceneMutationPermit() else {
+            throw SceneManagerError.mutationsBlocked
+        }
+        defer { mutationAdmission.release(permit) }
 
         isBusy = true
         defer { isBusy = false }
@@ -309,6 +294,10 @@ final class SceneManager: SceneCommandHandling {
 
     func restoreScene() async throws -> SceneCommandExecution {
         guard !isBusy else { throw SceneRestoreError.operationInProgress }
+        guard let permit = acquireSceneMutationPermit() else {
+            throw SceneManagerError.mutationsBlocked
+        }
+        defer { mutationAdmission.release(permit) }
         isBusy = true
         defer { isBusy = false }
         await prepare()
@@ -390,15 +379,25 @@ final class SceneManager: SceneCommandHandling {
     }
 
     private var currentAwakeState: SceneAwakeState {
-        switch awake.activeMode {
-        case .system: .system
-        case .displayAndSystem: .displayAndSystem
-        case nil: .off
-        }
+        guard let lease = awake.leaseState(for: .scene) else { return .off }
+        return lease.keepsDisplayAwake ? .displayAndSystem : .system
     }
 
     private func persistScenes() throws {
         try libraryStore.saveScenes(scenes)
+    }
+
+    func reportSceneCommandFailure(_ message: String) {
+        statusMessage = message
+    }
+
+    private func acquireSceneMutationPermit() -> MutationAdmissionPermit? {
+        do {
+            return try mutationAdmission.acquire(owner: .scene, mode: .shared)
+        } catch {
+            statusMessage = SceneManagerError.mutationsBlocked.localizedDescription
+            return nil
+        }
     }
 
     private func refreshPendingState() async {

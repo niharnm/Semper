@@ -52,8 +52,8 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
-- **Modular Menu Bar Shell**: Sound and Awake share one compact switcher while keeping their runtime state independent.
-- **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and are released when the session ends or Semper quits.
+- **Modular Menu Bar Shell**: Home, Sound, Awake, and External Displays share one menu bar switcher while keeping their runtime state independent.
+- **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Swift 6 & Core Audio TCC Taps**: Built using modern Swift 6 strict concurrency (`@MainActor`, `Sendable`) and low-latency CoreAudio process taps.
 - **ISO 226 Equal-Loudness Compensation**: Dynamic frequency contour adjustment matching human psychoacoustics at varying volume levels.
 - **Capability-Aware Audio Routing**: Per-application routing to independent output devices (e.g. video calls to AirPods, music to desktop monitors) with automatic hardware capability detection.

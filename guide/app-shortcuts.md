@@ -34,3 +34,5 @@ continue to use the same audio command dispatcher.
 Scene actions use the scene identifier stored by Semper. A scene can include
 Awake, audio output, volume, mute, and supported external display settings.
 Restore leaves a setting alone if it changed after the scene was applied.
+Scene Awake actions own a separate sleep-prevention request. Turning Awake off
+through a scene does not stop a timed Awake session or another utility's request.
