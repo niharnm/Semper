@@ -664,13 +664,14 @@ final class UtilityRuntime {
                 UtilityActionHandler(
                     descriptor: .init(
                         id: .init(rawValue: command.rawValue), module: .storage,
-                        title: "Open \(SafeEjectModule.descriptor.name)", keywords: ["eject", "storage", "volumes"],
+                        title: command.title, keywords: ["eject", "storage", "volumes"],
                         symbolName: SafeEjectModule.descriptor.symbol),
                     disabledReason: { nil },
                     perform: { [weak self] in
                         guard let self else { throw CancellationError() }
                         try await self.start(.storage)
-                        SafeEjectModule.handle(command) {
+                        guard let storage = self.storage else { throw CancellationError() }
+                        try SafeEjectModule.handle(command, service: storage) {
                             self.destination = .module(.storage)
                             self.onOpenDetail?()
                         }

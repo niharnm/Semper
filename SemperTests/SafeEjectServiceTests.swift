@@ -1008,11 +1008,12 @@ struct SafeEjectServiceTests {
     }
 
     @Test("Global storage action only opens the detail surface")
-    func commandContract() {
+    func commandContract() throws {
+        let service = SafeEjectService(backend: SafeEjectTestBackend())
         var didOpen = false
-        SafeEjectModule.handle(.open) { didOpen = true }
+        try SafeEjectModule.handle(.open, service: service) { didOpen = true }
         #expect(didOpen)
-        #expect(SafeEjectModule.descriptor.commands == [.open])
+        #expect(SafeEjectModule.descriptor.commands == [.open, .ejectAllEligible])
         #expect(SafeEjectModule.descriptor.permissions.isEmpty)
     }
 

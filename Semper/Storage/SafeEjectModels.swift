@@ -71,17 +71,26 @@ enum SafeEjectFailure: Error, Equatable, Sendable {
     case timedOut
     case topologyTimedOut
     case cleanupPending
+    case invalidConfirmation
+    case batchLimitExceeded
+    case noEligibleVolumes
     case stillMounted
     case deviceStillPresent
     case system(Int32)
 
     var message: String {
         switch self {
+        case .invalidConfirmation:
+            "This confirmation is no longer current. Review eligible volumes again."
+        case .batchLimitExceeded:
+            "Batch review supports up to 128 external volumes. Use individual eject for this inventory."
+        case .noEligibleVolumes:
+            "No volumes in this confirmation can be ejected individually. Review the excluded volumes."
         case .cleanupPending:
             "Storage checks have not finished cleaning up. Keep Safe Eject open and retry cleanup before restarting."
         case .paused: "Safe Eject is paused. Start it to refresh mounted volumes."
         case .sleeping: "Safe Eject is waiting for this Mac to wake."
-        case .operationInProgress: "Another eject request is still being checked."
+        case .operationInProgress: "Another operation must finish before eject can start."
         case .ineligible: "This volume is not eligible for external-device eject."
         case .incompleteInventory:
             "Some mounted volumes have unsupported or ambiguous physical backing. Use Finder or Disk Utility."

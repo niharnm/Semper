@@ -37,6 +37,56 @@ actor WorkspaceStore {
         try data.write(to: url, options: [.atomic])
     }
 
+    private struct TopologyPreference: Codable {
+        let version: Int
+        let enabled: Bool
+    }
+
+    nonisolated var topologyPreferenceURL: URL {
+        url.deletingLastPathComponent().appending(path: "topology-prompts-v1.json")
+    }
+
+    func loadTopologyPromptsEnabled() throws -> Bool {
+        guard FileManager.default.fileExists(atPath: topologyPreferenceURL.path) else { return false }
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: topologyPreferenceURL)
+            let read = Result { try handle.read(upToCount: 4_097) ?? Data() }
+            try handle.close()
+            data = try read.get()
+        } catch { throw WorkspaceError.topologyPreferenceIO }
+        guard data.count <= 4_096 else { throw WorkspaceError.invalidTopologyPreference }
+        struct Version: Decodable { let version: Int }
+        let version: Version
+        do { version = try JSONDecoder().decode(Version.self, from: data) } catch {
+            throw WorkspaceError.invalidTopologyPreference
+        }
+        guard version.version == 1 else { throw WorkspaceError.unsupportedTopologyPreferenceVersion }
+        do { return try JSONDecoder().decode(TopologyPreference.self, from: data).enabled } catch {
+            throw WorkspaceError.invalidTopologyPreference
+        }
+    }
+
+    func saveTopologyPromptsEnabled(_ enabled: Bool) throws {
+        _ = try loadTopologyPromptsEnabled()
+        do {
+            let directory = url.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            let data = try JSONEncoder().encode(TopologyPreference(version: 1, enabled: enabled))
+            try data.write(to: topologyPreferenceURL, options: [.atomic])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: topologyPreferenceURL.path)
+        } catch { throw WorkspaceError.topologyPreferenceIO }
+    }
+
+    func resetTopologyPreference() throws {
+        guard FileManager.default.fileExists(atPath: topologyPreferenceURL.path) else { return }
+        do { try FileManager.default.removeItem(at: topologyPreferenceURL) } catch {
+            throw WorkspaceError.topologyPreferenceIO
+        }
+    }
+
     private func validate(_ arrangements: [WorkspaceArrangement]) throws {
         guard arrangements.count <= 30, Set(arrangements.map(\.id)).count == arrangements.count else {
             throw WorkspaceError.invalidStore
