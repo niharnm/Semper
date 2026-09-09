@@ -27,14 +27,18 @@ final class ShelfService {
     private var importCleanupNeedsRetry = false
     private var importCancellationCount = 0
 
-    var canClear: Bool { !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry }
+    var canClear: Bool {
+        !items.isEmpty || !pendingImportCleanup.isEmpty || importCleanupNeedsRetry || imageCopy.needsCleanup
+    }
     var canChooseFiles: Bool {
         isRunning && !isStopping && !isClearing && !storeNeedsReset && !isChoosingFiles
             && importCount == 0 && importCancellationCount == 0 && removingIDs.isEmpty
-            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && items.count < ShelfLimits.items
+            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && !imageCopy.isActive
+            && items.count < ShelfLimits.items
     }
 
     let store: ShelfStore
+    let imageCopy: ShelfImageCopySession
     @ObservationIgnored private let access: any ShelfFileAccess
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var loaded = false
@@ -56,6 +60,7 @@ final class ShelfService {
         store: ShelfStore = .standard, access: any ShelfFileAccess = NativeShelfFileAccess(),
         now: @escaping @Sendable () -> Date = { Date() },
         fileChooser: any ShelfFileChoosing = NativeShelfFileChooser(),
+        imageCopy: ShelfImageCopySession? = nil,
         importer: @escaping @MainActor (NSItemProvider, ShelfStore) async throws -> ShelfImportedPayload =
             ShelfDropImporter.load
     ) {
@@ -63,6 +68,7 @@ final class ShelfService {
         self.access = access
         self.now = now
         self.fileChooser = fileChooser
+        self.imageCopy = imageCopy ?? ShelfImageCopySession(access: access)
         self.importer = importer
     }
 
@@ -102,6 +108,7 @@ final class ShelfService {
             await stopTask.value
             return
         }
+        imageCopy.stop()
         isStopping = true
         isRunning = false
         generation += 1
@@ -239,8 +246,14 @@ final class ShelfService {
     private func remove(_ id: UUID, onlyIfExpired: Bool) async {
         guard !isClearing else { return }
         let removalClearGeneration = clearGeneration
+        let imageRequest = imageCopy.request?.itemID == id ? imageCopy.request : nil
+        if imageRequest != nil { imageCopy.stop() }
         removingIDs.insert(id)
         defer { removingIDs.remove(id) }
+        if let imageRequest, case .failure(let failure) = await imageCopy.cancel(requestID: imageRequest.id) {
+            report(failure)
+            return
+        }
         let worker = hashTasks[id]
         worker?.cancel()
         if worker != nil { checksums[id] = .cancelled }
@@ -264,6 +277,7 @@ final class ShelfService {
         if let clearTask {
             return await clearTask.value
         }
+        imageCopy.stop()
         generation += 1
         clearGeneration += 1
         isClearing = true
@@ -307,6 +321,7 @@ final class ShelfService {
             if self.message == ShelfFailure.storeWrite.localizedDescription
                 || self.message == "Clear Shelf to retry temporary image cleanup before adding another drop."
                 || self.message == "Wait for cancelled imports to finish cleaning up before adding another drop."
+                || self.message == "Finish Resize a Copy or retry its cleanup before adding more items."
             {
                 self.message = nil
             }
@@ -353,6 +368,19 @@ final class ShelfService {
     func cancelChecksum(_ id: UUID) {
         hashTasks[id]?.cancel()
         checksums[id] = .cancelled
+    }
+
+    func canResizeImage(_ item: ShelfItem) -> Bool {
+        isRunning && !isStopping && !isClearing && !storeNeedsReset && !imageCopy.isActive
+            && importTasks.isEmpty && !isChoosingFiles && importCancellationCount == 0
+            && pendingImportCleanup.isEmpty && !importCleanupNeedsRetry && removingIDs.isEmpty
+            && items.contains(where: { $0.id == item.id })
+            && fileStates[item.id] == .available(isDirectory: false)
+    }
+
+    func prepareImageCopy(_ item: ShelfItem) -> ShelfImageCopyRequest? {
+        guard canResizeImage(item), let url = prepareFileAction(item) else { return nil }
+        return imageCopy.begin(itemID: item.id, name: item.name, source: url)
     }
 
     @discardableResult
@@ -411,6 +439,10 @@ final class ShelfService {
         }
         guard count <= ShelfLimits.items - items.count - importTasks.count else {
             report(ShelfFailure.full)
+            return false
+        }
+        guard !imageCopy.isActive else {
+            message = "Finish Resize a Copy or retry its cleanup before adding more items."
             return false
         }
         guard importTasks.isEmpty, !isChoosingFiles else {
@@ -579,7 +611,9 @@ final class ShelfService {
     }
 
     private func cancelWork() async -> Result<Void, ShelfFailure> {
+        imageCopy.stop()
         let importCleanup = await cancelImports()
+        let imageCleanup = await imageCopy.cancel()
         let workers = hashTasks
         for (id, task) in workers {
             task.cancel()
@@ -589,7 +623,8 @@ final class ShelfService {
             _ = await task.result
             hashTasks[id] = nil
         }
-        return importCleanup
+        if case .failure = importCleanup { return importCleanup }
+        return imageCleanup
     }
 
     private func reconcileImportCleanup() {

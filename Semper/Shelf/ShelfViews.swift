@@ -43,6 +43,7 @@ struct ShelfCompactView: View {
                 }
                 if service.items.count > 3 { Button("View all \(service.items.count) items", action: openDetail) }
             }
+            ShelfImageCleanupView(session: service.imageCopy)
             if service.importCount > 0 {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -64,6 +65,7 @@ struct ShelfDetailView: View {
     let service: ShelfService
     @State private var targeted = false
     @State private var preview: ShelfItem?
+    @State private var resizeRequest: ShelfImageCopyRequest?
     @State private var confirmClear = false
     @State private var confirmReset = false
 
@@ -122,6 +124,7 @@ struct ShelfDetailView: View {
                     Button("Dismiss") { service.dismissMessage() }
                 }.font(.callout).foregroundStyle(.orange)
             }
+            ShelfImageCleanupView(session: service.imageCopy)
             if service.importCount > 0 {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -179,6 +182,13 @@ struct ShelfDetailView: View {
                 }
             }.padding().frame(minWidth: 540, minHeight: 380)
         }
+        .sheet(item: $resizeRequest) { request in
+            ShelfImageCopyView(session: service.imageCopy, request: request)
+                .onDisappear { Task { await service.imageCopy.cancel(requestID: request.id) } }
+        }
+        .onChange(of: service.imageCopy.request?.id) { _, id in
+            if resizeRequest?.id != id { resizeRequest = nil }
+        }
         .onChange(of: service.isRunning) { _, running in if !running { preview = nil } }
         .onChange(of: service.items) { _, items in
             if let preview, !items.contains(where: { $0.id == preview.id }) { self.preview = nil }
@@ -226,7 +236,7 @@ struct ShelfDetailView: View {
             HStack(spacing: 12) {
                 if service.fileURL(for: item) != nil {
                     Button("Quick Look") { if service.prepareFileAction(item) != nil { preview = item } }.disabled(
-                        service.fileStates[item.id]?.isAvailable != true)
+                        service.fileStates[item.id]?.isAvailable != true || service.imageCopy.isActive)
                     Button("Reveal in Finder") { service.reveal(item) }
                     Button("Copy Path") { service.copyPath(item) }
                     if service.fileStates[item.id] == .available(isDirectory: false) {
@@ -240,6 +250,14 @@ struct ShelfDetailView: View {
                     Button("Copy Link") { service.copyContents(item) }
                 }
             }.font(.callout).disabled(!service.isRunning)
+            if service.fileStates[item.id] == .available(isDirectory: false) {
+                Button("Resize a Copy…", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    resizeRequest = service.prepareImageCopy(item)
+                }
+                .font(.callout)
+                .disabled(!service.canResizeImage(item))
+                .help("Save a smaller JPEG or PNG without changing the original.")
+            }
             if let checksum = service.checksums[item.id] {
                 switch checksum {
                 case .calculating:
