@@ -140,6 +140,7 @@ enum AudioCommandRejection: Equatable, Sendable {
     case permissionDenied
     case unsupportedRoute(String)
     case sceneOperationInProgress
+    case mutationAdmissionDenied(MutationAdmissionError)
     case writeFailed
 }
 
@@ -218,6 +219,9 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     let recoveryJournal: AudioAutomationRecoveryJournal
 
     private let backend: any AudioCommandBackend
+    private let mutationAdmission = AudioMutationAdmission()
+    private var sceneAdmission: AudioMutationLease?
+    private var pendingAdmissions: [AudioControlKey: [AudioMutationLease]] = [:]
     private let undoJournal: AudioUndoJournal
     private let now: () -> Date
     private let undoLifetime: TimeInterval
@@ -249,6 +253,10 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         self.now = now
     }
 
+    func installMutationAdmission(_ gate: MutationAdmissionGate) throws {
+        try mutationAdmission.install(gate)
+    }
+
     @discardableResult
     func dispatch(_ command: AudioCommand, context: AudioCommandContext) -> AudioCommandResult {
         guard !isStopped else { return .rejected(.unsupportedRoute("Sound is paused")) }
@@ -256,6 +264,16 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
             return .rejected(.sceneOperationInProgress)
         }
         guard Self.isValid(command) else { return .rejected(.invalidValue) }
+        let admission: AudioMutationLease
+        do {
+            admission = try mutationAdmission.acquire()
+        } catch let error as MutationAdmissionError {
+            return .rejected(.mutationAdmissionDenied(error))
+        } catch {
+            return .rejected(.unsupportedRoute(error.localizedDescription))
+        }
+        var retainsAdmission = false
+        defer { if !retainsAdmission { admission.finish() } }
 
         let key = command.controlKey
         let requested = backend.effectiveRequestedValue(for: command)
@@ -309,6 +327,8 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
             return .applied(receipt)
 
         case .accepted:
+            pendingAdmissions[key, default: []].append(admission)
+            retainsAdmission = true
             let receipt = AudioCommandReceipt(
                 command: command,
                 context: context,
@@ -338,8 +358,14 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     }
 
     func beginSceneTransaction() -> Bool {
-        guard !isStopped, !sceneTransactionActive, pendingAcceptances.isEmpty else { return false }
-        guard backend.beginSceneTransaction() else { return false }
+        guard !isStopped, !sceneTransactionActive,
+              pendingAcceptances.isEmpty, pendingAdmissions.isEmpty else { return false }
+        guard let admission = mutationAdmission.begin() else { return false }
+        guard backend.beginSceneTransaction() else {
+            admission.finish()
+            return false
+        }
+        sceneAdmission = admission
         sceneTransactionActive = true
         return true
     }
@@ -348,15 +374,21 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         guard sceneTransactionActive else { return }
         backend.endSceneTransaction()
         sceneTransactionActive = false
+        if !isStopped {
+            sceneAdmission?.finish()
+            sceneAdmission = nil
+        }
     }
 
     @discardableResult
     func completeAccepted(_ key: AudioControlKey, observed: AudioControlValue) -> Bool {
-        guard !isStopped, let claims = pendingAcceptances[key],
-              let current = claims.last,
-              current.requested.matches(observed) else {
+        guard !isStopped else { return false }
+        guard let claims = pendingAcceptances[key], let current = claims.last else {
+            finishAcceptedAdmission(for: key)
             return false
         }
+        guard current.requested.matches(observed) else { return false }
+        defer { finishAcceptedAdmission(for: key) }
         pendingAcceptances[key] = nil
         let confirmed: Bool
         if let token = current.token {
@@ -382,6 +414,8 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     }
 
     func rejectAccepted(_ key: AudioControlKey) {
+        guard !isStopped else { return }
+        defer { finishAcceptedAdmission(for: key) }
         guard let claims = pendingAcceptances.removeValue(forKey: key),
               !claims.isEmpty else {
             return
@@ -429,6 +463,17 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
         endSceneTransaction()
     }
 
+    func finishShutdownAfterBackendDrain() {
+        guard isStopped else { return }
+        for key in Array(pendingAdmissions.keys) { finishAcceptedAdmission(for: key) }
+        sceneAdmission?.finish()
+        sceneAdmission = nil
+    }
+
+    private func finishAcceptedAdmission(for key: AudioControlKey) {
+        for admission in pendingAdmissions.removeValue(forKey: key) ?? [] { admission.finish() }
+    }
+
     private func relinquishRecoveryAliases(_ keys: Set<AudioControlKey>) {
         for key in keys {
             discardPendingAcceptances(for: key)
@@ -440,6 +485,8 @@ final class AudioCommandDispatcher: AudioCommandDispatching {
     func undoLastChange(source: AudioCommandSource = .popup) -> AudioUndoResult {
         guard !isStopped else { return .unavailable }
         guard !sceneTransactionActive else { return .failed }
+        guard let admission = mutationAdmission.begin() else { return .failed }
+        defer { admission.finish() }
         let preparation = undoJournal.prepare(at: now()) { backend.read($0) }
         undoExpirationTask?.cancel()
         undoExpirationTask = nil

@@ -327,6 +327,8 @@ final class AppShortcutController {
             .permissionDenied
         case .unsupportedRoute(let message):
             .unsupportedRoute(message)
+        case .mutationAdmissionDenied:
+            .unsupportedRoute("Sound controls are unavailable while Away Mode is active.")
         case .sceneOperationInProgress:
             .writeFailed
         case .writeFailed:

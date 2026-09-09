@@ -43,13 +43,6 @@ struct AudioTab: View {
         .scrollIndicators(.never)
         .onAppear { updateSortedDevices() }
         .onChange(of: audioEngine.outputDevices) { _, _ in updateSortedDevices() }
-        .onChange(of: settings.appSettings.lockInputDevice) { oldValue, newValue in
-            if !oldValue && newValue {
-                audioEngine.handleInputLockEnabled()
-            } else if oldValue && !newValue {
-                audioEngine.handleInputLockDisabled()
-            }
-        }
         .onChange(of: settings.appSettings.callModeEnabled) { _, newValue in
             callMode.setEnabled(newValue)
         }
@@ -315,7 +308,10 @@ struct AudioTab: View {
                 "Lock Input Device",
                 description: "Prevent auto-switching when devices connect"
             ) {
-                Toggle("", isOn: $settings.appSettings.lockInputDevice)
+                Toggle("", isOn: Binding(
+                    get: { settings.appSettings.lockInputDevice },
+                    set: { audioEngine.setInputLockEnabled($0) }
+                ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
