@@ -26,6 +26,9 @@ jobs:
       - name: Test website tooling
         run: python3 scripts/test_website_tools.py
 
+      - name: Test benchmark tooling
+        run: python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py'
+
   build-and-test:
     runs-on: macos-26
     timeout-minutes: 15

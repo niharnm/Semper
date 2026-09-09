@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "product": "Semper",
+  "recorded_at": "2026-09-09T01:38:52.908264+00:00",
+  "status": "unmeasured",
+  "comparison_eligible": false,
+  "reason": "No baseline collected. The installed app failed strict signature verification. A separate official v1.0.0 copy passed checksum, signature, Gatekeeper and notarization checks, but UI inspection timed out after its bounded launch. Absence of new permission UI could not be verified, so sampling was aborted and an ordinary quit was requested. No competitor or candidate build measurements exist."
+}
