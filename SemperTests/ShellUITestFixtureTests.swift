@@ -45,14 +45,44 @@
         }
 
         @Test(
-            "Explicit startup records the unavailable factory without creating its service",
-            arguments: [UtilityModuleID.sound, .awake, .workspace, .shelf, .storage, .displays, .away])
-        func factoriesRejectStartup(_ module: UtilityModuleID) async throws {
+            "Every module refuses Open and direct lifecycle startup before creating any owner",
+            arguments: UtilityModuleID.allCases)
+        func allModuleEntryPointsRejectStartup(_ module: UtilityModuleID) async throws {
             try await withFixture { fixture in
-                try fixture.runtime.registry.add(module)
-                await #expect(throws: UtilityLifecycleError.self) { try await fixture.runtime.start(module) }
-                #expect(fixture.factoryAttempts == [module: 1])
-                expectServicesAbsent(fixture.runtime)
+                let runtime = fixture.runtime
+                try runtime.registry.add(module)
+                if module == .presentation { try runtime.registry.add(.awake) }
+                runtime.destination = .modules
+                let destination = runtime.destination
+                let expectedReason = "Service startup is unavailable in shell UI tests."
+
+                do {
+                    try await runtime.open(module)
+                    Issue.record("The shell UI fixture allowed a module to open.")
+                } catch UtilityLifecycleError.unavailable(let reason) {
+                    #expect(reason == expectedReason)
+                } catch {
+                    Issue.record(error, "Module Open did not return the fixture startup refusal.")
+                }
+                #expect(runtime.destination == destination)
+                #expect(runtime.registry.state(for: module)?.runtime == .stopped)
+                expectDormant(fixture)
+                #expect(!fixture.hasHostWindow)
+
+                do {
+                    try await runtime.lifecycle.start(module)
+                    Issue.record("The shell UI fixture allowed direct lifecycle startup.")
+                } catch UtilityLifecycleError.unavailable(let reason) {
+                    #expect(reason == expectedReason)
+                } catch {
+                    Issue.record(error, "Direct lifecycle startup did not return the fixture refusal.")
+                }
+                #expect(runtime.destination == destination)
+                #expect(runtime.registry.state(for: module)?.runtime == .stopped)
+                #expect(runtime.lifecycle.failures.isEmpty)
+                #expect(runtime.mutationAdmission.activeExclusiveOwner == nil)
+                #expect(runtime.mutationAdmission.activeSharedPermitCount == 0)
+                expectDormant(fixture)
                 #expect(!fixture.hasHostWindow)
             }
         }

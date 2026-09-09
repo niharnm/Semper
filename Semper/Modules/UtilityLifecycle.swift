@@ -56,6 +56,9 @@ final class UtilityLifecycle {
     @ObservationIgnored private var stopTasks: [UtilityModuleID: Task<Void, Error>] = [:]
     @ObservationIgnored private var shutdownTask: Task<Void, Never>?
     @ObservationIgnored private var terminated: Set<UtilityModuleID> = []
+    #if DEBUG
+        @ObservationIgnored var startupDisabledForTesting = false
+    #endif
 
     init(registry: ModuleRegistry) {
         self.registry = registry
@@ -73,6 +76,11 @@ final class UtilityLifecycle {
         guard !stopping.contains(id) else { throw ModuleRegistryError.transitionInProgress(id) }
         guard registry.state(for: id)?.presence == .added else { throw ModuleRegistryError.moduleNotAdded(id) }
         guard !registry.pausedModuleIDs.contains(id) else { throw ModuleRegistryError.modulePaused(id) }
+        #if DEBUG
+            guard !startupDisabledForTesting else {
+                throw UtilityLifecycleError.unavailable("Service startup is unavailable in shell UI tests.")
+            }
+        #endif
         if let task = starting[id] {
             return try await withTaskCancellationHandler {
                 try await task.value

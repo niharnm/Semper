@@ -65,6 +65,7 @@
                     sceneJournalStore: FileSceneJournalStore(directory: sceneDirectory),
                     displayFactory: { _, _ in try probe.refuse(.displays) },
                     awayFactory: { _, _, _ in try probe.refuse(.away) })
+                runtime.lifecycle.startupDisabledForTesting = true
             } catch {
                 guard settings.flushSync() else {
                     throw UtilityLifecycleError.unavailable(
