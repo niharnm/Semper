@@ -86,6 +86,131 @@ struct DDCProbeTests {
         #expect(operationCalls.withLock { $0 } == 1)
     }
 
+    @Test("Serialized work cancelled while queued never starts")
+    func serializedWorkSkipsCancelledCallerBeforeQueueEntry() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCQueueTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-serialized-cancellation")
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        await withCheckedContinuation { blockerStarted in
+            queue.async {
+                blockerStarted.resume()
+                releaseBlocker.wait()
+            }
+        }
+        defer { releaseBlocker.signal() }
+
+        let operationCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Void, Error>?
+
+        await withCheckedContinuation { callerStarted in
+            caller = Task { @MainActor in
+                callerStarted.resume()
+                try await controller.performSerialized {
+                    operationCalls.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releaseBlocker.signal()
+
+        do {
+            try await callerTask.value
+            Issue.record("Cancelled serialized work returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled serialized work returned \(error)")
+        }
+
+        #expect(operationCalls.withLock { $0 } == 0)
+    }
+
+    @Test("Serialized mutation cancelled before its claim does not run")
+    func serializedMutationSkipsCancellationBeforeClaim() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCClaimTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-mutation-cancellation")
+        let releasePrewrite = DispatchSemaphore(value: 0)
+        defer { releasePrewrite.signal() }
+        let writeCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Void, Error>?
+
+        await withCheckedContinuation { prewriteReached in
+            caller = Task { @MainActor in
+                try await controller.performSerialized { context in
+                    prewriteReached.resume()
+                    releasePrewrite.wait()
+                    try context.claimMutation()
+                    writeCalls.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releasePrewrite.signal()
+
+        do {
+            try await callerTask.value
+            Issue.record("Cancelled serialized mutation returned success")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Cancelled serialized mutation returned \(error)")
+        }
+
+        #expect(writeCalls.withLock { $0 } == 0)
+    }
+
+    @Test("Serialized mutation claimed before cancellation completes once")
+    func serializedMutationCompletesAfterClaimWins() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Semper-DDCClaimTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let queue = DispatchQueue(label: "com.semper.tests.ddc-mutation-claim")
+        let releaseWrite = DispatchSemaphore(value: 0)
+        defer { releaseWrite.signal() }
+        let writeCalls = Mutex(0)
+        let controller = DDCController(
+            settingsManager: SettingsManager(directory: directory),
+            ddcQueue: queue
+        )
+        var caller: Task<Int, Error>?
+
+        await withCheckedContinuation { mutationClaimed in
+            caller = Task { @MainActor in
+                try await controller.performSerialized { context in
+                    try context.claimMutation()
+                    mutationClaimed.resume()
+                    releaseWrite.wait()
+                    writeCalls.withLock { $0 += 1 }
+                    return 73
+                }
+            }
+        }
+
+        let callerTask = try #require(caller)
+        callerTask.cancel()
+        releaseWrite.signal()
+
+        #expect(try await callerTask.value == 73)
+        #expect(writeCalls.withLock { $0 } == 1)
+    }
+
     @Test("A superseded probe cannot publish its completed result")
     func supersededProbeDoesNotPublish() async {
         let directory = FileManager.default.temporaryDirectory

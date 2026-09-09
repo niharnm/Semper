@@ -72,6 +72,67 @@ private final class DDCWriteCancellation: @unchecked Sendable {
     }
 }
 
+final class DDCSerializedOperationContext: @unchecked Sendable {
+    private enum State {
+        case pending
+        case mutationClaimed
+        case cancelled
+        case completed
+    }
+
+    private let lock = NSLock()
+    private var state: State = .pending
+
+    func claimMutation() throws {
+        try lock.withLock {
+            switch state {
+            case .pending:
+                state = .mutationClaimed
+            case .mutationClaimed:
+                return
+            case .cancelled, .completed:
+                throw CancellationError()
+            }
+        }
+    }
+
+    fileprivate func cancel() {
+        lock.withLock {
+            if case .pending = state {
+                state = .cancelled
+            }
+        }
+    }
+
+    fileprivate func start() throws {
+        try lock.withLock {
+            if case .cancelled = state {
+                throw CancellationError()
+            }
+        }
+    }
+
+    fileprivate func complete() throws {
+        try lock.withLock {
+            if case .cancelled = state {
+                state = .completed
+                throw CancellationError()
+            }
+            state = .completed
+        }
+    }
+
+    fileprivate func resolvedError(_ error: Error) -> Error {
+        lock.withLock {
+            defer { state = .completed }
+            if case .cancelled = state {
+                return CancellationError()
+            }
+            return error
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class DDCController {
@@ -135,15 +196,32 @@ final class DDCController {
     func performSerialized<T: Sendable>(
         _ operation: @escaping @Sendable () throws -> T
     ) async throws -> T {
+        try await performSerialized { _ in
+            try operation()
+        }
+    }
+
+    /// Executes mutating work with cancellation arbitration at the hardware boundary.
+    func performSerialized<T: Sendable>(
+        _ operation: @escaping @Sendable (DDCSerializedOperationContext) throws -> T
+    ) async throws -> T {
         let queue = ddcQueue
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                do {
-                    continuation.resume(returning: try operation())
-                } catch {
-                    continuation.resume(throwing: error)
+        let context = DDCSerializedOperationContext()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do {
+                        try context.start()
+                        let value = try operation(context)
+                        try context.complete()
+                        continuation.resume(returning: value)
+                    } catch {
+                        continuation.resume(throwing: context.resolvedError(error))
+                    }
                 }
             }
+        } onCancel: {
+            context.cancel()
         }
     }
 
