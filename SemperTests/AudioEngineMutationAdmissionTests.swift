@@ -5,7 +5,7 @@ import Testing
 
 @testable import Semper
 
-@Suite("Direct AudioEngine mutation admission")
+@Suite("Direct AudioEngine mutation admission", .timeLimit(.minutes(1)))
 @MainActor
 struct AudioEngineMutationAdmissionTests {
     @Test("Away blocks inactive app settings and processing changes at the engine")
@@ -504,6 +504,7 @@ private final class PendingManualRouteSteps {
     private(set) var manualWasSuperseded = false
     var onManualStarted: (() -> Void)?
     private var callCount = 0
+    private var isCancelled = false
     private var inventory: CheckedContinuation<Void, any Error>?
     private var manual: CheckedContinuation<Void, any Error>?
 
@@ -512,6 +513,7 @@ private final class PendingManualRouteSteps {
     }
 
     func wait() async throws {
+        guard !isCancelled else { throw CancellationError() }
         callCount += 1
         switch callCount {
         case 1:
@@ -550,6 +552,7 @@ private final class PendingManualRouteSteps {
     }
 
     func cancelAll() {
+        isCancelled = true
         onManualStarted = nil
         let pendingInventory = inventory
         let pendingManual = manual
@@ -565,31 +568,68 @@ private final class PendingManualRouteSteps {
 @Suite("Reconciliation condition", .timeLimit(.minutes(1)))
 @MainActor
 struct ReconciliationConditionTests {
-    @Test("An unmet condition returns false when its background timeout fires")
-    func timeoutReturnsFalse() async {
-        #expect(await ReconciliationCondition { false }.wait(timeout: .milliseconds(20)) == false)
+    @Test("A condition accepts a route observation delivered after its initial suspension")
+    func deferredObservationSucceeds() async {
+        let steps = PendingManualRouteSteps()
+        let (started, continuation) = AsyncStream.makeStream(of: Void.self)
+        let condition = ReconciliationCondition {
+            continuation.yield(())
+            continuation.finish()
+            return steps.inventoryWaiting
+        }
+        let route = Task {
+            var iterator = started.makeAsyncIterator()
+            await iterator.next()
+            try Task.checkCancellation()
+            try await steps.wait()
+        }
+        #expect(await condition.wait())
+        steps.cancelAll()
+        route.cancel()
+        await #expect(throws: CancellationError.self) { try await route.value }
     }
 
     @Test("An already satisfied condition returns true")
     func immediateSuccess() async {
-        #expect(await ReconciliationCondition { true }.wait(timeout: .milliseconds(20)))
+        #expect(await ReconciliationCondition { true }.wait())
     }
 
-    @Test(
-        "Cancelling an unmet condition releases its waiter",
-        arguments: [DispatchTimeInterval.milliseconds(20), .never])
-    func cancellationReturnsFalse(timeout: DispatchTimeInterval) async {
+    @Test("Cancelling an unmet condition releases its waiter")
+    func cancellationReturnsFalse() async {
         let (started, continuation) = AsyncStream.makeStream(of: Void.self)
         let condition = ReconciliationCondition {
             continuation.yield(())
             continuation.finish()
             return false
         }
-        let waiter = Task { await condition.wait(timeout: timeout) }
+        let waiter = Task { await condition.wait() }
         var iterator = started.makeAsyncIterator()
         await iterator.next()
         waiter.cancel()
         #expect(await waiter.value == false)
+    }
+
+    @Test("Cancelled route steps reject entry without retaining a continuation", arguments: [true, false])
+    func cancellationBeforeRouteEntry(startsWithInventory: Bool) async {
+        let steps = PendingManualRouteSteps(startsWithInventory: startsWithInventory)
+        steps.cancelAll()
+        await #expect(throws: CancellationError.self) { try await steps.wait() }
+        #expect(!steps.inventoryWaiting && !steps.manualWaiting)
+    }
+
+    @Test("Cancelling suspended route steps drains them and rejects later entry", arguments: [true, false])
+    func cancellationDuringRouteWait(startsWithInventory: Bool) async {
+        let steps = PendingManualRouteSteps(startsWithInventory: startsWithInventory)
+        let route = Task { try await steps.wait() }
+        #expect(
+            await ReconciliationCondition {
+                startsWithInventory ? steps.inventoryWaiting : steps.manualWaiting
+            }.wait())
+        steps.cancelAll()
+        await #expect(throws: CancellationError.self) { try await route.value }
+        await #expect(throws: CancellationError.self) { try await steps.wait() }
+        steps.cancelAll()
+        #expect(!steps.inventoryWaiting && !steps.manualWaiting)
     }
 }
 
@@ -605,13 +645,11 @@ private final class ReconciliationCondition {
         (stream, continuation) = AsyncStream.makeStream()
     }
 
-    func wait(timeout: DispatchTimeInterval = .seconds(10)) async -> Bool {
+    func wait() async -> Bool {
         observe()
-        let timeoutWorkItem = DispatchWorkItem { @Sendable [continuation] in continuation.finish() }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
         defer {
-            timeoutWorkItem.cancel()
             finished = true
+            continuation.finish()
         }
         var iterator = stream.makeAsyncIterator()
         return await iterator.next() ?? false
