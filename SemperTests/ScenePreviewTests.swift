@@ -186,6 +186,71 @@ struct ScenePreviewTests {
         #expect(fixture.mock.writeLog == writes)
     }
 
+    enum EmptyPresentationRecovery: CaseIterable, Sendable { case discover, restore, keep }
+
+    @MainActor
+    @Test("Presentation without a transaction cannot adopt a later journal", arguments: EmptyPresentationRecovery.allCases, [false, true])
+    func emptyPresentationDoesNotAdoptLaterJournal(recovery: EmptyPresentationRecovery, rejectsReviewedPreview: Bool) async throws {
+        let fixture = Fixture()
+        let directory = try SceneTestSupport.makeTemporaryDirectory()
+        defer {
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { Issue.record(error, "Could not remove scoped scene recovery fixture") }
+        }
+        let gate = MutationAdmissionGate()
+        let manager = SceneManager(
+            adapters: SceneTestSupport.registry(fixture.mock),
+            prepareDomains: { _ in }, captureCurrent: { [] },
+            beginAudioTransaction: {}, endAudioTransaction: {},
+            libraryStore: FileSceneLibraryStore(directory: directory), journalStore: fixture.journal,
+            mutationAdmission: gate
+        )
+        let control = SceneControl.displayBrightness(displayID: "display-a")
+        let scene = SemperScene(name: "Optional display", actions: [
+            SceneAction(control: control, target: .number(0.8), importance: .optional),
+        ])
+        fixture.mock.seed(control, capability: .unsupported, value: .number(0.2))
+        let token = try await manager.reservePresentation()
+        let preview = try await manager.previewPresentation(scene, token: token)
+        if rejectsReviewedPreview {
+            fixture.mock.setCapability(.readWrite, for: control)
+            await #expect(throws: SceneApplyError.previewChanged) {
+                try await manager.applyPresentation(scene, token: token, expectedPreview: preview)
+            }
+        } else {
+            let emptyApply = try await manager.applyPresentation(scene, token: token, expectedPreview: preview)
+            #expect(emptyApply.transactionID == nil)
+        }
+        #expect(try await manager.pendingPresentationTransaction(token: token) == nil)
+        fixture.mock.setCapability(.readWrite, for: control)
+        let laterID = try #require(try await fixture.coordinator.apply(scene).transactionID)
+        let laterJournal = fixture.journal.transaction
+        let writes = fixture.mock.writeLog
+        let saves = fixture.journal.saved.count
+
+        await #expect(throws: SceneManagerError.presentationTransactionMismatch) {
+            switch recovery {
+            case .discover:
+                _ = try await manager.pendingPresentationTransaction(token: token)
+            case .restore:
+                _ = try await manager.restorePresentation(transactionID: laterID, token: token)
+            case .keep:
+                try await manager.keepCurrentPresentation(transactionID: laterID, token: token)
+            }
+        }
+
+        #expect(fixture.journal.transaction == laterJournal)
+        #expect(fixture.journal.saved.count == saves)
+        #expect(fixture.journal.clearCount == 0)
+        #expect(fixture.mock.writeLog == writes)
+        #expect(gate.activeSharedPermitCount == 1)
+        if let pending = fixture.journal.transaction {
+            _ = try await fixture.coordinator.restore(expectedTransactionID: pending.id)
+        }
+        try await manager.releasePresentation(token)
+        await manager.shutdown()
+    }
+
     @Test("Matching scoped restore and abandon preserve their existing effects")
     func matchingScopedRecovery() async throws {
         let fixture = Fixture()

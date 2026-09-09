@@ -20,6 +20,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     runtime.updateManager.checkForUpdates()
                     continue
                 }
+                if url.host == "apply-scene" || url.host == "restore-scene" {
+                    do {
+                        let sceneID: UUID?
+                        if url.host == "apply-scene" {
+                            guard let rawID = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                                .first(where: { $0.name.caseInsensitiveCompare("id") == .orderedSame })?.value,
+                                let id = UUID(uuidString: rawID)
+                            else { throw UtilityLifecycleError.unavailable("The scene URL needs a valid id.") }
+                            sceneID = id
+                        } else { sceneID = nil }
+                        try await runtime.start(.scenes)
+                        guard let scenes = runtime.scenes else { throw SceneCommandRuntimeError.unavailable }
+                        let result = if let sceneID {
+                            try await scenes.applyScene(id: sceneID)
+                        } else {
+                            try await scenes.restoreScene()
+                        }
+                        runtime.message = result.message
+                    } catch { runtime.message = error.localizedDescription }
+                    continue
+                }
                 guard
                     ["set-volumes", "step-volume", "set-mute", "toggle-mute", "set-device", "reset"].contains(
                         url.host ?? "")

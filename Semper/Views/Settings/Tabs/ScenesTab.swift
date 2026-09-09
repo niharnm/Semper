@@ -88,7 +88,7 @@ struct ScenesTab: View {
         SettingsSection("Create", subtitle: "Save the setup you are using now") {
             SettingsRow(
                 "Scene Name",
-                description: "Audio, display, and Awake settings are captured together"
+                description: "Capture controls from modules that are already running."
             ) {
                 HStack(spacing: DesignTokens.Spacing.sm) {
                     TextField("Focus", text: $sceneName)

@@ -18,6 +18,8 @@ final class SceneShortcutRegistry {
     private let sceneManager: any SceneShortcutManaging
     private var registeredSceneIDs = Set<UUID>()
     private var didStart = false
+    private var isShutDown = false
+    @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
 
     private(set) var conflicts: [UUID: String] = [:]
     private(set) var persistenceErrors: [UUID: String] = [:]
@@ -32,17 +34,20 @@ final class SceneShortcutRegistry {
     }
 
     func start() {
-        guard !didStart else { return }
+        guard !didStart, !isShutDown else { return }
         didStart = true
         sync()
     }
 
     func sync() {
+        guard !isShutDown else { return }
         let scenes = sceneManager.scenes
         let currentIDs = Set(scenes.map(\.id))
-        let duplicateSceneShortcuts = Dictionary(grouping: scenes.compactMap { scene in
-            scene.shortcut.map { ($0, scene) }
-        }, by: \.0).filter { $0.value.count > 1 }
+        let duplicateSceneShortcuts = Dictionary(
+            grouping: scenes.compactMap { scene in
+                scene.shortcut.map { ($0, scene) }
+            }, by: \.0
+        ).filter { $0.value.count > 1 }
 
         for removedID in registeredSceneIDs.subtracting(currentIDs) {
             let removedName = name(for: removedID)
@@ -69,7 +74,8 @@ final class SceneShortcutRegistry {
             }
 
             if let owners = duplicateSceneShortcuts[shortcut] {
-                let otherNames = owners
+                let otherNames =
+                    owners
                     .filter { $0.1.id != scene.id }
                     .map { $0.1.name }
                     .sorted()
@@ -83,9 +89,7 @@ final class SceneShortcutRegistry {
             KeyboardShortcuts.setShortcut(shortcut.keyboardShortcut, for: sceneName)
             if didStart {
                 KeyboardShortcuts.onKeyDown(for: sceneName) { [weak self] in
-                    Task { @MainActor [weak self] in
-                        await self?.performShortcut(for: scene.id)
-                    }
+                    _ = self?.beginShortcut(for: scene.id)
                 }
             }
         }
@@ -93,11 +97,38 @@ final class SceneShortcutRegistry {
     }
 
     func performShortcut(for sceneID: UUID) async {
-        do {
-            _ = try await sceneManager.applyScene(id: sceneID)
-        } catch {
-            sceneManager.reportSceneCommandFailure(error.localizedDescription)
+        guard let task = beginShortcut(for: sceneID) else { return }
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
         }
+    }
+
+    private func beginShortcut(for sceneID: UUID) -> Task<Void, Never>? {
+        guard !isShutDown, !Task.isCancelled else { return nil }
+        let id = UUID()
+        let task = Task { @MainActor in
+            defer { self.tasks[id] = nil }
+            do {
+                try Task.checkCancellation()
+                _ = try await self.sceneManager.applyScene(id: sceneID)
+            } catch {
+                if !self.isShutDown { self.sceneManager.reportSceneCommandFailure(error.localizedDescription) }
+            }
+        }
+        tasks[id] = task
+        return task
+    }
+
+    func shutdown() async {
+        isShutDown = true
+        didStart = false
+        for id in registeredSceneIDs { KeyboardShortcuts.removeHandler(for: name(for: id)) }
+        registeredSceneIDs.removeAll()
+        let pending = Array(tasks.values)
+        for task in pending { task.cancel() }
+        for task in pending { await task.value }
     }
 
     func recordCallback(
@@ -109,10 +140,13 @@ final class SceneShortcutRegistry {
     }
 
     private func record(_ shortcut: KeyboardShortcuts.Shortcut?, for scene: SemperScene) {
-        if let shortcut, let conflict = conflictDescription(
-            for: SceneShortcut.from(shortcut),
-            excluding: scene.id
-        ) {
+        guard !isShutDown else { return }
+        if let shortcut,
+            let conflict = conflictDescription(
+                for: SceneShortcut.from(shortcut),
+                excluding: scene.id
+            )
+        {
             sync()
             conflicts[scene.id] = conflict
             persistenceErrors[scene.id] = nil
@@ -148,7 +182,8 @@ final class SceneShortcutRegistry {
 
     private func builtInConflictDescription(for shortcut: SceneShortcut) -> String? {
         for action in ShortcutAction.allCases {
-            let assigned = settings.appSettings.customShortcuts[action.rawValue]
+            let assigned =
+                settings.appSettings.customShortcuts[action.rawValue]
                 ?? KeyboardShortcuts.getShortcut(
                     for: KeyboardShortcuts.Name(stableID(for: action))
                 ).map(ShortcutCodable.from)
@@ -169,19 +204,19 @@ final class SceneShortcutRegistry {
     }
 }
 
-private extension SceneShortcut {
-    init(_ shortcut: ShortcutCodable) {
+extension SceneShortcut {
+    fileprivate init(_ shortcut: ShortcutCodable) {
         self.init(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers)
     }
 
-    static func from(_ shortcut: KeyboardShortcuts.Shortcut) -> SceneShortcut {
+    fileprivate static func from(_ shortcut: KeyboardShortcuts.Shortcut) -> SceneShortcut {
         SceneShortcut(
             keyCode: shortcut.carbonKeyCode,
             modifiers: UInt(shortcut.carbonModifiers)
         )
     }
 
-    var keyboardShortcut: KeyboardShortcuts.Shortcut {
+    fileprivate var keyboardShortcut: KeyboardShortcuts.Shortcut {
         KeyboardShortcuts.Shortcut(
             carbonKeyCode: keyCode,
             carbonModifiers: Int(modifiers)

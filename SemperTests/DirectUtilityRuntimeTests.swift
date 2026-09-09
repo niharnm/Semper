@@ -7,6 +7,85 @@ import Testing
 @MainActor
 @Suite("Direct utility runtime", .serialized)
 struct DirectUtilityRuntimeTests {
+    @Test("Away admission prevents service creation and direct lifecycle changes")
+    func exclusiveRuntimeAdmission() async throws {
+        try await withRuntime { runtime, probe in
+            try await runtime.start(.workspace)
+            let workspace = try #require(runtime.workspace)
+            let permit = try runtime.mutationAdmission.acquire(owner: .awayMode, mode: .exclusive)
+            await #expect(throws: UtilityLifecycleError.self) { try await runtime.start(.sound) }
+            await #expect(throws: UtilityLifecycleError.self) { try await runtime.start(.awake) }
+            await #expect(throws: UtilityLifecycleError.self) { try await runtime.pause(.workspace) }
+            await #expect(throws: UtilityLifecycleError.self) { try await runtime.remove(.workspace) }
+            #expect(probe.creations[.sound] == nil)
+            #expect(probe.creations[.awake] == nil)
+            #expect(runtime.workspace === workspace)
+            #expect(workspace.isRunning)
+            #expect(await runtime.commands.execute(.init(rawValue: WorkspaceCommand.preview.rawValue))
+                == .unavailable("End Away before changing other utilities."))
+            #expect(runtime.mutationAdmission.release(permit))
+            try await runtime.pause(.workspace)
+            #expect(!workspace.isRunning)
+        }
+    }
+
+    @Test("Reserved Workspace removal retains the service and its recovery receipt")
+    func reservedWorkspaceRemoval() async throws {
+        try await withRuntime { runtime, probe in
+            try await runtime.start(.workspace)
+            let service = try #require(runtime.workspace)
+            service.selectedApplicationIDs = [probe.application.id]
+            service.arrangementName = "Presentation layout"
+            await service.capture()
+            let displaced = CGRect(x: 250, y: 180, width: 350, height: 250)
+            await probe.workspaceBackend.change(probe.windowID, frame: displaced)
+            await service.makePreview()
+            let plan = try service.makeRestorePlan(selectedSlotIDs: Set(service.preview.map(\.id)))
+            let token = UUID()
+            try service.reserveForPresentation(plan, token: token)
+            let receipt = await service.apply(plan, ownerToken: token)
+            #expect(receipt.needsRecovery)
+            await #expect(throws: UtilityCleanupDeferral.self) { try await runtime.remove(.workspace) }
+            #expect(runtime.workspace === service)
+            #expect(service.isRunning)
+            #expect(runtime.registry.state(for: .workspace)?.presence == .added)
+            #expect(await probe.workspaceBackend.shutdownCalls == 0)
+            let restored = await service.reverse(receipt, ownerToken: token)
+            #expect(!restored.needsRecovery)
+            try service.releasePresentationReservation(token)
+            try await runtime.remove(.workspace)
+            #expect(runtime.workspace == nil)
+            #expect(await probe.workspaceBackend.shutdownCalls == 1)
+        }
+    }
+
+    @Test("Reserved Workspace pause and termination remain incomplete until recovery finishes")
+    func reservedWorkspaceShutdown() async throws {
+        try await withRuntime { runtime, probe in
+            try await runtime.start(.workspace)
+            let service = try #require(runtime.workspace)
+            service.selectedApplicationIDs = [probe.application.id]
+            service.arrangementName = "Presentation layout"
+            await service.capture()
+            await service.makePreview()
+            let plan = try service.makeRestorePlan(selectedSlotIDs: Set(service.preview.map(\.id)))
+            let token = UUID()
+            try service.reserveForPresentation(plan, token: token)
+            await #expect(throws: UtilityCleanupDeferral.self) { try await runtime.pause(.workspace) }
+            #expect(runtime.workspace === service)
+            #expect(service.isRunning)
+            await runtime.shutdown()
+            #expect(runtime.workspace === service)
+            #expect(runtime.lifecycle.failures[.workspace] != nil)
+            #expect(await probe.workspaceBackend.shutdownCalls == 0)
+            try service.releasePresentationReservation(token)
+            await runtime.shutdown()
+            #expect(runtime.workspace == nil)
+            #expect(runtime.lifecycle.failures[.workspace] == nil)
+            #expect(await probe.workspaceBackend.shutdownCalls == 1)
+        }
+    }
+
     @Test("Explicit starts create direct services once; pause reuses them and removal releases them")
     func directLifecycles() async throws {
         try await withRuntime { runtime, probe in
@@ -162,6 +241,38 @@ struct DirectUtilityRuntimeTests {
             #expect(probe.powerBackend.active.isEmpty)
             #expect(probe.creations[.awake] == 1)
             #expect(throws: UtilityLifecycleError.self) { try runtime.ensureAwakeService() }
+            #expect(await runtime.commands.execute(.init(rawValue: WorkspaceCommand.preview.rawValue))
+                == .unavailable("Semper is shutting down. Finish any pending recovery before quitting."))
+        }
+    }
+
+    @Test("Awake cleanup retry retains the original service without reviving a terminated session", arguments: [false, true])
+    func awakeCleanupRetry(terminating: Bool) async throws {
+        try await withRuntime { runtime, probe in
+            try await runtime.start(.awake)
+            let service = try #require(runtime.awake)
+            service.start(.oneHour)
+            probe.powerBackend.rejectsRelease = true
+            if terminating {
+                await runtime.shutdown()
+            } else {
+                await #expect(throws: UtilityLifecycleError.self) { try await runtime.pause(.awake) }
+            }
+            #expect(runtime.awake === service)
+            #expect(service.hasPendingAssertionCleanup)
+            #expect(probe.powerBackend.active.count == 1)
+            #expect(runtime.lifecycle.failures[.awake] != nil)
+            #expect(probe.creations[.awake] == 1)
+
+            probe.powerBackend.rejectsRelease = false
+            if terminating { await runtime.shutdown() } else { try await runtime.pause(.awake) }
+            #expect(runtime.awake == nil)
+            #expect(probe.powerBackend.active.isEmpty)
+            #expect(runtime.lifecycle.failures[.awake] == nil)
+            #expect(probe.creations[.awake] == 1)
+            service.start(.oneHour)
+            #expect(!service.isActive)
+            #expect(probe.powerBackend.active.isEmpty)
         }
     }
 
@@ -266,7 +377,10 @@ private final class DirectRuntimeStorageBackend: SafeEjectBackend {
     private var handler: (@MainActor (SafeEjectSystemEvent) -> Void)?
     func start(onEvent: @escaping @MainActor (SafeEjectSystemEvent) -> Void) throws { handler = onEvent }
     func stop() { handler = nil }
-    func drain() async { drains += 1 }
+    func drain() async -> Result<Void, SafeEjectFailure> {
+        drains += 1
+        return .success(())
+    }
     func cancelPendingOperation() {}
     func inventory() throws -> SafeEjectInventory {
         if inventoryFails { throw SafeEjectFailure.unavailable }
@@ -283,6 +397,7 @@ private final class DirectRuntimeStorageBackend: SafeEjectBackend {
 @MainActor
 private final class DirectRuntimePowerBackend: PowerAssertionCreating {
     private var nextID: PowerAssertionID = 1
+    var rejectsRelease = false
     private(set) var active: Set<PowerAssertionID> = []
     func createAssertion(kind: PowerAssertionKind, reason: String, timeout: TimeInterval?) throws(PowerAssertionError)
         -> PowerAssertionID
@@ -292,7 +407,10 @@ private final class DirectRuntimePowerBackend: PowerAssertionCreating {
         active.insert(id)
         return id
     }
-    func releaseAssertion(_ id: PowerAssertionID) throws(PowerAssertionError) { active.remove(id) }
+    func releaseAssertion(_ id: PowerAssertionID) throws(PowerAssertionError) {
+        if rejectsRelease { throw .releaseFailed(-1) }
+        active.remove(id)
+    }
 }
 
 @MainActor

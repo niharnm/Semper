@@ -25,7 +25,7 @@ final class UtilityCommandCenter {
     private var drainingModules: Set<UtilityModuleID> = []
     @ObservationIgnored private var handlers: [UtilityActionID: UtilityActionHandler] = [:]
     @ObservationIgnored private var tasks: [UtilityActionID: Task<Void, Error>] = [:]
-    @ObservationIgnored private let admissionReason: () -> String?
+    @ObservationIgnored private let admissionReason: (UtilityModuleID) -> String?
 
     private struct AdmissionFailure: Error {
         let reason: String
@@ -33,7 +33,12 @@ final class UtilityCommandCenter {
 
     init(registry: ModuleRegistry, admissionReason: @escaping () -> String? = { nil }) {
         self.registry = registry
-        self.admissionReason = admissionReason
+        self.admissionReason = { _ in admissionReason() }
+    }
+
+    init(registry: ModuleRegistry, moduleAdmissionReason: @escaping (UtilityModuleID) -> String?) {
+        self.registry = registry
+        self.admissionReason = moduleAdmissionReason
     }
 
     func register(_ additions: [UtilityActionHandler]) throws {
@@ -57,7 +62,7 @@ final class UtilityCommandCenter {
         guard registry.action(for: id) != nil else { return "This module is stopping." }
         guard !checkingRunning || !running.contains(id) else { return "This action is already running." }
         guard let handler = handlers[id] else { return "This action has no handler." }
-        return admissionReason() ?? handler.disabledReason()
+        return admissionReason(descriptor.module) ?? handler.disabledReason()
     }
 
     @discardableResult

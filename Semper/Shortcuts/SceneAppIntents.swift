@@ -40,10 +40,28 @@ struct SemperSceneQuery: EntityStringQuery {
 
 @MainActor
 enum SemperSceneAppIntentRuntime {
-    private static var controller: (any SceneCommandHandling)?
+    private static weak var controller: (any SceneCommandHandling)?
+    private static weak var activationOwner: AnyObject?
+    private static var activate: (@MainActor () async throws -> Void)?
+
+    static func installActivation(owner: AnyObject, activate: @escaping @MainActor () async throws -> Void) {
+        activationOwner = owner
+        self.activate = activate
+    }
+
+    static func uninstallActivation(owner: AnyObject) {
+        guard activationOwner === owner else { return }
+        activationOwner = nil
+        activate = nil
+    }
 
     static func install(_ controller: any SceneCommandHandling) {
         self.controller = controller
+    }
+
+    static func uninstall(_ controller: any SceneCommandHandling) {
+        guard self.controller === controller else { return }
+        self.controller = nil
     }
 
     static func scenes() -> [SemperSceneEntity] {
@@ -54,11 +72,17 @@ enum SemperSceneAppIntentRuntime {
     }
 
     static func applyScene(id: UUID) async throws -> SceneCommandExecution {
+        try Task.checkCancellation()
+        if activationOwner != nil, let activate { try await activate() }
+        try Task.checkCancellation()
         guard let controller else { throw SceneCommandRuntimeError.unavailable }
         return try await controller.applyScene(id: id)
     }
 
     static func restoreScene() async throws -> SceneCommandExecution {
+        try Task.checkCancellation()
+        if activationOwner != nil, let activate { try await activate() }
+        try Task.checkCancellation()
         guard let controller else { throw SceneCommandRuntimeError.unavailable }
         return try await controller.restoreScene()
     }

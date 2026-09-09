@@ -38,6 +38,7 @@ final class SoundRuntime {
     private var startupTask: Task<Void, Never>?
     private var alertVolumeRestorationTask: Task<Bool, Never>?
     private var shutdownDrainFailed = false
+    private var userEntryPointsStopped = false
     private(set) var isShutDown = false
 
     init(
@@ -250,15 +251,15 @@ final class SoundRuntime {
         self.resolver = resolver
         self.appShortcutController = appShortcutController
         startupTask = Task { @MainActor [weak self] in
-            guard let self, !self.isShutDown else { return }
+            guard let self, !self.isShutDown, !self.userEntryPointsStopped else { return }
             self.iconCoordinator.start()
             self.shortcutsRegistry.start()
         }
     }
 
-    func shutdown() {
-        guard !isShutDown else { return }
-        isShutDown = true
+    func stopUserEntryPoints() {
+        guard !userEntryPointsStopped else { return }
+        userEntryPointsStopped = true
         startupTask?.cancel()
         startupTask = nil
         SemperAppIntentRuntime.uninstall(appShortcutController)
@@ -271,6 +272,12 @@ final class SoundRuntime {
         hudController.volumeWriter = nil
         hudController.shutdown()
         feedbackPlayer.shutdown()
+    }
+
+    func shutdown() {
+        guard !isShutDown else { return }
+        isShutDown = true
+        stopUserEntryPoints()
         audioEngine.onCallModeActivitiesChanged = nil
         callMode.handleActivities([])
         // An accepted alert edit remains an obligation after its Call Mode session ends.

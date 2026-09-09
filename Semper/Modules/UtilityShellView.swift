@@ -102,9 +102,9 @@ struct UtilityShellView: View {
         case .modules:
             ModuleLibraryView(
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
-                pause: runtime.pause, remove: runtime.remove)
+                pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason)
         case .module(let id):
-            module(id)
+            module(id).disabled(id != .away && runtime.mutationDisabledReason != nil)
         }
     }
 
@@ -114,6 +114,14 @@ struct UtilityShellView: View {
                 TextField("Search Semper actions", text: $runtime.searchText)
                     .textFieldStyle(.roundedBorder).focused($searchFocused)
                     .accessibilityLabel("Search Semper actions")
+                if let destination = sceneRecoveryDestination {
+                    Button {
+                        runtime.destination = destination
+                        if compact { openWindow(id: "utilities") }
+                    } label: {
+                        Label("Recover Previous Setup", systemImage: "arrow.uturn.backward")
+                    }
+                }
                 if runtime.searchText.isEmpty {
                     if !runtime.registry.favoriteActions.isEmpty {
                         Text("Pinned actions").font(.headline)
@@ -133,6 +141,7 @@ struct UtilityShellView: View {
                                     } catch { runtime.message = error.localizedDescription }
                                 }
                             }
+                            .disabled(runtime.mutationDisabledReason != nil)
                         } else {
                             Button {
                                 runtime.destination = .module(module.id)
@@ -170,9 +179,21 @@ struct UtilityShellView: View {
         .frame(maxHeight: compact ? 560 : nil)
     }
 
+    var sceneRecoveryDestination: UtilityDestination? {
+        guard runtime.scenes?.hasPendingRestore == true, runtime.presentation?.reservation == nil else { return nil }
+        return .module(.scenes)
+    }
+
     @ViewBuilder
     private func module(_ id: UtilityModuleID) -> some View {
-        if runtime.registry.pausedModuleIDs.contains(id) {
+        if id == .presentation, let controller = runtime.presentation, controller.phase == .recoveryRequired {
+            PresentationView(runtime: runtime, controller: controller)
+        } else if id == .scenes, let scenes = runtime.scenes, scenes.hasPendingRestore,
+            runtime.presentation?.reservation == nil,
+            runtime.sceneShortcuts == nil || runtime.lifecycle.isShuttingDown
+        {
+            SceneRecoveryView(manager: scenes)
+        } else if runtime.registry.pausedModuleIDs.contains(id) {
             ContentUnavailableView {
                 Label("Module paused", systemImage: "pause.circle")
             } description: {
@@ -205,8 +226,15 @@ struct UtilityShellView: View {
                 if let awake = runtime.awake { AwakeModuleView(awake: awake) } else { startModule(id) }
             case .workspace:
                 if let workspace = runtime.workspace {
-                    WorkspaceView(service: workspace)
-                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if workspace.presentationReservation != nil {
+                            Text("Presentation owns this workspace preview or recovery. End Presentation before changing it.")
+                                .foregroundStyle(.secondary).padding(24)
+                        }
+                        WorkspaceView(service: workspace)
+                            .disabled(workspace.presentationReservation != nil
+                                || runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                    }
                 } else {
                     startModule(id)
                 }
@@ -220,6 +248,36 @@ struct UtilityShellView: View {
             case .storage:
                 if let storage = runtime.storage {
                     SafeEjectView(service: storage)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
+            case .scenes:
+                if let scenes = runtime.scenes, let shortcuts = runtime.sceneShortcuts {
+                    ScenesTab(sceneManager: scenes, shortcutRegistry: shortcuts)
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                } else {
+                    startModule(id)
+                }
+            case .displays:
+                if let displays = runtime.displays {
+                    #if !APP_STORE
+                        ScrollView {
+                            DisplaysPane(
+                                displayService: displays,
+                                isSceneOperationInProgress: runtime.scenes?.isBusy == true
+                                    || runtime.mutationAdmission.activeExclusiveOwner != nil)
+                        }
+                        .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
+                    #else
+                        DisplaysPane()
+                    #endif
+                } else {
+                    startModule(id)
+                }
+            case .presentation:
+                if let controller = runtime.presentation {
+                    PresentationView(runtime: runtime, controller: controller)
                         .disabled(runtime.lifecycle.stopping.contains(id) || runtime.lifecycle.isShuttingDown)
                 } else {
                     startModule(id)
@@ -260,7 +318,7 @@ struct UtilitySettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             ModuleLibraryView(
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
-                pause: runtime.pause, remove: runtime.remove
+                pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason
             )
             .tabItem { Label("Modules", systemImage: "square.grid.2x2") }
             VStack(alignment: .leading, spacing: 16) {
@@ -292,12 +350,21 @@ struct UtilitySettingsView: View {
                 )
                 .tabItem { Label("Sound", systemImage: "speaker.wave.2") }
             }
+            if runtime.registry.state(for: .scenes)?.presence == .added,
+                !runtime.registry.pausedModuleIDs.contains(.scenes),
+                let scenes = runtime.scenes, let shortcuts = runtime.sceneShortcuts
+            {
+                ScenesTab(sceneManager: scenes, shortcutRegistry: shortcuts)
+                    .disabled(runtime.lifecycle.stopping.contains(.scenes) || runtime.lifecycle.isShuttingDown)
+                    .tabItem { Label("Scenes", systemImage: "square.stack.3d.up") }
+            }
             UpdatesTab(updateManager: runtime.updateManager).tabItem {
                 Label("Updates", systemImage: "arrow.triangle.2.circlepath")
             }
             AboutTab().tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 860, height: 620)
+        .disabled(runtime.mutationDisabledReason != nil)
         .preferredColorScheme(runtime.settings.appSettings.appearance.swiftUIColorScheme)
     }
 }
