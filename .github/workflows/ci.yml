@@ -41,6 +41,15 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Record test diagnostic baseline and toolchain
+        run: |
+          mkdir -p build/test-diagnostics
+          python3 -c 'import time; from pathlib import Path; Path("build/test-diagnostics/started-at").write_text(str(time.time_ns()))'
+          xcodebuild -version > build/test-diagnostics/xcode-version.txt
+          xcrun swift --version > build/test-diagnostics/swift-version.txt
+          xcode-select --print-path > build/test-diagnostics/developer-directory.txt
+          sw_vers > build/test-diagnostics/macos-version.txt
+
       - name: Build
         run: |
           xcodebuild build \
@@ -51,6 +60,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO
 
       - name: Test
+        id: test
         run: |
           xcodebuild test \
             -project Semper.xcodeproj \
@@ -67,4 +77,72 @@ jobs:
         with:
           name: test-results
           path: build/TestResults.xcresult
+          retention-days: 7
+
+      - name: Collect test-host crash reports
+        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import re
+          import stat
+          import time
+          from pathlib import Path
+
+          output = Path("build/test-diagnostics")
+          started_at = int((output / "started-at").read_text())
+          filename = re.compile(r"^(Semper|SemperUITests-Runner)[-_]\d{4}-\d{2}-\d{2}.*\.(ips|crash)$")
+          reports, errors = {}, {}
+          total = 0
+          time.sleep(30)
+          for label, directory in (
+              ("user", Path.home() / "Library/Logs/DiagnosticReports"),
+              ("system", Path("/Library/Logs/DiagnosticReports")),
+          ):
+              try:
+                  candidates = sorted(directory.iterdir())
+              except FileNotFoundError:
+                  continue
+              except OSError as error:
+                  errors[label] = str(error)
+                  continue
+              for source in candidates:
+                  if not filename.fullmatch(source.name):
+                      continue
+                  key = label + "/" + source.name
+                  try:
+                      metadata = source.lstat()
+                      if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mtime_ns < started_at
+                              or metadata.st_birthtime < started_at / 1_000_000_000):
+                          continue
+                      limit = min(16 * 1024 * 1024, 64 * 1024 * 1024 - total)
+                      if len(reports) >= 20 or not 0 < metadata.st_size <= limit:
+                          errors[key] = "Report is empty or exceeds capture limits"
+                          continue
+                      with source.open("rb") as stream:
+                          data = stream.read(limit + 1)
+                      if len(data) != metadata.st_size or source.stat().st_mtime_ns != metadata.st_mtime_ns:
+                          errors[key] = "Report changed while being copied"
+                          continue
+                      target = output / key
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(data)
+                      total += len(data)
+                      reports[key] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                  except OSError as error:
+                      errors[key] = str(error)
+          (output / "manifest.json").write_text(json.dumps({
+              "started_at_ns": started_at, "reports": reports, "errors": errors, "total_bytes": total,
+          }, indent=2) + "\n")
+          print(f"Retained {len(reports)} Semper crash reports ({total} bytes).")
+          PY
+
+      - name: Upload test-host diagnostics
+        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-host-diagnostics
+          path: build/test-diagnostics
           retention-days: 7
