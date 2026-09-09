@@ -609,6 +609,155 @@ struct AwakeServiceTests {
         #expect(backend.events == events)
     }
 
+    @Test("Deliberate lifecycle cleanup recovers a terminal manual release failure without reopening Awake")
+    func terminalManualCleanupRetry() {
+        let (service, backend, _, _) = makeService()
+        service.start(.oneHour)
+        backend.failingReleaseIDs = [1]
+        service.stop()
+        service.shutdown()
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.releaseCount(for: 1) == 2)
+
+        backend.failingReleaseIDs = []
+        #expect(service.hasPendingAssertionCleanup)
+        #expect(service.retryPendingAssertionCleanup())
+        #expect(!service.hasPendingAssertionCleanup)
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        #expect(backend.releaseCount(for: 1) == 3)
+        let cleanedEvents = backend.events
+        service.start(.oneHour)
+        service.shutdown()
+        #expect(service.session == nil)
+        #expect(throws: AwakeLeaseError.serviceUnavailable) {
+            _ = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: false)
+        }
+        #expect(backend.events == cleanedEvents)
+    }
+
+    @Test("Lifecycle retry drains mixed pending IDs but preserves a live owner and partial failure")
+    func mixedPendingLifecycleCleanup() throws {
+        let admission = ManualAdmission()
+        let (service, backend, _, _) = makeService { admission.check() }
+        defer { service.shutdown() }
+        service.start(.oneHour)
+        let away = try service.acquireLease(owner: .awayMode, keepsDisplayAwake: true)
+        let scene = try service.acquireLease(owner: .scene, keepsDisplayAwake: false)
+        backend.failingReleaseIDs = [1, 4]
+        service.stop()
+        #expect(!service.releaseLease(scene))
+        #expect(service.hasPendingAssertionCleanup)
+        #expect(service.hasPendingLeaseCleanup(owner: .scene))
+        admission.allowed = false
+        let admissionChecks = admission.checkCount
+
+        backend.failingReleaseIDs = [1]
+        #expect(!service.retryPendingAssertionCleanup())
+        #expect(service.failure == .couldNotRelease)
+        #expect(service.hasPendingAssertionCleanup)
+        #expect(!service.hasPendingLeaseCleanup(owner: .scene))
+        #expect(backend.activeAssertionIDs == [1, 2, 3])
+        #expect(service.hasLease(for: .awayMode))
+        #expect(admission.checkCount == admissionChecks)
+
+        backend.failingReleaseIDs = []
+        #expect(service.retryPendingAssertionCleanup())
+        #expect(!service.hasPendingAssertionCleanup)
+        #expect(service.failure == nil)
+        #expect(backend.activeAssertionIDs == [2, 3])
+        #expect(backend.releaseCount(for: 1) == 3)
+        #expect(backend.releaseCount(for: 4) == 2)
+        #expect(service.session == nil)
+        let cleanedEvents = backend.events
+        #expect(service.retryPendingAssertionCleanup())
+        #expect(service.retryReleaseLease(scene))
+        #expect(backend.events == cleanedEvents)
+        #expect(service.releaseLease(away))
+    }
+
+    @Test("Manual acquisition rollback without a session can be retried before shutdown")
+    func rollbackOnlyLifecycleCleanup() {
+        let (service, backend, scheduler, _) = makeService()
+        defer { service.shutdown() }
+        service.setKeepDisplayAwake(true)
+        backend.failingKinds = [.preventIdleDisplaySleep]
+        backend.failingReleaseIDs = [1]
+        service.start(.oneHour)
+        #expect(service.session == nil)
+        #expect(service.hasPendingAssertionCleanup)
+        #expect(scheduler.scheduledDate == nil)
+        #expect(!service.retryPendingAssertionCleanup())
+        #expect(backend.releaseCount(for: 1) == 2)
+        backend.failingReleaseIDs = []
+        #expect(service.retryPendingAssertionCleanup())
+        #expect(service.failure == nil)
+        #expect(!service.hasPendingAssertionCleanup)
+        #expect(service.session == nil)
+        #expect(backend.activeAssertionIDs.isEmpty)
+        let cleanedEvents = backend.events
+        service.shutdown()
+        #expect(backend.events == cleanedEvents)
+    }
+
+    @Test("Terminal cleanup retries only failed IDs and never recreates assertions")
+    func terminalPartialLifecycleCleanup() throws {
+        let (service, backend, scheduler, _) = makeService()
+        service.start(.oneHour)
+        _ = try service.acquireLease(owner: .scene, keepsDisplayAwake: true)
+        backend.failingReleaseIDs = [1, 3]
+        service.shutdown()
+        #expect(service.hasPendingAssertionCleanup)
+        #expect(backend.releaseCount(for: 2) == 1)
+        #expect(backend.activeAssertionIDs == [1, 3])
+
+        backend.failingReleaseIDs = [3]
+        #expect(!service.retryPendingAssertionCleanup())
+        #expect(service.failure == .couldNotRelease)
+        #expect(backend.activeAssertionIDs == [3])
+        #expect(service.hasPendingLeaseCleanup(owner: .scene))
+        backend.failingReleaseIDs = []
+        #expect(service.retryPendingAssertionCleanup())
+        #expect(!service.hasPendingLeaseCleanup(owner: .scene))
+        #expect(!service.hasPendingAssertionCleanup)
+        #expect(backend.releaseCount(for: 1) == 3)
+        #expect(backend.releaseCount(for: 2) == 1)
+        #expect(backend.releaseCount(for: 3) == 4)
+        let cleanedEvents = backend.events
+        #expect(service.retryPendingAssertionCleanup())
+        service.start(.oneHour)
+        service.shutdown()
+        #expect(service.session == nil)
+        #expect(service.leaseStates.isEmpty)
+        #expect(scheduler.scheduledDate == nil)
+        #expect(backend.events == cleanedEvents)
+    }
+
+    @Test("Pending lifecycle cleanup invalidates observation on failure and recovery")
+    func pendingCleanupObservation() async {
+        let (service, backend, _, _) = makeService()
+        defer { service.shutdown() }
+        service.start(.oneHour)
+        await confirmation("Pending cleanup changed", expectedCount: 2) { changed in
+            withObservationTracking {
+                _ = service.hasPendingAssertionCleanup
+            } onChange: {
+                changed()
+            }
+            backend.failingReleaseIDs = [1]
+            service.stop()
+            #expect(service.hasPendingAssertionCleanup)
+            withObservationTracking {
+                _ = service.hasPendingAssertionCleanup
+            } onChange: {
+                changed()
+            }
+            backend.failingReleaseIDs = []
+            #expect(service.retryPendingAssertionCleanup())
+            #expect(!service.hasPendingAssertionCleanup)
+        }
+    }
+
     @Test("Initial state is inactive with no assertions")
     func initialState() {
         let (service, backend, scheduler, _) = makeService()
