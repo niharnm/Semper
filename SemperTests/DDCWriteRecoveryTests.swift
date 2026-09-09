@@ -166,6 +166,42 @@ struct DeviceVolumeMonitorDDCCompletionTests {
         #expect(monitor.muteStates[deviceID] == false)
         #expect(events == ["volume", "mute", "completed:true"])
     }
+
+    @Test("Admission rejection completes volume and mute commands as failures")
+    func admissionRejectionCompletesCommands() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settings = SettingsManager(directory: directory)
+        let controller = DDCController(settingsManager: settings)
+        let deviceID: AudioDeviceID = 0xF0000001
+        controller.applyProbePublication(.matched(
+            services: [deviceID: DDCService(service: kCFBooleanTrue)],
+            deviceUIDs: [deviceID: "rejected-ddc-device"],
+            readVolumes: [deviceID: 50]
+        ))
+        let gate = MutationAdmissionGate()
+        #expect(controller.installMutationAdmission(gate))
+        let exclusive = try gate.acquire(owner: .awayMode, mode: .exclusive)
+        defer { _ = gate.release(exclusive) }
+        let monitor = DeviceVolumeMonitor(
+            deviceMonitor: AudioDeviceMonitor(),
+            settingsManager: settings,
+            ddcController: controller
+        )
+        var events: [String] = []
+        monitor.onOutputWriteCompleted = { _, succeeded in
+            events.append("completed:\(succeeded)")
+        }
+        monitor.onOutputWriteFailed = { _ in events.append("rejected") }
+
+        monitor.setVolume(for: deviceID, to: 0.2)
+        monitor.setMute(for: deviceID, to: true)
+
+        #expect(monitor.volumes[deviceID] == nil)
+        #expect(monitor.muteStates[deviceID] == nil)
+        #expect(events == ["completed:false", "rejected", "completed:false", "rejected"])
+    }
 }
 
 #endif

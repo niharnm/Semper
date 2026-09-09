@@ -54,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         terminationDrainTask = Task { @MainActor [weak self] in
             await displayService.stopAndDrain()
+            #if !APP_STORE
+            await self?.audioEngine?.ddcController.stopAndDrain()
+            #endif
             self?.isTerminationDrainComplete = true
             self?.terminationDrainTask = nil
             sender.reply(toApplicationShouldTerminate: true)
@@ -203,6 +206,7 @@ struct SemperApp: App {
         _audioActivityStore = State(initialValue: activityStore)
         let mutationAdmission = MutationAdmissionGate()
         #if !APP_STORE
+        precondition(engine.ddcController.installMutationAdmission(mutationAdmission))
         let displayService = DisplayControlService(
             ddcController: engine.ddcController,
             mutationAdmission: mutationAdmission
