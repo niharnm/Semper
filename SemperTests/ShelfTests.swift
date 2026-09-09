@@ -64,6 +64,7 @@ nonisolated private final class ShelfBlockingAccess: ShelfFileAccess, @unchecked
     private let lock = NSLock()
     private let entered = DispatchSemaphore(value: 0)
     private let release = DispatchSemaphore(value: 0)
+    private let cancelled = DispatchSemaphore(value: 0)
     private var count = 0
     private var ended = 0
     var balanced: Bool { lock.withLock { count == ended } }
@@ -74,11 +75,18 @@ nonisolated private final class ShelfBlockingAccess: ShelfFileAccess, @unchecked
         }
         if shouldBlock {
             entered.signal()
-            release.wait()
+            var reportedCancellation = false
+            while release.wait(timeout: .now() + 0.005) == .timedOut {
+                if Task.isCancelled, !reportedCancellation {
+                    reportedCancellation = true
+                    cancelled.signal()
+                }
+            }
         }
         return true
     }
     func waitUntilBlocked() -> Bool { entered.wait(timeout: .now() + 5) == .success }
+    func waitUntilCancelled() -> Bool { cancelled.wait(timeout: .now() + 5) == .success }
     func resume() { release.signal() }
     func end(_ url: URL) { lock.withLock { ended += 1 } }
     func state(of url: URL) -> ShelfFileState { NativeShelfFileAccess().state(of: url) }
@@ -130,6 +138,45 @@ struct ShelfTests {
         #expect(service.items.isEmpty)
         #expect(FileManager.default.fileExists(atPath: fixture.file.path))
         await service.shutdown()
+    }
+
+    @Test func extendingExpiryDuringChecksumDrainPreservesOwnedImage() async throws {
+        let fixture = try ShelfFixture()
+        defer { fixture.remove() }
+        let clock = ShelfClock()
+        let access = ShelfBlockingAccess()
+        try fixture.store.prepareCache()
+        let name = "shelf-item-\(UUID().uuidString).png"
+        let cached = try fixture.store.cacheURL(named: name)
+        let image = try #require(
+            Data(
+                base64Encoded:
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jA7sAAAAASUVORK5CYII="))
+        try image.write(to: cached)
+        let item = ShelfItem(
+            name: "Expiring image", payload: .cachedFile(name), now: clock.read(), expiry: .fifteenMinutes)
+        try fixture.store.save(items: [item], expiry: .fifteenMinutes)
+        let service = ShelfService(store: fixture.store, access: access, now: { clock.read() })
+        service.start()
+        service.checksum(item.id)
+        let blocked = await Task.detached { access.waitUntilBlocked() }.value
+        #expect(blocked)
+        clock.advance(900)
+        let expiration = Task { await service.expireItems() }
+        let draining = await Task.detached { access.waitUntilCancelled() }.value
+        #expect(draining)
+        service.setExpiry(.oneHour, for: item.id)
+        access.resume()
+        await expiration.value
+        #expect(service.items.count == 1)
+        #expect(service.items.first?.expiry == .oneHour)
+        #expect(service.checksums[item.id] == .cancelled)
+        #expect(FileManager.default.fileExists(atPath: cached.path))
+        if FileManager.default.fileExists(atPath: cached.path) {
+            #expect(try Data(contentsOf: cached) == image)
+        }
+        await service.shutdown()
+        #expect(access.balanced)
     }
 
     @Test func storeLoadPrunesExpiredAndOrphanedOwnedCopies() async throws {

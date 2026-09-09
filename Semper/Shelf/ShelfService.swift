@@ -210,13 +210,19 @@ final class ShelfService {
     }
 
     func remove(_ id: UUID) async {
+        await remove(id, onlyIfExpired: false)
+    }
+
+    private func remove(_ id: UUID, onlyIfExpired: Bool) async {
         removingIDs.insert(id)
         defer { removingIDs.remove(id) }
         let worker = hashTasks[id]
         worker?.cancel()
+        if worker != nil { checksums[id] = .cancelled }
         _ = await worker?.result
         hashTasks[id] = nil
         guard let item = items.first(where: { $0.id == id }) else { return }
+        guard !onlyIfExpired || (!Task.isCancelled && item.hasExpired(at: now())) else { return }
         if let url = scopes.removeValue(forKey: id) { access.end(url) }
         removeOwnedContent(item)
         items.removeAll { $0.id == id }
@@ -255,7 +261,7 @@ final class ShelfService {
 
     func expireItems() async {
         let ids = items.filter { $0.hasExpired(at: now()) }.map(\.id)
-        for id in ids { await remove(id) }
+        for id in ids { await remove(id, onlyIfExpired: true) }
         scheduleExpiry()
     }
 
