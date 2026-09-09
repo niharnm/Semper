@@ -1,0 +1,243 @@
+import AppKit
+import ApplicationServices
+
+protocol WorkspaceWindowBackend: Sendable {
+    func permission(prompt: Bool) async -> Bool
+    func applications() async -> [WorkspaceApplication]
+    func displays() async -> [WorkspaceDisplay]
+    func windows(in applications: [WorkspaceApplication]) async throws -> [WorkspaceWindowSnapshot]
+    func current(_ id: WorkspaceWindowID) async throws -> WorkspaceWindowSnapshot?
+    func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) async throws -> WorkspaceMoveObservation
+    func shutdown() async
+}
+
+actor AccessibilityWorkspaceBackend: WorkspaceWindowBackend {
+    private struct Handle {
+        let element: AXUIElement
+        let application: WorkspaceApplication
+        let ordinal: Int
+    }
+    private var handles: [WorkspaceWindowID: Handle] = [:]
+    private let messageTimeout: Float = 0.15
+    private var currentDisplays: [WorkspaceDisplay] = []
+
+    func permission(prompt: Bool) -> Bool {
+        if prompt { return AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }
+        return AXIsProcessTrusted()
+    }
+
+    func applications() async -> [WorkspaceApplication] {
+        await MainActor.run {
+            NSWorkspace.shared.runningApplications.compactMap { app in
+                guard app.activationPolicy == .regular,
+                    app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+                    let bundleID = app.bundleIdentifier, let date = app.launchDate
+                else { return nil }
+                return WorkspaceApplication(
+                    pid: app.processIdentifier, bundleID: bundleID,
+                    name: app.localizedName ?? bundleID, launchDate: date)
+            }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    func displays() async -> [WorkspaceDisplay] {
+        let result: [WorkspaceDisplay] = await MainActor.run {
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            return NSScreen.screens.compactMap { screen in
+                guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                    let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue()
+                else { return nil }
+                let identity = CFUUIDCreateString(nil, uuid) as String
+                return WorkspaceDisplay(
+                    id: identity, name: screen.localizedName,
+                    visibleFrame: Self.accessibilityFrame(screen.visibleFrame, primaryHeight: primaryHeight),
+                    fullScreenFrame: Self.accessibilityFrame(
+                        CGRect(
+                            x: screen.frame.minX + screen.safeAreaInsets.left,
+                            y: screen.frame.minY + screen.safeAreaInsets.bottom,
+                            width: screen.frame.width - screen.safeAreaInsets.left - screen.safeAreaInsets.right,
+                            height: screen.frame.height - screen.safeAreaInsets.top - screen.safeAreaInsets.bottom),
+                        primaryHeight: primaryHeight))
+            }
+        }
+        currentDisplays = result
+        return result
+    }
+
+    nonisolated static func accessibilityFrame(_ frame: CGRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(x: frame.minX, y: primaryHeight - frame.maxY, width: frame.width, height: frame.height)
+    }
+
+    func windows(in applications: [WorkspaceApplication]) async throws -> [WorkspaceWindowSnapshot] {
+        guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
+        _ = await displays()
+        let running = await self.applications()
+        handles = handles.filter { running.contains($0.value.application) }
+        var snapshots: [WorkspaceWindowSnapshot] = []
+        for application in applications.prefix(30) {
+            try Task.checkCancellation()
+            guard await isSameProcess(application) else { continue }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            let element = AXUIElementCreateApplication(application.pid)
+            AXUIElementSetMessagingTimeout(element, messageTimeout)
+            do {
+                var value: CFArray?
+                let error = AXUIElementCopyAttributeValues(element, kAXWindowsAttribute as CFString, 0, 200, &value)
+                guard error == .success, let elements = value as? [AXUIElement] else {
+                    snapshots.append(
+                        .init(
+                            id: nil, application: application, ordinal: 1, frame: nil,
+                            issue: error == .cannotComplete ? .timedOut : .unavailable))
+                    continue
+                }
+                handles = handles.filter { entry in
+                    entry.value.application != application || elements.contains { CFEqual(entry.value.element, $0) }
+                }
+                for (index, window) in elements.enumerated() {
+                    try Task.checkCancellation()
+                    if ContinuousClock.now >= deadline {
+                        snapshots.append(
+                            .init(id: nil, application: application, ordinal: index + 1, frame: nil, issue: .timedOut))
+                        break
+                    }
+                    AXUIElementSetMessagingTimeout(window, messageTimeout)
+                    let id =
+                        handles.first(where: {
+                            $0.value.application == application && CFEqual($0.value.element, window)
+                        })?.key ?? WorkspaceWindowID(application: application, token: UUID())
+                    guard handles[id] != nil || handles.count < 2_000 else {
+                        snapshots.append(
+                            .init(
+                                id: nil, application: application, ordinal: index + 1, frame: nil, issue: .unavailable))
+                        continue
+                    }
+                    handles[id] = Handle(element: window, application: application, ordinal: index + 1)
+                    snapshots.append(try snapshot(id, deadline: deadline))
+                    if snapshots.count >= 200 { return snapshots }
+                }
+            } catch is CancellationError { throw CancellationError() } catch {
+                snapshots.append(
+                    .init(id: nil, application: application, ordinal: snapshots.count + 1, frame: nil, issue: .timedOut)
+                )
+            }
+        }
+        return snapshots
+    }
+
+    func current(_ id: WorkspaceWindowID) async throws -> WorkspaceWindowSnapshot? {
+        try Task.checkCancellation()
+        guard AXIsProcessTrusted() else { throw WorkspaceError.permission }
+        guard handles[id] != nil, await isSameProcess(id.application) else { return nil }
+        _ = await displays()
+        let state = try snapshot(id, deadline: ContinuousClock.now.advanced(by: .seconds(2)))
+        return state.issue == .unavailable ? nil : state
+    }
+
+    func move(_ id: WorkspaceWindowID, to frame: CGRect, expected: CGRect) async throws -> WorkspaceMoveObservation {
+        guard WorkspaceGeometry.valid(frame), let state = try await current(id), let before = state.frame,
+            let handle = handles[id]
+        else { throw WorkspaceError.missing }
+        guard state.issue == nil else {
+            return .init(before: before, after: before, failure: state.issue?.message)
+        }
+        guard before == expected else {
+            return .init(
+                before: before, after: before,
+                failure: "The window changed after preview. Preview again before restoring.")
+        }
+        var position = frame.origin
+        var size = frame.size
+        guard let positionValue = AXValueCreate(.cgPoint, &position), let sizeValue = AXValueCreate(.cgSize, &size)
+        else {
+            return .init(before: before, after: before, failure: "The requested frame is invalid.")
+        }
+        var failure: String?
+        // A second size write lets the destination display apply its own size constraints.
+        for (attribute, value) in [
+            (kAXSizeAttribute, sizeValue), (kAXPositionAttribute, positionValue), (kAXSizeAttribute, sizeValue),
+        ] {
+            guard !Task.isCancelled else {
+                failure = "Restore cancelled after the last observed change."
+                break
+            }
+            guard AXIsProcessTrusted() else {
+                failure = WorkspaceError.permission.localizedDescription
+                break
+            }
+            let result = AXUIElementSetAttributeValue(handle.element, attribute as CFString, value)
+            if result != .success {
+                failure =
+                    result == .cannotComplete
+                    ? "The app did not respond to the window change." : "The app rejected a window change."
+                break
+            }
+        }
+        let after = readFrame(handle.element)
+        if after == nil && failure == nil { failure = "The app did not return the resulting window frame." }
+        return WorkspaceMoveObservation(before: before, after: after, failure: failure)
+    }
+
+    func shutdown() {
+        handles.removeAll()
+        currentDisplays = []
+    }
+
+    private func isSameProcess(_ application: WorkspaceApplication) async -> Bool {
+        await MainActor.run {
+            guard let app = NSRunningApplication(processIdentifier: application.pid) else { return false }
+            return !app.isTerminated && app.bundleIdentifier == application.bundleID
+                && app.launchDate == application.launchDate
+        }
+    }
+
+    private func snapshot(_ id: WorkspaceWindowID, deadline: ContinuousClock.Instant) throws -> WorkspaceWindowSnapshot
+    {
+        guard let handle = handles[id] else { throw WorkspaceError.missing }
+        func value(_ name: String) throws -> CFTypeRef? {
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else { throw WorkspaceWindowReadError.timeout }
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(handle.element, name as CFString, &value)
+            if result == .invalidUIElement { throw WorkspaceError.missing }
+            return result == .success ? value : nil
+        }
+        do {
+            let role = try value(kAXSubroleAttribute) as? String
+            let minimized = try value(kAXMinimizedAttribute) as? Bool
+            let frame = readFrame(handle.element)
+            var movable = DarwinBoolean(false)
+            var resizable = DarwinBoolean(false)
+            let moveResult = AXUIElementIsAttributeSettable(handle.element, kAXPositionAttribute as CFString, &movable)
+            let sizeResult = AXUIElementIsAttributeSettable(handle.element, kAXSizeAttribute as CFString, &resizable)
+            let issue = WorkspaceWindowRules.issue(
+                standard: role.map { $0 == kAXStandardWindowSubrole }, minimized: minimized, frame: frame,
+                displays: currentDisplays,
+                movable: moveResult == .success ? movable.boolValue : nil,
+                resizable: sizeResult == .success ? resizable.boolValue : nil)
+            return .init(id: id, application: handle.application, ordinal: handle.ordinal, frame: frame, issue: issue)
+        } catch is CancellationError { throw CancellationError() } catch {
+            return .init(
+                id: id, application: handle.application, ordinal: handle.ordinal, frame: nil,
+                issue: error is WorkspaceWindowReadError ? .timedOut : .unavailable)
+        }
+    }
+
+    private func readFrame(_ element: AXUIElement) -> CGRect? {
+        var originValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &originValue) == .success,
+            AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+            let originValue, let sizeValue, CFGetTypeID(originValue) == AXValueGetTypeID(),
+            CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(originValue as! AXValue, .cgPoint, &origin),
+            AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+        else { return nil }
+        let frame = CGRect(origin: origin, size: size)
+        return WorkspaceGeometry.valid(frame) ? frame : nil
+    }
+}
+
+private enum WorkspaceWindowReadError: Error { case timeout }
