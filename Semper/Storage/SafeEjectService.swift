@@ -20,6 +20,7 @@ final class SafeEjectService {
     private var snapshot = SafeEjectInventory(volumes: [], hasUnidentifiedLocalVolumes: false)
     @ObservationIgnored private let backend: any SafeEjectBackend
     @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var stopGeneration = UUID()
     @ObservationIgnored private var cleanupEpoch = UUID()
     @ObservationIgnored private var cleanupWait: Task<Result<Void, SafeEjectFailure>, Never>?
 
@@ -46,6 +47,7 @@ final class SafeEjectService {
 
     func pause() {
         guard state != .shutDown else { return }
+        stopGeneration = UUID()
         invalidateOperation()
         backend.stop()
         state = .paused
@@ -64,7 +66,13 @@ final class SafeEjectService {
     func waitForCleanup() async -> Result<Void, SafeEjectFailure> {
         if let cleanupWait { return await cleanupWait.value }
         let task = Task { [self] () -> Result<Void, SafeEjectFailure> in
-            let result = await backend.drain()
+            var drainedStopGeneration = stopGeneration
+            var result = await backend.drain()
+            // A newer stop must drain any reader scheduled by an earlier active retry.
+            while case .success = result, drainedStopGeneration != stopGeneration {
+                drainedStopGeneration = stopGeneration
+                result = await backend.drain()
+            }
             switch result {
             case .success:
                 cleanupEpoch = UUID()
