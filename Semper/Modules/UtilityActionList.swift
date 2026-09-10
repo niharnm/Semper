@@ -3,6 +3,9 @@ import SwiftUI
 struct UtilityActionList: View {
     let commands: UtilityCommandCenter
     let actions: [UtilityActionDescriptor]
+    var showsModuleName = false
+    var selectedActionID: UtilityActionID?
+    var activationRequest = 0
     @State private var pendingConfirmation: UtilityActionDescriptor?
     @State private var message: String?
 
@@ -16,7 +19,10 @@ struct UtilityActionList: View {
                         HStack(spacing: 10) {
                             Image(systemName: action.symbolName).frame(width: 20).accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(action.title)
+                                Text(action.title).font(.callout.weight(.medium))
+                                if showsModuleName, let module = commands.registry.descriptor(for: action.module) {
+                                    Text(module.title).font(.caption).foregroundStyle(.secondary)
+                                }
                                 if let reason = commands.disabledReason(for: action.id) {
                                     Text(reason).font(.caption).foregroundStyle(.secondary)
                                 }
@@ -27,6 +33,8 @@ struct UtilityActionList: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(action.title)
+                    .accessibilityValue(commands.disabledReason(for: action.id) ?? "")
                     .disabled(commands.disabledReason(for: action.id) != nil)
                     Button {
                         do {
@@ -39,15 +47,34 @@ struct UtilityActionList: View {
                         }
                     } label: {
                         Image(systemName: isFavorite(action) ? "star.fill" : "star")
+                            .frame(width: 28, height: 28).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(isFavorite(action) ? Color.accentColor : Color.secondary)
                     .accessibilityLabel("\(isFavorite(action) ? "Unpin" : "Pin") \(action.title)")
+                    .help("\(isFavorite(action) ? "Unpin" : "Pin") \(action.title)")
                 }
                 .padding(10)
-                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                    selectedActionID == action.id
+                        ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+                .overlay {
+                    if selectedActionID == action.id {
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 1)
+                    }
+                }
+                .id(action.id)
+                .accessibilityAddTraits(selectedActionID == action.id ? .isSelected : [])
             }
             if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+        }
+        .onChange(of: activationRequest) { _, _ in
+            guard pendingConfirmation == nil,
+                let action = actions.first(where: { $0.id == selectedActionID })
+            else { return }
+            execute(action)
         }
         .confirmationDialog(
             pendingConfirmation?.title ?? "Confirm action",
@@ -86,5 +113,22 @@ struct UtilityActionList: View {
                 pendingConfirmation = nil
             }
         }
+    }
+}
+
+enum UtilityActionSelection {
+    static func reconciled(_ selection: UtilityActionID?, among ids: [UtilityActionID]) -> UtilityActionID? {
+        if let selection, ids.contains(selection) { return selection }
+        return ids.first
+    }
+
+    static func moved(from selection: UtilityActionID?, by direction: Int, among ids: [UtilityActionID])
+        -> UtilityActionID?
+    {
+        guard !ids.isEmpty else { return nil }
+        guard let selection, let index = ids.firstIndex(of: selection) else {
+            return direction < 0 ? ids.last : ids.first
+        }
+        return ids[min(max(index + direction, 0), ids.count - 1)]
     }
 }

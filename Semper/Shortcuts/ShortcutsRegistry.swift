@@ -160,7 +160,9 @@ final class ShortcutsRegistry {
             return adjustTargetVolume(direction: -1)
         case .targetAppMuteToggle:
             return toggleTargetMute()
-        case .restoreWorkspace, .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore:
+        case .restoreWorkspace, .windowLeftHalf, .windowRightHalf, .windowTopHalf, .windowBottomHalf,
+            .windowTopLeftQuarter, .windowTopRightQuarter, .windowBottomLeftQuarter, .windowBottomRightQuarter,
+            .windowMaximize, .windowCenter, .windowRestore:
             return false
         }
     }

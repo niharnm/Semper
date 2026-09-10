@@ -1,59 +1,176 @@
 import SwiftUI
 
+enum ModuleLibraryFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case added = "Added"
+    case available = "Available"
+
+    var id: String { rawValue }
+
+    @MainActor
+    func modules(in registry: ModuleRegistry, matching query: String = "") -> [UtilityModuleDescriptor] {
+        let terms = query.split(whereSeparator: \.isWhitespace)
+        return registry.modules.filter { module in
+            let presence = registry.state(for: module.id)?.presence
+            let included =
+                switch self {
+                case .all: true
+                case .added: presence == .added
+                case .available: presence == .available
+                }
+            let searchableText = "\(module.title) \(module.summary)"
+            return included && terms.allSatisfy { searchableText.localizedStandardContains(String($0)) }
+        }
+    }
+}
+
 struct ModuleLibraryView: View {
     let registry: ModuleRegistry
     let lifecycle: UtilityLifecycle
     let pause: (UtilityModuleID) async throws -> Void
     let remove: (UtilityModuleID) async throws -> Void
     var mutationDisabledReason: String?
+    var open: ((UtilityModuleID) -> Void)? = nil
     @State private var message: String?
+    @State private var searchText = ""
+    @State private var filter = ModuleLibraryFilter.all
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Modules").font(.title2.bold())
-                    Text(
-                        "Add the controls you use. Adding a module starts no background work and requests no permission. Removing a module keeps its saved data."
-                    )
-                    .foregroundStyle(.secondary)
+                    Text("Modules").font(.largeTitle.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Choose the controls you use on your Mac.").foregroundStyle(.secondary)
                 }
                 if let mutationDisabledReason {
-                    Text(mutationDisabledReason).foregroundStyle(.orange)
+                    Label(mutationDisabledReason, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(registry.modules) { module in
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: module.symbolName).font(.title3).frame(width: 28)
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(module.title).font(.headline)
-                                    Text(module.summary).foregroundStyle(.secondary)
-                                    Text(statusText(for: module.id))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                controls(for: module.id)
-                                    .controlSize(.small)
-                            }
-                            if let reason = attentionReason(for: module.id) {
-                                Text(reason).font(.callout).foregroundStyle(.orange)
-                            }
-                            DisclosureGroup("Permissions, activity and data") {
-                                moduleDetails(for: module)
-                                    .padding(.top, 10)
-                            }
-                            .font(.subheadline)
+                if let message {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("Search modules", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.large)
+                        .accessibilityLabel("Search modules")
+                        .onExitCommand { searchText = "" }
+                    Picker("Show modules", selection: $filter) {
+                        ForEach(ModuleLibraryFilter.allCases) { option in
+                            Text("\(option.rawValue) (\(option.modules(in: registry).count))").tag(option)
                         }
-                        .padding(.vertical, 14)
-                        if module.id != registry.modules.last?.id { Divider() }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityLabel("Show modules")
+                    Text(
+                        "Adding a module starts no background work and requests no permission. Removing it keeps its saved data."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                let modules = filter.modules(in: registry, matching: searchText)
+                if modules.isEmpty {
+                    emptyState
+                } else {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12, alignment: .top)], spacing: 12) {
+                        ForEach(modules) { module in
+                            moduleCard(module)
+                        }
                     }
                 }
-                if let message { Text(message).foregroundStyle(.orange).accessibilityAddTraits(.updatesFrequently) }
             }
             .padding(24)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label(
+                searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? (filter == .added ? "No modules added" : "No modules available")
+                    : "No matching modules",
+                systemImage: "square.grid.2x2"
+            )
+        } description: {
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Try a tool name or what it does, such as audio, windows, or files.")
+            } else if filter == .added {
+                Text("Browse the library and add the tools you want to use.")
+            } else if filter == .available {
+                Text("There are no more modules to add on this Mac. Choose All to view the library.")
+            } else {
+                Text("Modules supported on this Mac will appear here.")
+            }
+        } actions: {
+            if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("Clear Search") { searchText = "" }
+            }
+            if filter != .all {
+                Button("Show All Modules") { filter = .all }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+    }
+
+    private func moduleCard(_ module: UtilityModuleDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: module.symbolName)
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 40, height: 40)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(module.title).font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(statusText(for: module.id))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(module.summary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+            if let reason = attentionReason(for: module.id) {
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.orange)
+            }
+            HStack(spacing: 8) {
+                if registry.state(for: module.id)?.presence == .added, let open {
+                    Button("Open") { open(module.id) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityLabel("Open \(module.title)")
+                        .disabled(lifecycle.isShuttingDown)
+                }
+                Spacer(minLength: 0)
+                controls(for: module.id)
+            }
+            .controlSize(.small)
+            Divider()
+            DisclosureGroup("Permissions, activity and data") {
+                moduleDetails(for: module)
+                    .font(.callout)
+                    .padding(.top, 10)
+            }
+            .font(.caption)
+            .accessibilityLabel("Permissions, activity and data for \(module.title)")
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
         }
     }
 
@@ -182,12 +299,16 @@ struct ModuleLibraryView: View {
                         ProgressView().controlSize(.small).accessibilityLabel("Stopping module")
                     } else if case .failed = state.runtime, registry.pausedModuleIDs.contains(id) {
                         Button("Retry stop") { Task { await changeAsync { try await pause(id) } } }
+                            .accessibilityLabel("Retry stopping \(registry.descriptor(for: id)?.title ?? id.rawValue)")
                     } else if registry.pausedModuleIDs.contains(id) {
                         Button("Resume") { change { try registry.resume(id) } }
+                            .accessibilityLabel("Resume \(registry.descriptor(for: id)?.title ?? id.rawValue)")
                     } else {
                         Button("Pause") { Task { await changeAsync { try await pause(id) } } }
+                            .accessibilityLabel("Pause \(registry.descriptor(for: id)?.title ?? id.rawValue)")
                     }
                     Button("Remove") { Task { await changeAsync { try await remove(id) } } }
+                        .accessibilityLabel("Remove \(registry.descriptor(for: id)?.title ?? id.rawValue)")
                 }
                 .disabled(mutationDisabledReason != nil || lifecycle.stopping.contains(id) || lifecycle.isShuttingDown)
                 .fixedSize(horizontal: true, vertical: false)

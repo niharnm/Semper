@@ -9,6 +9,19 @@ alignment from [PR #111](https://github.com/niharnm/Semper/pull/111), following
 Window Layout in [PR #110](https://github.com/niharnm/Semper/pull/110).
 Latest downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
 
+## macOS experience change set
+
+This source change set keeps Semper exclusively on macOS. It adds a quieter
+Home, keyboard action selection and execution, searchable module discovery,
+and six Window Layout placements: top and bottom halves and all four quarters.
+All eleven Window Layout actions have optional shortcuts. These
+changes are implemented in this change set; they are not in the public v1.0.0
+binary. The integrated snapshot above remains the baseline until merge.
+
+The existing command admission, confirmation, permission and recovery rules
+still apply. Native keyboard, VoiceOver and real-window acceptance remain
+separate from compilation, unit tests and offscreen view rendering.
+
 ## States
 
 - **Released**: included in a published signed release users can download.

@@ -317,7 +317,9 @@ struct ShortcutsTab: View {
         case .targetAppVolumeDown: "speaker.wave.1.fill"
         case .targetAppMuteToggle: "speaker.slash.fill"
         case .restoreWorkspace: "macwindow.on.rectangle"
-        case .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore:
+        case .windowLeftHalf, .windowRightHalf, .windowTopHalf, .windowBottomHalf, .windowTopLeftQuarter,
+            .windowTopRightQuarter, .windowBottomLeftQuarter, .windowBottomRightQuarter,
+            .windowMaximize, .windowCenter, .windowRestore:
             "rectangle.split.2x1"
         }
     }
@@ -347,7 +349,9 @@ struct ShortcutsTab: View {
         case .targetAppVolumeDown: "Lower the selected target app's volume"
         case .targetAppMuteToggle: "Mute or unmute the selected target app"
         case .restoreWorkspace: "Prepare a fresh workspace restore preview"
-        case .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter:
+        case .windowLeftHalf, .windowRightHalf, .windowTopHalf, .windowBottomHalf, .windowTopLeftQuarter,
+            .windowTopRightQuarter, .windowBottomLeftQuarter, .windowBottomRightQuarter,
+            .windowMaximize, .windowCenter:
             "Arrange the frontmost app window"
         case .windowRestore: "Restore the immediately preceding window placement"
         }

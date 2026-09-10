@@ -9,6 +9,9 @@ struct UtilityShellView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @FocusState private var searchFocused: Bool
+    @State private var selectedSearchAction: UtilityActionID?
+    @State private var searchActivation = 0
+    @State private var showingAllActions = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +39,9 @@ struct UtilityShellView: View {
         .onChange(of: runtime.searchFocusRequest) { _, _ in
             if !compact { searchFocused = true }
         }
+        .onChange(of: runtime.registry.search(runtime.searchText).map(\.id), initial: true) { _, ids in
+            selectedSearchAction = UtilityActionSelection.reconciled(selectedSearchAction, among: ids)
+        }
     }
 
     private var header: some View {
@@ -47,6 +53,7 @@ struct UtilityShellView: View {
                 searchFocused = true
             } label: {
                 Image(systemName: "magnifyingglass")
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
             }
             .keyboardShortcut("k", modifiers: .command)
             .help("Search Semper actions")
@@ -56,6 +63,7 @@ struct UtilityShellView: View {
                     openWindow(id: "utilities")
                 } label: {
                     Image(systemName: "macwindow")
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .help("Open Semper window").accessibilityLabel("Open Semper window")
                 Button {
@@ -63,6 +71,7 @@ struct UtilityShellView: View {
                     openWindow(id: "utilities")
                 } label: {
                     Image(systemName: "square.grid.2x2")
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
                 }
                 .help("Manage modules").accessibilityLabel("Manage modules")
             }
@@ -70,12 +79,14 @@ struct UtilityShellView: View {
                 openSettings()
             } label: {
                 Image(systemName: "gearshape")
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
             }
             .help("Settings").accessibilityLabel("Settings")
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Image(systemName: "power")
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
             }
             .help("Quit Semper").accessibilityLabel("Quit Semper")
         }
@@ -103,126 +114,282 @@ struct UtilityShellView: View {
         case .modules:
             ModuleLibraryView(
                 registry: runtime.registry, lifecycle: runtime.lifecycle,
-                pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason)
+                pause: runtime.pause, remove: runtime.remove, mutationDisabledReason: runtime.mutationDisabledReason,
+                open: { runtime.destination = .module($0) })
         case .module(let id):
             module(id).disabled(moduleInteractionDisabled(for: id))
         }
     }
 
     private var home: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                TextField("Search Semper actions", text: $runtime.searchText)
-                    .textFieldStyle(.roundedBorder).focused($searchFocused)
-                    .accessibilityLabel("Search Semper actions")
-                if let destination = sceneRecoveryDestination {
-                    Button {
-                        runtime.destination = destination
-                        if compact { openWindow(id: "utilities") }
-                    } label: {
-                        Label("Recover Previous Setup", systemImage: "arrow.uturn.backward")
-                    }
+        VStack(alignment: .leading, spacing: 18) {
+            if !compact {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Home").font(.largeTitle.weight(.semibold))
+                    Text("Your Mac utilities, within reach.").foregroundStyle(.secondary)
                 }
-                if runtime.searchText.isEmpty {
-                    if !runtime.registry.favoriteActions.isEmpty {
-                        Text("Pinned actions").font(.headline)
-                        UtilityActionList(commands: runtime.commands, actions: runtime.registry.favoriteActions)
-                    }
-                    ForEach(runtime.registry.addedModules) { module in
-                        if compact, module.id == .shelf, shelfStopRecoveryRoute != nil {
-                            ShelfStopRecoveryView(runtime: runtime)
-                                .disabled(moduleInteractionDisabled(for: .shelf))
-                        } else if compact, module.id == .shelf,
-                            !runtime.registry.pausedModuleIDs.contains(.shelf),
-                            !runtime.lifecycle.stopping.contains(.shelf), !runtime.lifecycle.isShuttingDown,
-                            let shelf = runtime.shelf, shelf.isRunning
-                        {
-                            ShelfCompactView(service: shelf) {
-                                Task {
-                                    do {
-                                        try await runtime.open(.shelf)
-                                        runtime.message = nil
-                                    } catch { runtime.message = error.localizedDescription }
-                                }
-                            }
-                            .disabled(runtime.mutationDisabledReason != nil)
+            }
+            searchField
+            if let destination = sceneRecoveryDestination {
+                Button {
+                    runtime.destination = destination
+                    if compact { openWindow(id: "utilities") }
+                } label: {
+                    Label("Recover Previous Setup", systemImage: "arrow.uturn.backward")
+                }
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        if isSearching {
+                            searchResults
                         } else {
-                            Button {
-                                runtime.destination = .module(module.id)
-                                if compact { openWindow(id: "utilities") }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: module.symbolName).frame(width: 24)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(module.title).font(.headline)
-                                        Text(runtime.summary(for: module.id)).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                            homeOverview
                         }
                     }
-                    if let message = runtime.message?.trimmingCharacters(in: .whitespacesAndNewlines),
-                        !attentionItems.contains(where: { item in
-                            item.reasons.contains { $0.caseInsensitiveCompare(message) == .orderedSame }
-                        })
-                    {
-                        Text(message).foregroundStyle(.orange)
-                    }
-                    if !attentionItems.isEmpty {
-                        Text("Needs attention").font(.headline)
-                        ForEach(attentionItems) { item in
-                            if let module = runtime.registry.descriptor(for: item.id) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Label(module.title, systemImage: "exclamationmark.triangle")
-                                        .font(.subheadline.weight(.medium))
-                                    ForEach(item.reasons, id: \.self) { reason in
-                                        Text(reason).font(.caption)
-                                    }
-                                }
-                                .foregroundStyle(.orange)
-                            }
-                        }
-                    }
-                    if !runtime.commands.recentActions.isEmpty {
-                        HStack {
-                            Text("Recent actions").font(.headline)
-                            Spacer()
-                            Text("This session").font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(
-                            runtime.commands.recentActions.prefix(
-                                compact ? 3 : UtilityCommandCenter.maximumRecentActions)
-                        ) { entry in
-                            if let action = runtime.registry.actionMetadata(for: entry.actionID) {
-                                HStack(spacing: 10) {
-                                    Label(action.title, systemImage: action.symbolName)
-                                        .font(.caption)
-                                    Spacer()
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(entry.result.displayText)
-                                        Text(entry.timestamp, style: .time)
-                                    }
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                .accessibilityElement(children: .combine)
-                            }
-                        }
-                    }
-                    Text("Actions").font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(2)
                 }
-                let matches = runtime.commands.registry.search(runtime.searchText)
-                if matches.isEmpty {
-                    Text("No matching actions. Add a module to make its actions available.").foregroundStyle(.secondary)
-                } else {
-                    UtilityActionList(commands: runtime.commands, actions: matches)
+                .onChange(of: selectedSearchAction) { _, id in
+                    if let id { proxy.scrollTo(id, anchor: .center) }
                 }
             }
         }
         .frame(maxHeight: compact ? 560 : nil)
+    }
+
+    private var isSearching: Bool {
+        !runtime.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
+            TextField("Search Semper actions", text: $runtime.searchText)
+                .textFieldStyle(.plain).focused($searchFocused)
+                .accessibilityLabel("Search Semper actions")
+                .accessibilityHint(
+                    "Use the arrow keys to select a result and Return to run it. Escape clears the search."
+                )
+                .onSubmit { if isSearching { searchActivation += 1 } }
+                .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                    guard isSearching else { return .ignored }
+                    selectedSearchAction = UtilityActionSelection.moved(
+                        from: selectedSearchAction, by: press.key == .downArrow ? 1 : -1,
+                        among: runtime.registry.search(runtime.searchText).map(\.id))
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard !runtime.searchText.isEmpty else { return .ignored }
+                    runtime.searchText = ""
+                    return .handled
+                }
+            if !runtime.searchText.isEmpty {
+                Button {
+                    runtime.searchText = ""
+                    searchFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityLabel("Clear action search")
+            } else {
+                Text("⌘K").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(searchFocused ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+        .onChange(of: runtime.searchText) { _, query in
+            selectedSearchAction = runtime.registry.search(query).first?.id
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        let matches = runtime.registry.search(runtime.searchText)
+        HStack {
+            Text("\(matches.count) \(matches.count == 1 ? "action" : "actions")").font(.subheadline.weight(.medium))
+            Spacer()
+            Text("↑ ↓ Select   ↩ Run").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+        }
+        if matches.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("No matching actions").font(.headline)
+                Text("Try a utility name or an action such as volume, awake, or window.")
+                    .foregroundStyle(.secondary)
+                Button("Browse Modules") {
+                    runtime.destination = .modules
+                    if compact { openWindow(id: "utilities") }
+                }
+            }
+            .padding(.vertical, 12)
+        } else {
+            UtilityActionList(
+                commands: runtime.commands, actions: matches, showsModuleName: true,
+                selectedActionID: selectedSearchAction, activationRequest: searchActivation)
+        }
+    }
+
+    @ViewBuilder
+    private var homeOverview: some View {
+        if let message = runtime.message?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !message.isEmpty,
+            !attentionItems.contains(where: { item in
+                item.reasons.contains { $0.caseInsensitiveCompare(message) == .orderedSame }
+            })
+        {
+            Text(message).foregroundStyle(.orange).textSelection(.enabled)
+        }
+        if !attentionItems.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Needs attention", systemImage: "exclamationmark.triangle").font(.headline)
+                ForEach(attentionItems) { item in
+                    if let module = runtime.registry.descriptor(for: item.id) {
+                        Button {
+                            runtime.destination = .module(item.id)
+                            if compact { openWindow(id: "utilities") }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(module.title).font(.subheadline.weight(.medium))
+                                ForEach(item.reasons, id: \.self) { Text($0).font(.caption) }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Open this utility to review its status.")
+                    }
+                }
+            }
+            .foregroundStyle(.orange).padding(14)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pinned actions").font(.headline)
+            if runtime.registry.favoriteActions.isEmpty {
+                HStack(spacing: 12) {
+                    Image(systemName: "star").foregroundStyle(.secondary).accessibilityHidden(true)
+                    Text("Pin the actions you use most from search or All actions.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+                UtilityActionList(commands: runtime.commands, actions: runtime.registry.favoriteActions)
+            }
+        }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Your utilities").font(.headline)
+                Spacer()
+                Button("Add Utilities") {
+                    runtime.destination = .modules
+                    if compact { openWindow(id: "utilities") }
+                }
+                .buttonStyle(.borderless)
+            }
+            if runtime.registry.addedModules.isEmpty {
+                Text("Add a utility to get started. You choose when it runs.").foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), alignment: .top), count: compact ? 1 : 2),
+                    spacing: 10
+                ) {
+                    ForEach(runtime.registry.addedModules) { module in
+                        moduleSummary(module)
+                    }
+                }
+            }
+        }
+        DisclosureGroup("All actions", isExpanded: $showingAllActions) {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(runtime.registry.addedModules) { module in
+                    let actions = runtime.registry.search("").filter { $0.module == module.id }
+                    if !actions.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(module.title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                            UtilityActionList(commands: runtime.commands, actions: actions)
+                        }
+                    }
+                }
+            }
+            .padding(.top, 12)
+        }
+        .font(.headline)
+        if !runtime.commands.recentActions.isEmpty {
+            DisclosureGroup("Recent actions · This session") {
+                VStack(spacing: 10) {
+                    ForEach(
+                        runtime.commands.recentActions.prefix(compact ? 3 : UtilityCommandCenter.maximumRecentActions)
+                    ) { entry in
+                        if let action = runtime.registry.actionMetadata(for: entry.actionID) {
+                            HStack(spacing: 10) {
+                                Label(action.title, systemImage: action.symbolName).font(.caption)
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(entry.result.displayText)
+                                    Text(entry.timestamp, style: .time)
+                                }
+                                .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                }.padding(.top, 12)
+            }
+            .font(.subheadline)
+        }
+    }
+
+    @ViewBuilder
+    private func moduleSummary(_ module: UtilityModuleDescriptor) -> some View {
+        if compact, module.id == .shelf, shelfStopRecoveryRoute != nil {
+            ShelfStopRecoveryView(runtime: runtime).disabled(moduleInteractionDisabled(for: .shelf))
+        } else if compact, module.id == .shelf,
+            !runtime.registry.pausedModuleIDs.contains(.shelf),
+            !runtime.lifecycle.stopping.contains(.shelf), !runtime.lifecycle.isShuttingDown,
+            let shelf = runtime.shelf, shelf.isRunning
+        {
+            ShelfCompactView(service: shelf) {
+                Task {
+                    do {
+                        try await runtime.open(.shelf)
+                        runtime.message = nil
+                    } catch { runtime.message = error.localizedDescription }
+                }
+            }
+            .disabled(runtime.mutationDisabledReason != nil)
+        } else {
+            Button {
+                runtime.destination = .module(module.id)
+                if compact { openWindow(id: "utilities") }
+            } label: {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: module.symbolName)
+                        .font(.title3).foregroundStyle(Color.accentColor)
+                        .frame(width: 32, height: 32)
+                        .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(module.title).font(.headline)
+                        Text(runtime.summary(for: module.id))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(
+                        true)
+                }
+                .padding(14).frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(module.title)
+            .accessibilityValue(runtime.summary(for: module.id))
+        }
     }
 
     private var attentionItems: [UtilityModuleAttention] {

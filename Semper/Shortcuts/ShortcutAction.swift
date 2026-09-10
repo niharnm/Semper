@@ -16,6 +16,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     case restoreWorkspace
     case windowLeftHalf
     case windowRightHalf
+    case windowTopHalf
+    case windowBottomHalf
+    case windowTopLeftQuarter
+    case windowTopRightQuarter
+    case windowBottomLeftQuarter
+    case windowBottomRightQuarter
     case windowMaximize
     case windowCenter
     case windowRestore
@@ -23,7 +29,10 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
     static var soundActions: [Self] { allCases.filter { !shellActions.contains($0) } }
 
     static let windowLayoutActions: [Self] = [
-        .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore,
+        .windowLeftHalf, .windowRightHalf,
+        .windowTopHalf, .windowBottomHalf, .windowTopLeftQuarter, .windowTopRightQuarter, .windowBottomLeftQuarter,
+        .windowBottomRightQuarter,
+        .windowMaximize, .windowCenter, .windowRestore,
     ]
     static let shellActions: [Self] = [.restoreWorkspace, .toggleAwayMode] + windowLayoutActions
 
@@ -31,6 +40,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         switch self {
         case .windowLeftHalf: .leftHalf
         case .windowRightHalf: .rightHalf
+        case .windowTopHalf: .topHalf
+        case .windowBottomHalf: .bottomHalf
+        case .windowTopLeftQuarter: .topLeftQuarter
+        case .windowTopRightQuarter: .topRightQuarter
+        case .windowBottomLeftQuarter: .bottomLeftQuarter
+        case .windowBottomRightQuarter: .bottomRightQuarter
         case .windowMaximize: .maximize
         case .windowCenter: .center
         case .windowRestore: .restore
@@ -48,6 +63,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .restoreWorkspace: "Restore workspace"
         case .windowLeftHalf: "Window Left Half"
         case .windowRightHalf: "Window Right Half"
+        case .windowTopHalf: "Window Top Half"
+        case .windowBottomHalf: "Window Bottom Half"
+        case .windowTopLeftQuarter: "Window Top Left Quarter"
+        case .windowTopRightQuarter: "Window Top Right Quarter"
+        case .windowBottomLeftQuarter: "Window Bottom Left Quarter"
+        case .windowBottomRightQuarter: "Window Bottom Right Quarter"
         case .windowMaximize: "Maximize Window"
         case .windowCenter: "Center Window"
         case .windowRestore: "Restore Previous Window Placement"
@@ -61,7 +82,10 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         switch self {
         case .targetAppVolumeUp, .targetAppVolumeDown: true
         case .togglePopup, .toggleAwayMode, .targetAppMuteToggle, .restoreWorkspace,
-            .windowLeftHalf, .windowRightHalf, .windowMaximize, .windowCenter, .windowRestore: false
+            .windowLeftHalf, .windowRightHalf, .windowTopHalf, .windowBottomHalf, .windowTopLeftQuarter,
+            .windowTopRightQuarter, .windowBottomLeftQuarter, .windowBottomRightQuarter,
+            .windowMaximize, .windowCenter, .windowRestore:
+            false
         }
     }
 
@@ -76,6 +100,12 @@ enum ShortcutAction: String, CaseIterable, Codable, Sendable {
         case .restoreWorkspace: KeyboardShortcuts.Name("workspace-restore")
         case .windowLeftHalf: KeyboardShortcuts.Name("window-layout-left-half")
         case .windowRightHalf: KeyboardShortcuts.Name("window-layout-right-half")
+        case .windowTopHalf: KeyboardShortcuts.Name("window-layout-top-half")
+        case .windowBottomHalf: KeyboardShortcuts.Name("window-layout-bottom-half")
+        case .windowTopLeftQuarter: KeyboardShortcuts.Name("window-layout-top-left-quarter")
+        case .windowTopRightQuarter: KeyboardShortcuts.Name("window-layout-top-right-quarter")
+        case .windowBottomLeftQuarter: KeyboardShortcuts.Name("window-layout-bottom-left-quarter")
+        case .windowBottomRightQuarter: KeyboardShortcuts.Name("window-layout-bottom-right-quarter")
         case .windowMaximize: KeyboardShortcuts.Name("window-layout-maximize")
         case .windowCenter: KeyboardShortcuts.Name("window-layout-center")
         case .windowRestore: KeyboardShortcuts.Name("window-layout-restore")

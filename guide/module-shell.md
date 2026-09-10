@@ -1,14 +1,16 @@
 # Module shell
 
-Semper has one menu-bar panel and a native detail window. Home lists added modules, their current summaries, pinned actions, and action search. Parameterized controls live in the detail window. Command-Option-K opens the action surface; its shortcut can be changed in Settings.
+Semper has one menu-bar panel and a native detail window. Home shows pinned actions and a grid of added utilities with current summaries. All actions and recent history are collapsed until requested. Action search stays above the content. Parameterized controls live in the detail window. Command-Option-K opens the action surface; its shortcut can be changed in Settings. Command-K focuses search inside Semper. Type an action or utility name, select a result with Up or Down, and press Return to run it through the same availability and confirmation checks as a click. Escape clears the query. A pending Scene recovery remains visible during search.
 
 When Sound is already running, its Home summary shows the current output and the number of apps with active audio. Home also shows module limitations, failed cleanup, and denied, restricted, or revoked permissions. Reading these summaries does not start Sound or another utility.
 
 Recent actions retain the last eight registered action outcomes in memory for this session, with three shown in the compact panel. Entries contain an action identifier, timestamp, and outcome. They do not retain paths, filenames, window titles, or error text. An accepted asynchronous command remains distinct from a completed change.
 
+Modules has a title-and-purpose search and All, Added, and Available filters. Open navigates to the selected utility; adding, pausing, resuming, and removing keep their existing lifecycle rules. Permission, activity, data, and hardware details remain available on each module.
+
 ## Lifecycle
 
-The module catalog is metadata. Adding a module exposes its controls and commands without creating its service or requesting permission. The first explicit Open or utility action creates the runtime. Sound owns its audio engine, media keys, device observers, feedback, and audio shortcuts. Starting Semper, viewing Home, and adding Awake do not create Sound.
+The module catalog is metadata. Adding a module exposes its controls and commands without creating its service or requesting permission. Opening its page from Home or Modules also does not start its service. Its explicit start control or registered utility action starts the runtime through the existing admission and permission checks; paused modules must be resumed first. Sound owns its audio engine, media keys, device observers, feedback, and audio shortcuts. Starting Semper, viewing Home, and adding Awake do not create Sound.
 
 Presence, runtime, and permission are separate state values. Pause blocks execution immediately and drains owned work. Once paused, actions remain visible with the reason "Resume this module in Modules first." Resume permits actions with a stopped runtime. Removal unregisters active actions and removes their favorites. Saved module data is managed separately from presence; bundled code remains installed.
 

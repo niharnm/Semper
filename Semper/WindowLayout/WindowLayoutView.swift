@@ -28,14 +28,18 @@ struct WindowLayoutView: View {
                     Button("Keep Current Placement…") { confirmKeepCurrent = true }
                         .disabled(service.isBusy || !service.isRunning)
                 }
-                UtilityActionList(
-                    commands: commands,
-                    actions: WindowLayoutAction.allCases.compactMap {
-                        commands.registry.action(for: .init(rawValue: $0.rawValue))
-                    })
-                Text("Halves and Maximize use the display area available around the Dock and menu bar. Center keeps the current size. Restore returns the last changed window to its immediately preceding placement and skips later manual changes.")
+                HStack(alignment: .top, spacing: 16) {
+                    placementGroup("Halves", actions: WindowLayoutAction.halves)
+                    placementGroup("Quarters", actions: WindowLayoutAction.quarters)
+                }
+                actionList(remainingActions)
+                Text(
+                    "Halves, quarters and Maximize use the display area available around the Dock and menu bar. Center keeps the current size. Restore returns the last changed window to its immediately preceding placement and skips later manual changes."
+                )
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Full-height windows and targets are conservatively refused. This can limit halves and Maximize when the menu bar and Dock auto-hide. Minimized, unsupported, and unreadable windows also stay unchanged. You can assign optional shortcuts in Settings.")
+                Text(
+                    "Full-height windows and targets are conservatively refused. This can limit Left Half, Right Half and Maximize when the menu bar and Dock auto-hide, while Top Half, Bottom Half and the quarters use half the usable height. Minimized, unsupported, and unreadable windows also stay unchanged. You can assign optional shortcuts in Settings."
+                )
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Pausing retains the previous placement. Removing Window Layout or quitting clears that session history.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -47,5 +51,25 @@ struct WindowLayoutView: View {
         } message: {
             Text("This discards the preceding placement record. Arrange the window manually if needed before continuing.")
         }
+    }
+
+    private var remainingActions: [WindowLayoutAction] {
+        WindowLayoutAction.allCases.filter {
+            !WindowLayoutAction.halves.contains($0) && !WindowLayoutAction.quarters.contains($0)
+        }
+    }
+
+    private func placementGroup(_ title: String, actions: [WindowLayoutAction]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            actionList(actions)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func actionList(_ actions: [WindowLayoutAction]) -> some View {
+        UtilityActionList(
+            commands: commands,
+            actions: actions.compactMap { commands.registry.action(for: .init(rawValue: $0.rawValue)) })
     }
 }
