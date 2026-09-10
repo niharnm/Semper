@@ -60,7 +60,8 @@ struct ModuleLibraryView: View {
                         .onExitCommand { searchText = "" }
                     Picker("Show modules", selection: $filter) {
                         ForEach(ModuleLibraryFilter.allCases) { option in
-                            Text("\(option.rawValue) (\(option.modules(in: registry).count))").tag(option)
+                            Text("\(option.rawValue) (\(option.modules(in: registry, matching: searchText).count))")
+                                .tag(option)
                         }
                     }
                     .pickerStyle(.segmented)
