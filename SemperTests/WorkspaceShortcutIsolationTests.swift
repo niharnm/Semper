@@ -8,6 +8,18 @@ import Testing
 @MainActor
 @Suite("Workspace shortcut isolation", .serialized)
 struct WorkspaceShortcutIsolationTests {
+    @Test("Every placement has one distinct shell-owned shortcut action")
+    func placementShortcutCoverage() {
+        let actions = ShortcutAction.windowLayoutActions
+        let placements = actions.compactMap(\.windowLayoutAction)
+        #expect(placements.count == WindowLayoutAction.allCases.count)
+        #expect(Set(placements) == Set(WindowLayoutAction.allCases))
+        #expect(Set(actions.map(\.rawValue)).count == actions.count)
+        #expect(
+            actions.allSatisfy { ShortcutAction.shellActions.contains($0) && !ShortcutAction.soundActions.contains($0) }
+        )
+    }
+
     @Test("Window shortcuts remain shell-owned when Sound clears its shortcuts", arguments: ShortcutAction.windowLayoutActions)
     func soundDoesNotOwnWindowLayout(_ action: ShortcutAction) throws {
         try withSynchronousSettings { settings in

@@ -12,8 +12,8 @@ final class ShellModeUITests: XCTestCase {
         let window = app.windows["Semper Shell UI Tests"]
         XCTAssertTrue(window.waitForExistence(timeout: 8))
         XCTAssertTrue(app.descendants(matching: .any)["shell-ui-test-host"].exists)
-        XCTAssertTrue(window.staticTexts["Home"].exists)
-        XCTAssertTrue(window.staticTexts["Modules"].exists)
+        XCTAssertTrue(window.staticTexts["Home"].firstMatch.exists)
+        XCTAssertTrue(window.staticTexts["Modules"].firstMatch.exists)
         XCTAssertTrue(window.staticTexts["Sound"].firstMatch.exists)
 
         let search = window.textFields["Search Semper actions"]
@@ -30,22 +30,40 @@ final class ShellModeUITests: XCTestCase {
         search.typeKey("a", modifierFlags: .command)
         search.typeText("no-matching-shell-action")
         XCTAssertTrue(
-            window.staticTexts["No matching actions. Add a module to make its actions available."]
+            window.staticTexts["No matching actions"]
                 .waitForExistence(timeout: 3))
 
-        window.staticTexts["Modules"].click()
+        search.typeKey("a", modifierFlags: .command)
+        search.typeText("sound")
+        search.typeKey(.downArrow, modifierFlags: [])
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            window.staticTexts["Service startup is unavailable in shell UI tests."].waitForExistence(timeout: 3))
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(search.value as? String, "")
+        XCTAssertTrue(window.staticTexts["Your utilities"].exists)
+        XCTAssertFalse(window.buttons["Mute current output"].exists)
+        search.typeText("no-matching-shell-action")
+
+        window.staticTexts["Modules"].firstMatch.click()
         XCTAssertTrue(window.staticTexts["Control app and device audio."].waitForExistence(timeout: 3))
-        XCTAssertTrue(window.staticTexts["Stopped"].exists)
+        XCTAssertTrue(window.staticTexts["Stopped"].firstMatch.exists)
+        let moduleSearch = window.textFields["Search modules"]
+        moduleSearch.click()
+        moduleSearch.typeText("awake")
+        XCTAssertFalse(window.staticTexts["Control app and device audio."].exists)
         let addAwake = window.buttons["Add Awake"]
         XCTAssertTrue(addAwake.exists)
         addAwake.click()
         XCTAssertTrue(addAwake.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(window.buttons["Open Awake"].exists)
+        moduleSearch.typeKey(.escape, modifierFlags: [])
         let modulesScreenshot = XCTAttachment(screenshot: window.screenshot())
         modulesScreenshot.name = "Semper Shell Modules After Adding Awake"
         modulesScreenshot.lifetime = .keepAlways
         add(modulesScreenshot)
 
-        window.staticTexts["Home"].click()
+        window.staticTexts["Home"].firstMatch.click()
         XCTAssertTrue(search.waitForExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "no-matching-shell-action")
         search.click()

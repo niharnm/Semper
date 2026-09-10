@@ -38,10 +38,10 @@ The implementation from [PR #106](https://github.com/niharnm/Semper/pull/106)
 is integrated on `main` through [PR #110](https://github.com/niharnm/Semper/pull/110).
 Native acceptance remains open. See the [Window Layout guide](guide/window-layout.md).
 
-- Verify all five manual commands, optional shortcuts, Home/search/pinned
+- Verify all eleven source commands, including the six new half and quarter placements, optional shortcuts, Home/search/pinned
   actions, intended-window selection, and later manual changes on real apps.
 - Keep the conservative full-height exclusion explicit. Ordinary full-height
-  windows and targets are refused; halves and maximize can be unavailable when
+  windows and targets are refused; left/right halves and maximize can be unavailable when
   both Dock and menu bar auto-hide. Smaller-window center and restore still
   require eligible geometry.
 - After an attempted write, an excluded or unreadable result requires manual
@@ -80,6 +80,9 @@ Native acceptance remains open. See the [Window Layout guide](guide/window-layou
   for input limits and remaining checks. No batch processing or uploads.
 - Awake and Away: keep power assertions and the curtain testable and honest
   about what they do not block.
+- Proposed next additions from the workflow comparison: native Share for one
+  File Shelf item, and extending an active Awake session without losing its
+  stop conditions. These are proposals, not implemented features.
 - A new utility needs a clear local user job, no account requirement, the
   shared lifecycle and disclosure rules, and reuse of existing services where
   reasonable.
@@ -108,7 +111,7 @@ Focused specialist tools set the expectations each Semper module must meet:
 - [FineTune](https://github.com/ronitsingh10/FineTune) for per-app audio with
   AutoEQ and ISO 226 loudness compensation
 
-Semper has not benchmarked against these tools and claims no superiority. The
+The macOS experience work compares their documented workflows and selected open-source structures. No controlled performance comparison or superiority claim has been established. The
 case for Semper is one shell with shared lifecycle, disclosure, and recovery
 rules, and modules that can work together.
 
@@ -128,7 +131,7 @@ discussion and include a hardware test plan.
 
 ## Current boundaries
 
-- Supported platform: macOS 15.4 or later.
+- Platform commitment: macOS only, requiring macOS 15.4 or later. Product and interface work targets native Mac workflows; ports to other operating systems are outside the roadmap.
 - Downloadable today: v1.0.0, published 2026-08-26, with Sound. Source builds,
   unit tests, the static website, and signed releases through GitHub and
   Homebrew are current.
@@ -140,4 +143,5 @@ discussion and include a hardware test plan.
   behavior.
 - Release-dependent: automatic updates require a current signed feed, and broad
   compatibility claims require verified hardware reports.
-- Out of scope today: Windows, Linux, iOS, cloud accounts, and audio recording.
+- Outside the product scope: Windows, Linux, and iOS versions.
+- Out of scope today: cloud accounts and audio recording.

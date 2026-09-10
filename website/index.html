@@ -627,15 +627,17 @@
             <span class="module-number" aria-hidden="true">10</span>
             <div class="module-name"><h3>Window Layout</h3><span class="module-status">In development</span></div>
             <div class="module-description">
-              <p>Arrange one eligible app window with Left Half, Right Half,
-                Maximize, Center, or Restore Previous Placement.
+              <p>Arrange one eligible app window with eleven manual actions: Left Half,
+                Right Half, Top Half, Bottom Half, Top Left Quarter, Top Right Quarter,
+                Bottom Left Quarter, Bottom Right Quarter, Maximize, Center,
+                or Restore Previous Placement.
                 Full-height windows and targets are excluded.</p>
               <details><summary>Scope and limits</summary>
                 <p>Only standard, nonminimized windows with readable geometry and move/resize support qualify.
                   The first layout action requests Accessibility access if needed.
                   Actions support Home search, pins, and optional shortcuts, unassigned by default.</p>
                 <p>Maximize does not enter full screen. Ordinary full-height windows are also refused.
-                  Halves and Maximize can be unavailable when both the Dock and menu bar auto-hide.
+                  Left Half, Right Half, and Maximize can be unavailable when both the Dock and menu bar auto-hide.
                   Restore skips later manual changes, missing windows, and changed display arrangements.</p>
                 <p>After an excluded post-write result or an unverifiable write, review the window
                   and confirm Keep Current Placement before another action.

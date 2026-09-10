@@ -11,7 +11,7 @@
   <a href="https://github.com/niharnm/Semper/graphs/contributors"><img src="https://img.shields.io/github/contributors/niharnm/Semper" alt="Contributors"/></a>
 </p>
 
-Control windows, files, displays, power, and sound from one native macOS menu bar app. Add the utilities you need, use them independently, or combine settings with Scenes and Presentation. Away provides an authenticated privacy curtain.
+Semper is built exclusively for macOS. Control windows, files, displays, power, and sound from one native menu bar app. Add the utilities you need, use them independently, or combine settings with Scenes and Presentation. Away provides an authenticated privacy curtain.
 
 The current download, v1.0.0, contains Sound. Source builds include additional utilities in development toward the next release. The [product status guide](guide/product-status.md) distinguishes released, integrated, and staged features.
 
@@ -58,8 +58,8 @@ not download a Semper DMG from an unofficial source.
 
 ## Architecture Highlights
 
-- **Independent Utilities**: Home provides module summaries, attention items, up to four pinned actions, search, and recent action outcomes for the current session. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
-- **Manual Window Layout**: Five optional actions arrange eligible windows into halves, maximize, center, or restore the preceding placement. Full-height windows and targets are refused, which can limit halves and maximize when both the Dock and menu bar auto-hide. Source integration and native acceptance are tracked in the [product status guide](guide/product-status.md#window-layout).
+- **Independent Utilities**: Home puts up to four pinned actions and utility summaries first. Keyboard search runs actions with Up/Down and Return; the full catalog and session history expand on demand. Modules can be searched and filtered. Add, pause, or remove modules individually; adding a module starts no service and requests no permission. Detailed controls open in a native window.
+- **Manual Window Layout**: Eleven actions arrange eligible windows into horizontal or vertical halves, four quarters, maximize, center, or restore the preceding placement. Each has an optional shortcut. Full-height windows and targets are refused, which can limit left/right halves and maximize when both the Dock and menu bar auto-hide. Source integration and native acceptance are tracked in the [product status guide](guide/product-status.md#window-layout).
 - **Local Image Copies**: File Shelf's Resize a Copy action saves one local JPEG or PNG at up to 1,024 or 2,048 pixels on its longest edge without enlargement or overwriting a file. It removes descriptive metadata and requires a destination that supports macOS file cloning. See the [image-copy guide](guide/shelf-image-copy.md) for format, size, recovery, and native acceptance limits.
 - **Local Awake Sessions**: Public IOKit power assertions prevent idle system sleep, optionally keep the display on, and keep timed user sessions separate from Scene requests.
 - **Authenticated Away Curtain**: One opaque panel covers each display, ordinary input is filtered, and local widgets can show time, battery, Away duration, and awake-request state.

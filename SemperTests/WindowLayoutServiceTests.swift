@@ -289,8 +289,11 @@ struct WindowLayoutServiceTests {
         #expect(await backend.applicationScanCount == 0)
     }
 
-    @Test("Halves and maximize remain eligible for center and preceding-placement restore", arguments: [
-        WindowLayoutAction.leftHalf, .rightHalf, .maximize,
+    @Test(
+        "Halves, quarters and maximize remain eligible for center and preceding-placement restore",
+        arguments: [
+            WindowLayoutAction.leftHalf, .rightHalf, .topHalf, .bottomHalf, .topLeftQuarter, .topRightQuarter,
+            .bottomLeftQuarter, .bottomRightQuarter, .maximize,
     ])
     func chainedLayouts(_ first: WindowLayoutAction) async throws {
         let (service, backend, _) = fixture()
@@ -516,6 +519,31 @@ struct WindowLayoutServiceTests {
         #expect(await backend.state?.frame == CGRect(x: 300, y: 250, width: 400, height: 300))
         try await service.perform(.restore)
         #expect(await backend.state?.frame == original)
+    }
+
+    @Test(
+        "Auto-hidden system bars still apply half-height placements through the verified restore pipeline",
+        arguments: [WindowLayoutAction.topHalf, .bottomHalf] + WindowLayoutAction.quarters)
+    func autoHiddenBarsAllowHalfHeightPlacements(_ action: WindowLayoutAction) async throws {
+        let (service, backend, _) = fixture()
+        let fullFrame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let autoHide = WorkspaceDisplay(
+            id: screen.id, name: screen.name, visibleFrame: fullFrame, fullScreenFrame: fullFrame)
+        await backend.setScreens([autoHide])
+        let target = try #require(WindowLayoutGeometry.target(action, frame: original, display: autoHide))
+        #expect(target.height == 400 && fullFrame.contains(target))
+        try await service.perform(action)
+        #expect(await backend.requestedFrames == [target])
+        #expect(await backend.state?.frame == target)
+        #expect(service.canRestore && !service.requiresPlacementReview)
+        #expect(service.message == "\(action.title) applied and verified. Restore returns to the preceding placement.")
+        try await service.perform(action)
+        #expect(await backend.requestedFrames == [target])
+        #expect(service.message == "The window is already in this placement.")
+        #expect(service.canRestore)
+        try await service.perform(.restore)
+        #expect(await backend.state?.frame == original)
+        #expect(!service.canRestore && !service.requiresPlacementReview)
     }
 
     @Test("A previous placement outside usable displays is not restored")
