@@ -4,19 +4,19 @@ Semper has ten utility modules integrated on `main`. This page
 records what each module does, where it stands, and what remains before
 release. It changes in the same commit as the work that changes a status.
 
-Snapshot: `main` at `ced1a2b`, 2026-09-09, including Resize a Copy and website
-alignment from [PR #111](https://github.com/niharnm/Semper/pull/111), following
-Window Layout in [PR #110](https://github.com/niharnm/Semper/pull/110).
+App source `4be9555` includes the macOS experience update below. It builds on
+`main` at `20ab341`, including Window Layout handle retention from
+[PR #112](https://github.com/niharnm/Semper/pull/112) and Resize a Copy from
+[PR #111](https://github.com/niharnm/Semper/pull/111).
 Latest downloadable release: v1.0.0, published 2026-08-26, containing Sound only.
 
-## macOS experience change set
+## macOS experience
 
-This source change set keeps Semper exclusively on macOS. It adds a quieter
+Current source keeps Semper exclusively on macOS. It adds a reorganized
 Home, keyboard action selection and execution, searchable module discovery,
 and six Window Layout placements: top and bottom halves and all four quarters.
-All eleven Window Layout actions have optional shortcuts. These
-changes are implemented in this change set; they are not in the public v1.0.0
-binary. The integrated snapshot above remains the baseline until merge.
+All eleven Window Layout actions have optional shortcuts. These changes are
+included in source; they are not in the public v1.0.0 binary.
 
 The existing command admission, confirmation, permission and recovery rules
 still apply. Native keyboard, VoiceOver and real-window acceptance remain
