@@ -110,6 +110,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     runtime.updateManager.checkForUpdates()
                     continue
                 }
+                if URLHandler.mutationHosts.contains(url.host) {
+                    if runtime.away?.isGuarding == true { continue }
+                    guard URLActionConfirmation.confirm(url) else { continue }
+                }
                 if url.host == "apply-scene" || url.host == "restore-scene" {
                     do {
                         let sceneID: UUID?

@@ -1,4 +1,5 @@
 // Semper/Utilities/URLHandler.swift
+import AppKit
 import Foundation
 import os
 
@@ -433,7 +434,7 @@ final class URLHandler {
         }
     }
 
-    private static let mutationHosts: Set<String?> = [
+    static let mutationHosts: Set<String?> = [
         "set-volumes",
         "step-volume",
         "set-mute",
@@ -443,4 +444,37 @@ final class URLHandler {
         "restore-scene",
         "reset",
     ]
+}
+
+/// Asks the user before a `semper://` URL changes audio state. Any app or web page can open
+/// these URLs, so mutating actions need a local yes unless the user chose "Always allow".
+enum URLActionConfirmation {
+    /// Off by default. Set from the confirmation alert's checkbox.
+    static let alwaysAllowKey = "urlActions.alwaysAllow"
+
+    static func requiresConfirmation(_ url: URL, defaults: UserDefaults = .standard) -> Bool {
+        guard URLHandler.mutationHosts.contains(url.host) else { return false }
+        return !defaults.bool(forKey: alwaysAllowKey)
+    }
+
+    @MainActor
+    static func confirm(_ url: URL, defaults: UserDefaults = .standard) -> Bool {
+        guard requiresConfirmation(url, defaults: defaults) else { return true }
+        let shown = url.absoluteString
+        let alert = NSAlert()
+        alert.messageText = "Allow this Semper URL action?"
+        alert.informativeText =
+            "Another app or web page asked Semper to change audio settings:\n\n"
+            + (shown.count > 300 ? String(shown.prefix(300)) + "…" : shown)
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Allow")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Always allow Semper URL actions"
+        NSApp.activate(ignoringOtherApps: true)
+        let allowed = alert.runModal() == .alertSecondButtonReturn
+        if allowed, alert.suppressionButton?.state == .on {
+            defaults.set(true, forKey: alwaysAllowKey)
+        }
+        return allowed
+    }
 }
