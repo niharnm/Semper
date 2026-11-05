@@ -452,6 +452,9 @@ enum URLActionConfirmation {
     /// Off by default. Set from the confirmation alert's checkbox.
     static let alwaysAllowKey = "urlActions.alwaysAllow"
 
+    /// Longest URL the confirmation alert shows. Longer mutating URLs are refused.
+    static let maxShownLength = 300
+
     static func requiresConfirmation(_ url: URL, defaults: UserDefaults = .standard) -> Bool {
         guard URLHandler.mutationHosts.contains(url.host) else { return false }
         return !defaults.bool(forKey: alwaysAllowKey)
@@ -461,11 +464,14 @@ enum URLActionConfirmation {
     static func confirm(_ url: URL, defaults: UserDefaults = .standard) -> Bool {
         guard requiresConfirmation(url, defaults: defaults) else { return true }
         let shown = url.absoluteString
+        // Never ask about a URL the alert can't show in full: hidden text could carry extra
+        // targets that would run once the user allows the visible part.
+        guard shown.count <= maxShownLength else { return false }
         let alert = NSAlert()
         alert.messageText = "Allow this Semper URL action?"
         alert.informativeText =
             "Another app or web page asked Semper to change audio settings:\n\n"
-            + (shown.count > 300 ? String(shown.prefix(300)) + "…" : shown)
+            + shown
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Allow")
         alert.showsSuppressionButton = true
