@@ -434,7 +434,7 @@ final class URLHandler {
         }
     }
 
-    static let mutationHosts: Set<String?> = [
+    nonisolated static let mutationHosts: Set<String?> = [
         "set-volumes",
         "step-volume",
         "set-mute",
