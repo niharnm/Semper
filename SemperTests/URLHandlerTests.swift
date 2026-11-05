@@ -245,3 +245,37 @@ private final class URLRejectingAudioCommandSink: AudioCommandDispatching {
         return .rejected(.sceneOperationInProgress)
     }
 }
+
+@MainActor
+@Suite("URLActionConfirmation")
+struct URLActionConfirmationTests {
+    private func makeDefaults() -> UserDefaults {
+        let name = "URLActionConfirmationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test("Mutating URL actions require confirmation by default")
+    func mutatingActionsRequireConfirmation() {
+        let defaults = makeDefaults()
+        for host in ["set-volumes", "step-volume", "set-mute", "toggle-mute", "set-device", "apply-scene", "restore-scene", "reset"] {
+            let url = URL(string: "semper://\(host)")!
+            #expect(URLActionConfirmation.requiresConfirmation(url, defaults: defaults))
+        }
+    }
+
+    @Test("Update and unknown URLs do not prompt")
+    func nonMutatingActionsDoNotPrompt() {
+        let defaults = makeDefaults()
+        #expect(!URLActionConfirmation.requiresConfirmation(URL(string: "semper://update")!, defaults: defaults))
+        #expect(!URLActionConfirmation.requiresConfirmation(URL(string: "semper://unknown")!, defaults: defaults))
+    }
+
+    @Test("Always allow skips the prompt")
+    func alwaysAllowSkipsPrompt() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: URLActionConfirmation.alwaysAllowKey)
+        #expect(!URLActionConfirmation.requiresConfirmation(URL(string: "semper://reset")!, defaults: defaults))
+    }
+}

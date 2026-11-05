@@ -16,6 +16,8 @@ Control Semper from Terminal, shell scripts, [Shortcuts](https://support.apple.c
 | Update | `semper://update` | Check for and install a Semper update |
 | Reset | `semper://reset` | Reset all apps to 100% and unmuted |
 
+Actions that change audio settings (everything except Update) ask for confirmation before they run, because any app or web page can open a `semper://` URL. Tick "Always allow Semper URL actions" in the prompt to skip it; this is off by default. Away Mode still blocks these actions.
+
 ## Examples
 
 ```bash
